@@ -1,0 +1,48 @@
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+      args:
+        APT_MIRROR: mirrors.tuna.tsinghua.edu.cn
+        PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
+        PIP_TRUSTED_HOST: pypi.tuna.tsinghua.edu.cn
+    image: alpha-insight-dev:py311
+    container_name: alpha-insight-dev
+    working_dir: /workspace
+    environment:
+      PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
+      PIP_TRUSTED_HOST: pypi.tuna.tsinghua.edu.cn
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_API_BASE: ${OPENAI_API_BASE:-}
+      OPENAI_MODEL_NAME: ${OPENAI_MODEL_NAME:-}
+      TEMPERATURE: ${TEMPERATURE:-0.0}
+      ENABLE_LOCAL_FALLBACK: ${ENABLE_LOCAL_FALLBACK:-true}
+    volumes:
+      - ./:/workspace
+      - pip-cache:/root/.cache/pip
+    tty: true
+    stdin_open: true
+    command: bash
+
+  test:
+    image: alpha-insight-dev:py311
+    container_name: alpha-insight-test
+    working_dir: /workspace
+    environment:
+      PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
+      PIP_TRUSTED_HOST: pypi.tuna.tsinghua.edu.cn
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_API_BASE: ${OPENAI_API_BASE:-}
+      OPENAI_MODEL_NAME: ${OPENAI_MODEL_NAME:-}
+      TEMPERATURE: ${TEMPERATURE:-0.0}
+      ENABLE_LOCAL_FALLBACK: ${ENABLE_LOCAL_FALLBACK:-true}
+    depends_on:
+      - dev
+    volumes:
+      - ./:/workspace
+      - pip-cache:/root/.cache/pip
+    command: pytest -q
+
+volumes:
+  pip-cache:

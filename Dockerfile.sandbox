@@ -1,0 +1,14 @@
+FROM python:3.11-slim
+
+# 安装金融核心库
+RUN pip install --no-cache-dir \
+    pandas \
+    numpy \
+    matplotlib \
+    plotly \
+    yfinance \
+    scipy \
+    ta-lib-bin
+
+WORKDIR /app
+CMD ["python3"]
