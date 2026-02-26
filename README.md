@@ -67,6 +67,30 @@ docker compose --env-file .env run --rm test
 .venv_local/bin/python -m pytest -q
 ```
 
+## 硬口径验收证据（Run Report + 离线20次）
+
+已提供固定证据脚本：`scripts/hard_acceptance_evidence.py`，默认将产物写入 `docs/evidence/`。
+
+1. 生成最新一次 run_report（样例）：
+
+```bash
+PYTHONPATH=/home/kkk/Project/Alpha-Insight python scripts/hard_acceptance_evidence.py generate --runs 1 --offline --output-json docs/evidence/run_report_latest.json --output-md docs/evidence/run_report_latest.md --title "Run Report (Latest Full Analysis)"
+```
+
+2. 生成离线 Docker Full Analysis 20 次统计：
+
+```bash
+PYTHONPATH=/home/kkk/Project/Alpha-Insight python scripts/hard_acceptance_evidence.py generate --runs 20 --offline --output-json docs/evidence/offline_docker_full_analysis_20.json --output-md docs/evidence/offline_docker_full_analysis_20.md --title "Offline Docker Full Analysis Benchmark (20 Runs)"
+```
+
+3. 记录 pytest 门禁结果：
+
+```bash
+PYTHONPATH=/home/kkk/Project/Alpha-Insight pytest -q | tee docs/evidence/pytest_gate_latest.txt
+```
+
+字段覆盖：`success/fallback/retry/latency/backend/failure_type`，用于硬口径复盘与回归对比。
+
 ## 后端启动
 
 ### 1) 实时异动扫描（可用于 Cron）
