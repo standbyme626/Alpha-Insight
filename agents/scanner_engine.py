@@ -9,13 +9,14 @@ from typing import Awaitable, Callable
 
 import pandas as pd
 
-from tools.market_data import MarketDataResult, fetch_market_data
+from tools.market_data import MarketDataResult, fetch_market_data, normalize_market_symbol
 from tools.telegram import send_text
 
 
 @dataclass
 class ScanConfig:
     watchlist: list[str]
+    market: str = "auto"  # auto | us | cn
     period: str = "5d"
     pct_alert_threshold: float = 0.03
     rsi_overbought: float = 70.0
@@ -74,7 +75,8 @@ async def analyze_symbol(
     *,
     fetcher: Callable[[str, str], Awaitable[MarketDataResult]] = fetch_market_data,
 ) -> WatchSignal | None:
-    result = await fetcher(symbol, config.period)
+    query_symbol = normalize_market_symbol(symbol, market=config.market)
+    result = await fetcher(query_symbol, config.period)
     if not result.ok or not result.records:
         return None
 
@@ -97,7 +99,7 @@ async def analyze_symbol(
     )
 
     return WatchSignal(
-        symbol=symbol,
+        symbol=symbol.strip().upper() if symbol.strip() else query_symbol,
         timestamp=datetime.now(timezone.utc),
         price=last,
         pct_change=pct_change,

@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from tools.market_data import normalize_market_symbol
+
 
 def _sanitize(value: str, fallback: str) -> str:
     value = (value or "").strip()
@@ -12,13 +14,17 @@ def _sanitize(value: str, fallback: str) -> str:
 
 
 def build_report_code(state: dict[str, Any]) -> str:
-    symbol = _sanitize(str(state.get("symbol", "AAPL")), "AAPL")
+    raw_symbol = _sanitize(str(state.get("symbol", "AAPL")), "AAPL")
+    market = _sanitize(str(state.get("market", "auto")), "auto").lower()
+    symbol = normalize_market_symbol(raw_symbol, market=market)
     period = _sanitize(str(state.get("period", "6mo")), "6mo")
     sentiment_score = float(state.get("sentiment_score", 0.0))
 
     payload = json.dumps(
         {
             "symbol": symbol,
+            "display_symbol": raw_symbol,
+            "market": market,
             "period": period,
             "sentiment_score": sentiment_score,
         }
@@ -35,6 +41,8 @@ import yfinance as yf
 
 cfg = json.loads({payload!r})
 symbol = cfg["symbol"]
+display_symbol = cfg["display_symbol"]
+market = cfg["market"]
 period = cfg["period"]
 sentiment_score = float(cfg["sentiment_score"])
 
@@ -114,7 +122,9 @@ fused_score = float(max(0, min(100, 0.4 * sentiment_score + 0.6 * tech_score)))
 recommendation = "BUY" if fused_score >= 70 else "HOLD"
 
 report = {{
-    "symbol": symbol,
+    "symbol": display_symbol,
+    "resolved_symbol": symbol,
+    "market": market,
     "period": period,
     "sentiment_score": sentiment_score,
     "technical_score": tech_score,

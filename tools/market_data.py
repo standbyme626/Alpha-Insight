@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -18,6 +19,42 @@ class MarketDataResult:
     records: list[dict[str, Any]]
 
 
+_CN_COMPANY_SYMBOL_MAP: dict[str, str] = {
+    "贵州茅台": "600519.SS",
+    "宁德时代": "300750.SZ",
+    "招商银行": "600036.SS",
+    "中国平安": "601318.SS",
+    "比亚迪": "002594.SZ",
+    "五粮液": "000858.SZ",
+    "隆基绿能": "601012.SS",
+    "迈瑞医疗": "300760.SZ",
+    "中芯国际": "688981.SS",
+    "海康威视": "002415.SZ",
+}
+
+
+def normalize_market_symbol(symbol: str, market: str = "auto") -> str:
+    text = symbol.strip()
+    if not text:
+        return ""
+
+    if text in _CN_COMPANY_SYMBOL_MAP:
+        return _CN_COMPANY_SYMBOL_MAP[text]
+
+    normalized = text.upper()
+    if "." in normalized:
+        return normalized
+
+    market_lower = market.strip().lower()
+    if re.fullmatch(r"\d{6}", normalized):
+        if market_lower in {"cn", "china", "a-share", "ashare"}:
+            if normalized.startswith(("6", "9")):
+                return f"{normalized}.SS"
+            return f"{normalized}.SZ"
+        return normalized
+    return normalized
+
+
 def _normalize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     out = df.reset_index().copy()
     if "Date" in out.columns:
@@ -31,7 +68,7 @@ def _normalize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
 async def fetch_market_data(symbol: str, period: str = "1mo") -> MarketDataResult:
     print("[DEBUG] QuantNode fetch_market_data Start")
-    normalized_symbol = symbol.strip().upper()
+    normalized_symbol = normalize_market_symbol(symbol)
     if not normalized_symbol:
         return MarketDataResult(
             ok=False,

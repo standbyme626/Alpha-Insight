@@ -3,7 +3,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from tools.market_data import _normalize_dataframe, fetch_market_data
+from tools.market_data import _normalize_dataframe, fetch_market_data, normalize_market_symbol
 
 
 def test_normalize_dataframe_sets_utc_and_fillna() -> None:
@@ -25,3 +25,12 @@ async def test_fetch_market_data_empty_symbol() -> None:
     result = await fetch_market_data("   ")
     assert result.ok is False
     assert "数据未找到" in result.message
+
+
+def test_normalize_market_symbol_cn_company_name() -> None:
+    assert normalize_market_symbol("贵州茅台", market="cn") == "600519.SS"
+
+
+def test_normalize_market_symbol_cn_numeric_code() -> None:
+    assert normalize_market_symbol("600519", market="cn") == "600519.SS"
+    assert normalize_market_symbol("000001", market="cn") == "000001.SZ"

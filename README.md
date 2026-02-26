@@ -15,7 +15,7 @@ Alpha-Insight 是一个基于 LangGraph 的多 Agent 量化投研系统，支持
 - `core/`：沙箱、模型、安全策略、观测模块
 - `tools/`：行情、Telegram、产物提取
 - `scripts/`：集成脚本、定时任务脚本、真实 LLM 测试脚本
-- `ui/`：前端页面（Streamlit）
+- `ui/`：前端页面（Streamlit，含运行态可观测面板）
 - `tests/`：Week1-Week4 的 pytest 测试
 - `models/`：模型目录（本项目当前主要使用远程 API 模型，见 `models/MODELS.md`）
 
@@ -50,13 +50,13 @@ docker compose --env-file .env run --rm test
 单次执行（推荐给 cron 调度）：
 
 ```bash
-docker compose --env-file .env run --rm dev bash -lc "export PYTHONPATH=/workspace && python scripts/hourly_watchlist_scan.py --once --watchlist 'AAPL,MSFT,TSLA' --mode anomaly"
+docker compose --env-file .env run --rm dev bash -lc "export PYTHONPATH=/workspace && python scripts/hourly_watchlist_scan.py --once --watchlist 'AAPL,MSFT,TSLA' --market us --mode anomaly"
 ```
 
 常驻循环（默认每小时一次）：
 
 ```bash
-docker compose --env-file .env run --rm dev bash -lc "export PYTHONPATH=/workspace && python scripts/hourly_watchlist_scan.py --watchlist 'AAPL,MSFT,TSLA'"
+docker compose --env-file .env run --rm dev bash -lc "export PYTHONPATH=/workspace && python scripts/hourly_watchlist_scan.py --watchlist '贵州茅台,宁德时代,600519' --market cn"
 ```
 
 ### 2) 真实 LLM 连通性后端测试
@@ -69,7 +69,7 @@ docker compose --env-file .env run --rm dev bash -lc "export PYTHONPATH=/workspa
 
 当前有两个前端页面，都是 Streamlit，支持并行启动（不同端口）：
 
-### A. 量化驾驶舱（Watchlist + Plotly）
+### A. 实时驾驶舱（Run 状态 + Watchlist + Pipeline）
 
 ```bash
 docker compose --env-file .env run --rm -d --name alpha-insight-ui-cockpit -p 8501:8501 dev bash -lc "export PYTHONPATH=/workspace && streamlit run ui/streamlit_dashboard.py --server.address 0.0.0.0 --server.port 8501"
@@ -77,7 +77,7 @@ docker compose --env-file .env run --rm -d --name alpha-insight-ui-cockpit -p 85
 
 打开：`http://localhost:8501`
 
-### B. 真实 LLM 控制台（直接调远程模型）
+### B. Planner 控制台（中美市场请求模板）
 
 ```bash
 docker compose --env-file .env run --rm -d --name alpha-insight-ui-llm -p 8502:8501 dev bash -lc "scripts/run_llm_frontend.sh"

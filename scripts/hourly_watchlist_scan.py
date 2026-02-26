@@ -44,6 +44,7 @@ async def _loop(config: ScanConfig, *, mode: str, interval_seconds: int) -> None
 def main() -> int:
     parser = argparse.ArgumentParser(description="Hourly watchlist scan")
     parser.add_argument("--watchlist", default=os.getenv("WATCHLIST", "AAPL,MSFT,TSLA"))
+    parser.add_argument("--market", default=os.getenv("WATCH_MARKET", "auto"), choices=["auto", "us", "cn"])
     parser.add_argument("--period", default=os.getenv("WATCH_PERIOD", "5d"))
     parser.add_argument("--mode", default=os.getenv("ALERT_MODE", "anomaly"), choices=["anomaly", "digest"])
     parser.add_argument("--threshold", type=float, default=float(os.getenv("ALERT_THRESHOLD", "0.03")))
@@ -53,6 +54,7 @@ def main() -> int:
 
     config = ScanConfig(
         watchlist=_parse_watchlist(args.watchlist),
+        market=args.market,
         period=args.period,
         pct_alert_threshold=args.threshold,
     )
