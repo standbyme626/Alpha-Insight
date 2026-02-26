@@ -9,15 +9,16 @@ from typing import Awaitable, Callable
 
 import pandas as pd
 
-from tools.market_data import MarketDataResult, fetch_market_data, normalize_market_symbol
+from tools.market_data import MarketDataResult, fetch_market_data, get_company_name, normalize_market_symbol
 from tools.telegram import send_text
 
 
 @dataclass
 class ScanConfig:
     watchlist: list[str]
-    market: str = "auto"  # auto | us | cn
+    market: str = "auto"  # auto | us | hk | cn
     period: str = "5d"
+    interval: str = "1d"  # 1d | 60m | 5m
     pct_alert_threshold: float = 0.03
     rsi_overbought: float = 70.0
     rsi_oversold: float = 30.0
@@ -32,6 +33,7 @@ class WatchSignal:
     rsi: float
     priority: str  # critical | high | normal
     reason: str
+    company_name: str = ""
 
 
 def _compute_rsi(close: pd.Series, period: int = 14) -> float:
@@ -61,8 +63,15 @@ def _classify_priority(pct_change: float, threshold: float, rsi: float, overboug
 def format_signal_message(signal: WatchSignal) -> str:
     arrow = "📈" if signal.pct_change >= 0 else "📉"
     pct = round(signal.pct_change * 100, 2)
+    company = (signal.company_name or "").strip()
+    normalized_symbol = normalize_market_symbol(signal.symbol, market="auto")
+    normalized_hk_symbol = normalize_market_symbol(signal.symbol, market="hk")
+    if company and company not in {signal.symbol, normalized_symbol, normalized_hk_symbol}:
+        display = f"{signal.symbol} | {company}"
+    else:
+        display = signal.symbol
     return (
-        f"[{signal.priority.upper()}] {signal.symbol} {arrow}\n"
+        f"[{signal.priority.upper()}] {display} {arrow}\n"
         f"price={signal.price:.2f}, change={pct}%\n"
         f"rsi={signal.rsi:.2f}, reason={signal.reason}\n"
         f"time={signal.timestamp.isoformat()}"
@@ -73,10 +82,14 @@ async def analyze_symbol(
     symbol: str,
     config: ScanConfig,
     *,
-    fetcher: Callable[[str, str], Awaitable[MarketDataResult]] = fetch_market_data,
+    fetcher: Callable[..., Awaitable[MarketDataResult]] = fetch_market_data,
 ) -> WatchSignal | None:
     query_symbol = normalize_market_symbol(symbol, market=config.market)
-    result = await fetcher(query_symbol, config.period)
+    try:
+        result = await fetcher(query_symbol, config.period, config.interval)
+    except TypeError:
+        # Backward compatibility for older test doubles accepting only (symbol, period).
+        result = await fetcher(query_symbol, config.period)
     if not result.ok or not result.records:
         return None
 
@@ -106,13 +119,14 @@ async def analyze_symbol(
         rsi=rsi,
         priority=priority,
         reason=reason,
+        company_name=get_company_name(query_symbol, resolve_remote=False),
     )
 
 
 async def scan_watchlist(
     config: ScanConfig,
     *,
-    fetcher: Callable[[str, str], Awaitable[MarketDataResult]] = fetch_market_data,
+    fetcher: Callable[..., Awaitable[MarketDataResult]] = fetch_market_data,
 ) -> list[WatchSignal]:
     tasks = [analyze_symbol(symbol, config, fetcher=fetcher) for symbol in config.watchlist]
     results = await asyncio.gather(*tasks)
@@ -138,6 +152,8 @@ async def dispatch_telegram_alerts(
     selected = select_alerts_for_mode(signals, mode)
     responses: list[dict] = []
     for signal in selected:
+        if not signal.company_name or signal.company_name == signal.symbol:
+            signal.company_name = await asyncio.to_thread(get_company_name, signal.symbol, True)
         text = format_signal_message(signal)
         response = await send_text(bot_token, chat_id, text)
         responses.append(response)

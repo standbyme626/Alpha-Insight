@@ -50,13 +50,13 @@ docker compose --env-file .env run --rm test
 单次执行（推荐给 cron 调度）：
 
 ```bash
-docker compose --env-file .env run --rm dev bash -lc "export PYTHONPATH=/workspace && python scripts/hourly_watchlist_scan.py --once --watchlist 'AAPL,MSFT,TSLA' --market us --mode anomaly"
+docker compose --env-file .env run --rm dev bash -lc "export PYTHONPATH=/workspace && python scripts/hourly_watchlist_scan.py --once --watchlist 'AAPL,MSFT,TSLA' --market us --granularity hour --mode anomaly"
 ```
 
 常驻循环（默认每小时一次）：
 
 ```bash
-docker compose --env-file .env run --rm dev bash -lc "export PYTHONPATH=/workspace && python scripts/hourly_watchlist_scan.py --watchlist '贵州茅台,宁德时代,600519' --market cn"
+docker compose --env-file .env run --rm dev bash -lc "export PYTHONPATH=/workspace && python scripts/hourly_watchlist_scan.py --market cn --cn-top100 --granularity day"
 ```
 
 ### 2) 真实 LLM 连通性后端测试

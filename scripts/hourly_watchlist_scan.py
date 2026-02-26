@@ -8,11 +8,17 @@ import os
 from datetime import datetime, timezone
 
 from agents.scanner_engine import ScanConfig, dispatch_telegram_alerts, format_signal_message, scan_watchlist
+from tools.market_data import get_market_top100_watchlist
 
 
 def _parse_watchlist(raw: str) -> list[str]:
     items = [part.strip().upper() for part in raw.split(",")]
     return [item for item in items if item]
+
+
+def _granularity_to_interval(value: str) -> str:
+    mapping = {"day": "1d", "hour": "60m", "minute": "5m"}
+    return mapping.get(value, "1d")
 
 
 async def _run_once(config: ScanConfig, *, mode: str) -> int:
@@ -44,18 +50,25 @@ async def _loop(config: ScanConfig, *, mode: str, interval_seconds: int) -> None
 def main() -> int:
     parser = argparse.ArgumentParser(description="Hourly watchlist scan")
     parser.add_argument("--watchlist", default=os.getenv("WATCHLIST", "AAPL,MSFT,TSLA"))
-    parser.add_argument("--market", default=os.getenv("WATCH_MARKET", "auto"), choices=["auto", "us", "cn"])
+    parser.add_argument("--market", default=os.getenv("WATCH_MARKET", "auto"), choices=["auto", "us", "hk", "cn"])
+    parser.add_argument("--top100", action="store_true", help="Use top100 watchlist for selected market")
     parser.add_argument("--period", default=os.getenv("WATCH_PERIOD", "5d"))
+    parser.add_argument("--granularity", default=os.getenv("WATCH_GRANULARITY", "day"), choices=["day", "hour", "minute"])
     parser.add_argument("--mode", default=os.getenv("ALERT_MODE", "anomaly"), choices=["anomaly", "digest"])
     parser.add_argument("--threshold", type=float, default=float(os.getenv("ALERT_THRESHOLD", "0.03")))
     parser.add_argument("--once", action="store_true", help="Run once and exit (for cron)")
     parser.add_argument("--interval-seconds", type=int, default=3600)
     args = parser.parse_args()
 
+    watchlist = _parse_watchlist(args.watchlist)
+    if args.market in {"cn", "hk", "us"} and args.top100:
+        watchlist = get_market_top100_watchlist(args.market)[:100]
+
     config = ScanConfig(
-        watchlist=_parse_watchlist(args.watchlist),
+        watchlist=watchlist,
         market=args.market,
         period=args.period,
+        interval=_granularity_to_interval(args.granularity),
         pct_alert_threshold=args.threshold,
     )
     if args.once:

@@ -20,7 +20,7 @@ from ui.streamlit_dashboard import build_watchlist_figure
 
 @pytest.mark.asyncio
 async def test_scan_watchlist_priority_sorting() -> None:
-    async def fake_fetch(symbol: str, period: str) -> MarketDataResult:
+    async def fake_fetch(symbol: str, period: str, interval: str = "1d") -> MarketDataResult:
         base = 100.0
         if symbol == "AAPL":
             closes = [100, 106]  # +6%
@@ -97,7 +97,39 @@ def test_format_signal_message_contains_priority() -> None:
         rsi=61.2,
         priority="high",
         reason="price_or_rsi",
+        company_name="Apple Inc.",
     )
     text = format_signal_message(signal)
     assert "[HIGH]" in text
     assert "AAPL" in text
+    assert "Apple Inc." in text
+
+
+def test_format_signal_message_without_name_duplication() -> None:
+    signal = WatchSignal(
+        symbol="002916.SZ",
+        timestamp=datetime.now(timezone.utc),
+        price=100.0,
+        pct_change=0.01,
+        rsi=50.0,
+        priority="high",
+        reason="price_or_rsi",
+        company_name="002916.SZ",
+    )
+    text = format_signal_message(signal)
+    assert "002916.SZ |" not in text
+
+
+def test_format_signal_message_without_name_duplication_for_hk() -> None:
+    signal = WatchSignal(
+        symbol="0881",
+        timestamp=datetime.now(timezone.utc),
+        price=100.0,
+        pct_change=0.01,
+        rsi=50.0,
+        priority="high",
+        reason="price_or_rsi",
+        company_name="0881.HK",
+    )
+    text = format_signal_message(signal)
+    assert "0881 |" not in text
