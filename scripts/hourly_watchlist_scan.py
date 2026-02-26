@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 from datetime import datetime, timezone
+from typing import Any
 
-from agents.scanner_engine import ScanConfig, dispatch_telegram_alerts, format_signal_message, scan_watchlist
+from agents.scanner_engine import AlertSnapshotStore, ScanConfig, build_scan_trigger, format_signal_message, run_watchlist_cycle
 from tools.market_data import get_market_top100_watchlist
+from tools.telegram import TelegramNotifier
 
 
 def _parse_watchlist(raw: str) -> list[str]:
@@ -21,9 +24,50 @@ def _granularity_to_interval(value: str) -> str:
     return mapping.get(value, "1d")
 
 
-async def _run_once(config: ScanConfig, *, mode: str) -> int:
+def _parse_trigger_metadata(raw: str) -> dict[str, Any]:
+    payload = (raw or "").strip()
+    if not payload:
+        return {}
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError:
+        print("[WARN] trigger metadata is not valid JSON; ignore metadata payload.")
+        return {}
+    if not isinstance(parsed, dict):
+        print("[WARN] trigger metadata must be a JSON object; ignore metadata payload.")
+        return {}
+    return parsed
+
+
+async def _run_once(
+    config: ScanConfig,
+    *,
+    mode: str,
+    trigger_type: str,
+    trigger_id: str,
+    trigger_metadata: dict[str, Any],
+    snapshot_path: str,
+    enable_triggered_research: bool,
+) -> int:
     print(f"[DEBUG] QuantNode week4.hourly_scan Start @ {datetime.now(timezone.utc).isoformat()}")
-    signals = await scan_watchlist(config)
+    trigger = build_scan_trigger(
+        trigger_type=trigger_type,
+        trigger_id=trigger_id,
+        metadata=trigger_metadata,
+    )
+    snapshot_store = AlertSnapshotStore(snapshot_path if snapshot_path else None)
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    notifier = TelegramNotifier(bot_token, chat_id) if bot_token and chat_id else None
+    result = await run_watchlist_cycle(
+        config,
+        trigger=trigger,
+        mode=mode,
+        notifier=notifier,
+        snapshot_store=snapshot_store,
+        enable_triggered_research=enable_triggered_research,
+    )
+    signals = result.signals
     if not signals:
         print("[INFO] No signals generated.")
         return 0
@@ -31,19 +75,38 @@ async def _run_once(config: ScanConfig, *, mode: str) -> int:
     for signal in signals:
         print(format_signal_message(signal))
 
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-    if bot_token and chat_id:
-        await dispatch_telegram_alerts(signals, bot_token=bot_token, chat_id=chat_id, mode=mode)
-        print("[INFO] Telegram alerts dispatched.")
+    if notifier is not None:
+        print(f"[INFO] Notifications dispatched: {len(result.notifications)}")
     else:
         print("[WARN] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set; skip sending.")
+    print(f"[INFO] Alert snapshots persisted: {len(result.snapshots)}")
+    triggered_runs = [item.research_run_id for item in result.snapshots if item.research_run_id]
+    if triggered_runs:
+        print(f"[INFO] Triggered research run_ids: {', '.join(triggered_runs)}")
     return 0
 
 
-async def _loop(config: ScanConfig, *, mode: str, interval_seconds: int) -> None:
+async def _loop(
+    config: ScanConfig,
+    *,
+    mode: str,
+    interval_seconds: int,
+    trigger_type: str,
+    trigger_id: str,
+    trigger_metadata: dict[str, Any],
+    snapshot_path: str,
+    enable_triggered_research: bool,
+) -> None:
     while True:
-        await _run_once(config, mode=mode)
+        await _run_once(
+            config,
+            mode=mode,
+            trigger_type=trigger_type,
+            trigger_id=trigger_id,
+            trigger_metadata=trigger_metadata,
+            snapshot_path=snapshot_path,
+            enable_triggered_research=enable_triggered_research,
+        )
         await asyncio.sleep(interval_seconds)
 
 
@@ -56,6 +119,19 @@ def main() -> int:
     parser.add_argument("--granularity", default=os.getenv("WATCH_GRANULARITY", "day"), choices=["day", "hour", "minute"])
     parser.add_argument("--mode", default=os.getenv("ALERT_MODE", "anomaly"), choices=["anomaly", "digest"])
     parser.add_argument("--threshold", type=float, default=float(os.getenv("ALERT_THRESHOLD", "0.03")))
+    parser.add_argument("--trigger-type", default=os.getenv("SCAN_TRIGGER_TYPE", "scheduled"), choices=["scheduled", "event"])
+    parser.add_argument("--trigger-id", default=os.getenv("SCAN_TRIGGER_ID", ""))
+    parser.add_argument(
+        "--trigger-metadata",
+        default=os.getenv("SCAN_TRIGGER_METADATA", ""),
+        help='JSON object string, e.g. \'{"source":"news_breaking"}\'',
+    )
+    parser.add_argument("--snapshot-path", default=os.getenv("ALERT_SNAPSHOT_PATH", ""))
+    parser.add_argument(
+        "--disable-triggered-research",
+        action="store_true",
+        help="Disable auto run_unified_research on critical alerts",
+    )
     parser.add_argument("--once", action="store_true", help="Run once and exit (for cron)")
     parser.add_argument("--interval-seconds", type=int, default=3600)
     args = parser.parse_args()
@@ -71,10 +147,32 @@ def main() -> int:
         interval=_granularity_to_interval(args.granularity),
         pct_alert_threshold=args.threshold,
     )
+    trigger_metadata = _parse_trigger_metadata(args.trigger_metadata)
     if args.once:
-        return asyncio.run(_run_once(config, mode=args.mode))
+        return asyncio.run(
+            _run_once(
+                config,
+                mode=args.mode,
+                trigger_type=args.trigger_type,
+                trigger_id=args.trigger_id,
+                trigger_metadata=trigger_metadata,
+                snapshot_path=args.snapshot_path,
+                enable_triggered_research=not args.disable_triggered_research,
+            )
+        )
 
-    asyncio.run(_loop(config, mode=args.mode, interval_seconds=args.interval_seconds))
+    asyncio.run(
+        _loop(
+            config,
+            mode=args.mode,
+            interval_seconds=args.interval_seconds,
+            trigger_type=args.trigger_type,
+            trigger_id=args.trigger_id,
+            trigger_metadata=trigger_metadata,
+            snapshot_path=args.snapshot_path,
+            enable_triggered_research=not args.disable_triggered_research,
+        )
+    )
     return 0
 
 

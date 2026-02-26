@@ -2,13 +2,28 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Protocol
 
 import aiohttp
 
 
 class TelegramError(RuntimeError):
     """Raised when Telegram API returns a non-success response."""
+
+
+@dataclass
+class NotificationMessage:
+    text: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+class NotificationChannel(Protocol):
+    channel_name: str
+
+    async def send_text(self, text: str) -> dict[str, Any]:
+        ...
 
 
 async def send_text(bot_token: str, chat_id: str, text: str) -> dict:
@@ -42,3 +57,32 @@ async def send_photo(bot_token: str, chat_id: str, image_path: str, caption: str
             if response.status >= 400 or not data.get("ok"):
                 raise TelegramError(f"Telegram sendPhoto failed: {data}")
             return data
+
+
+class TelegramNotifier:
+    channel_name = "telegram"
+
+    def __init__(self, bot_token: str, chat_id: str):
+        self._bot_token = bot_token
+        self._chat_id = chat_id
+
+    async def send_text(self, text: str) -> dict[str, Any]:
+        return await send_text(self._bot_token, self._chat_id, text)
+
+
+async def dispatch_notifications(
+    messages: list[NotificationMessage],
+    *,
+    notifier: NotificationChannel,
+) -> list[dict[str, Any]]:
+    responses: list[dict[str, Any]] = []
+    for message in messages:
+        payload = await notifier.send_text(message.text)
+        responses.append(
+            {
+                "channel": notifier.channel_name,
+                "metadata": message.metadata,
+                "response": payload,
+            }
+        )
+    return responses

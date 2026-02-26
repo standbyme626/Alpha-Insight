@@ -101,6 +101,34 @@ class ResearchResult(BaseModel):
     provenance: list[ProvenanceEntry]
 
 
+class AlertSignalSnapshot(BaseModel):
+    symbol: str
+    company_name: str = ""
+    timestamp: datetime
+    price: float
+    pct_change: float
+    rsi: float
+    priority: Literal["critical", "high", "normal"]
+    reason: str
+
+
+class AlertSnapshot(BaseModel):
+    snapshot_id: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    trigger_type: Literal["scheduled", "event"]
+    trigger_id: str
+    trigger_time: datetime
+    trigger_metadata: dict[str, Any] = Field(default_factory=dict)
+    mode: Literal["anomaly", "digest"] = "anomaly"
+    signal: AlertSignalSnapshot
+    notification_channels: list[str] = Field(default_factory=list)
+    notification_dispatched: bool = False
+    research_status: Literal["skipped", "triggered", "failed"] = "skipped"
+    research_run_id: str | None = None
+    research_result: ResearchResult | None = None
+    research_error: str = ""
+
+
 class AgentState(BaseModel):
     request: str
     symbol: str = "AAPL"
