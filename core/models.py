@@ -47,6 +47,60 @@ class DataBundle(BaseModel):
         return self.model_dump(mode="json")
 
 
+class ResearchPlan(BaseModel):
+    provider: str
+    data_source: str
+    steps: list[str]
+    reason: str
+
+
+class DataBundleRef(BaseModel):
+    data_source: str
+    asof: str
+    symbol: str
+    market: str
+    interval: str
+    record_count: int
+
+
+class SandboxArtifacts(BaseModel):
+    code: str
+    stdout: str
+    stderr: str
+    backend: str
+    retry_count: int
+    success: bool
+    traceback: dict[str, Any] | None
+
+
+class FusedInsights(BaseModel):
+    summary: str
+    analysis_steps: list[str]
+    raw: dict[str, Any]
+
+
+class ProvenanceEntry(BaseModel):
+    metric: str
+    value: Any
+    source: Literal["sandbox_stdout", "sandbox_metrics", "fused_metrics", "data_bundle"]
+    pointer: str
+    note: str = ""
+
+
+class ResearchResult(BaseModel):
+    run_id: str
+    request: str
+    symbol: str
+    period: str
+    created_at: datetime
+    plan: ResearchPlan
+    data_bundle_ref: DataBundleRef
+    sandbox_artifacts: SandboxArtifacts
+    fused_insights: FusedInsights
+    metrics: dict[str, Any]
+    provenance: list[ProvenanceEntry]
+
+
 class AgentState(BaseModel):
     request: str
     symbol: str = "AAPL"

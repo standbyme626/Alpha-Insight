@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, TypedDict
+from uuid import uuid4
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, StateGraph
@@ -10,6 +12,8 @@ from langgraph.graph import END, StateGraph
 from agents.coder_engine import generate_code
 from agents.debugger_engine import build_debug_advice
 from agents.planner_engine import plan_tasks
+from agents.report_reviewer import extract_metrics_from_stdout
+from core.models import DataBundleRef, FusedInsights, ProvenanceEntry, ResearchPlan, ResearchResult, SandboxArtifacts
 from core.sandbox_manager import SandboxManager
 from tools.market_data import fetch_market_data
 
@@ -191,3 +195,193 @@ def build_repair_graph(*, checkpointer: InMemorySaver | None = None):
 
 # Backward-compatible alias.
 build_week2_graph = build_repair_graph
+
+
+def _build_data_bundle_ref(bundle: dict[str, Any] | None, *, symbol: str, interval: str) -> DataBundleRef:
+    payload = bundle or {}
+    metadata = payload.get("metadata")
+    metadata_dict = metadata if isinstance(metadata, dict) else {}
+    records = payload.get("records")
+    record_count = int(metadata_dict.get("record_count") or (len(records) if isinstance(records, list) else 0))
+    return DataBundleRef(
+        data_source=str(payload.get("data_source", "unknown")),
+        asof=str(payload.get("asof", "")),
+        symbol=str(payload.get("symbol", symbol)),
+        market=str(payload.get("market", "auto")),
+        interval=str(payload.get("interval", interval)),
+        record_count=record_count,
+    )
+
+
+def _build_metrics(
+    *,
+    sandbox: SandboxArtifacts,
+    fused_raw: dict[str, Any],
+    sandbox_metrics: dict[str, Any],
+    data_bundle_ref: DataBundleRef,
+) -> dict[str, Any]:
+    metrics: dict[str, Any] = {
+        "full_success": bool(sandbox.success),
+        "retry_count": int(sandbox.retry_count),
+        "data_record_count": int(data_bundle_ref.record_count),
+        "latest_close": float(fused_raw.get("latest_close", 0.0)),
+        "period_change_pct": float(fused_raw.get("period_change_pct", 0.0)),
+        "ma20": float(fused_raw.get("ma20", 0.0)),
+        "rsi14": float(fused_raw.get("rsi14", 0.0)),
+        "volatility_pct": float(fused_raw.get("volatility_pct", 0.0)),
+        "volume_ratio": float(fused_raw.get("volume_ratio", 0.0)),
+        "sentiment_score": float(fused_raw.get("sentiment_score", 0.0)),
+    }
+    for key, value in sandbox_metrics.items():
+        metrics[f"sandbox_{key}"] = value
+    return metrics
+
+
+def _build_provenance(
+    *,
+    sandbox: SandboxArtifacts,
+    data_bundle_ref: DataBundleRef,
+    fused_raw: dict[str, Any],
+    sandbox_metrics: dict[str, Any],
+) -> list[ProvenanceEntry]:
+    entries: list[ProvenanceEntry] = [
+        ProvenanceEntry(
+            metric="data_record_count",
+            value=data_bundle_ref.record_count,
+            source="data_bundle",
+            pointer="data_bundle_ref.record_count",
+            note="source market rows used by full + fused compute",
+        ),
+        ProvenanceEntry(
+            metric="retry_count",
+            value=sandbox.retry_count,
+            source="sandbox_metrics",
+            pointer="sandbox_artifacts.retry_count",
+        ),
+        ProvenanceEntry(
+            metric="sandbox_success",
+            value=sandbox.success,
+            source="sandbox_metrics",
+            pointer="sandbox_artifacts.success",
+        ),
+    ]
+
+    fused_metric_keys = [
+        "latest_close",
+        "period_change_pct",
+        "ma20",
+        "rsi14",
+        "volatility_pct",
+        "volume_ratio",
+        "sentiment_score",
+    ]
+    for key in fused_metric_keys:
+        if key in fused_raw:
+            entries.append(
+                ProvenanceEntry(
+                    metric=key,
+                    value=fused_raw.get(key),
+                    source="fused_metrics",
+                    pointer=f"fused_insights.raw.{key}",
+                )
+            )
+
+    for key, value in sandbox_metrics.items():
+        entries.append(
+            ProvenanceEntry(
+                metric=f"sandbox_{key}",
+                value=value,
+                source="sandbox_stdout",
+                pointer=f"sandbox_artifacts.stdout::METRICS_JSON.{key}",
+            )
+        )
+    return entries
+
+
+async def run_unified_research(
+    *,
+    request: str,
+    symbol: str,
+    period: str = "1mo",
+    interval: str = "1d",
+    max_retries: int = 2,
+    news_limit: int = 8,
+) -> dict[str, Any]:
+    run_id = f"run-{uuid4().hex[:12]}"
+    app = build_week2_graph()
+    full_output = await app.ainvoke(
+        {
+            "request": request,
+            "symbol": symbol.strip().upper(),
+            "period": period.strip(),
+            "interval": interval.strip(),
+            "max_retries": max_retries,
+        },
+        config={"configurable": {"thread_id": run_id}},
+    )
+
+    plan = ResearchPlan(
+        provider=str(full_output.get("planner_provider", "unknown")),
+        data_source=str(full_output.get("data_source", "unknown")),
+        steps=[str(step) for step in full_output.get("plan_steps", [])],
+        reason=str(full_output.get("planner_reason", "")),
+    )
+    bundle_payload = full_output.get("market_data_bundle")
+    if not isinstance(bundle_payload, dict):
+        bundle_payload = {}
+    data_bundle_ref = _build_data_bundle_ref(bundle_payload, symbol=symbol, interval=interval)
+
+    sandbox = SandboxArtifacts(
+        code=str(full_output.get("sandbox_code", "")),
+        stdout=str(full_output.get("sandbox_stdout", "")),
+        stderr=str(full_output.get("sandbox_stderr", "")),
+        backend=str(full_output.get("sandbox_backend", "unknown")),
+        retry_count=int(full_output.get("retry_count", 0)),
+        success=bool(full_output.get("success", False)),
+        traceback=full_output.get("traceback"),
+    )
+
+    from agents.market_news_engine import run_market_news_analysis
+
+    fused_raw = await run_market_news_analysis(
+        request=request,
+        symbol=symbol,
+        period=period,
+        interval=interval,
+        news_limit=news_limit,
+        market_data_bundle=bundle_payload,
+    )
+
+    fused = FusedInsights(
+        summary=str(fused_raw.get("final_assessment", "")),
+        analysis_steps=[str(step) for step in fused_raw.get("analysis_steps", [])],
+        raw=fused_raw,
+    )
+    sandbox_metrics = extract_metrics_from_stdout(sandbox.stdout) or {}
+    metrics = _build_metrics(
+        sandbox=sandbox,
+        fused_raw=fused_raw,
+        sandbox_metrics=sandbox_metrics,
+        data_bundle_ref=data_bundle_ref,
+    )
+    provenance = _build_provenance(
+        sandbox=sandbox,
+        data_bundle_ref=data_bundle_ref,
+        fused_raw=fused_raw,
+        sandbox_metrics=sandbox_metrics,
+    )
+
+    result = ResearchResult(
+        run_id=run_id,
+        request=request,
+        symbol=symbol.strip().upper(),
+        period=period.strip(),
+        created_at=datetime.now(timezone.utc),
+        plan=plan,
+        data_bundle_ref=data_bundle_ref,
+        sandbox_artifacts=sandbox,
+        fused_insights=fused,
+        metrics=metrics,
+        provenance=provenance,
+    )
+    return result.model_dump(mode="json")

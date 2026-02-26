@@ -20,9 +20,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agents.market_news_engine import run_market_news_analysis
 from agents.planner_engine import plan_tasks
-from agents.workflow_engine import build_week2_graph
+from agents.workflow_engine import run_unified_research
 from tools.market_data import (
     fetch_market_data,
     get_cn_top100_watchlist,
@@ -63,43 +62,14 @@ def _run_planner(request: str) -> dict:
     }
 
 
-def _run_full_analysis(request: str, symbol: str, period: str) -> dict:
-    app = build_week2_graph()
-    output = asyncio.run(
-        app.ainvoke(
-            {
-                "request": request,
-                "symbol": symbol.strip().upper(),
-                "period": period.strip(),
-                "max_retries": 2,
-            },
-            config={"configurable": {"thread_id": f"ui-full-{datetime.now(timezone.utc).timestamp()}"}},
-        )
-    )
-    return {
-        "success": bool(output.get("success", False)),
-        "planner_provider": str(output.get("planner_provider", "")),
-        "planner_reason": str(output.get("planner_reason", "")),
-        "data_source": str(output.get("data_source", "")),
-        "data_fetch_message": str(output.get("data_fetch_message", "")),
-        "market_data_bundle": output.get("market_data_bundle"),
-        "plan_steps": [str(step) for step in output.get("plan_steps", [])],
-        "sandbox_code": str(output.get("sandbox_code", "")),
-        "sandbox_stdout": str(output.get("sandbox_stdout", "")),
-        "sandbox_stderr": str(output.get("sandbox_stderr", "")),
-        "sandbox_backend": str(output.get("sandbox_backend", "")),
-        "traceback": output.get("traceback"),
-        "retry_count": int(output.get("retry_count", 0)),
-    }
-
-
-def _run_market_news_fused_analysis(request: str, symbol: str, period: str) -> dict:
+def _run_unified_analysis(request: str, symbol: str, period: str) -> dict:
     return asyncio.run(
-        run_market_news_analysis(
+        run_unified_research(
             request=request,
             symbol=symbol.strip().upper(),
             period=period.strip(),
             interval="1d",
+            max_retries=2,
             news_limit=8,
         )
     )
@@ -789,6 +759,23 @@ def _symbols_equivalent(left: str, right: str) -> bool:
     return bool(left_forms and right_forms and left_forms.intersection(right_forms))
 
 
+def _validate_request_symbol_consistency(request_text: str, active_symbol: str) -> list[str]:
+    normalized_active_symbol = normalize_market_symbol(active_symbol, market="auto").strip().upper()
+    request_symbols = _extract_request_symbols(request_text)
+    if not normalized_active_symbol or not request_symbols:
+        return request_symbols
+
+    conflicts = [item for item in request_symbols if not _symbols_equivalent(item, normalized_active_symbol)]
+    if conflicts:
+        conflict_text = ", ".join(conflicts)
+        raise ValueError(
+            "请求标的与当前标的冲突："
+            f"active={normalized_active_symbol}, request={conflict_text}. "
+            "请先对齐后再执行。 / Request symbol conflicts with active symbol; align before running."
+        )
+    return request_symbols
+
+
 def _build_synced_request_text(current_request: str, new_symbol: str) -> str:
     normalized_symbol = normalize_market_symbol(new_symbol, market="auto").strip().upper()
     text = str(current_request or "").strip()
@@ -1118,19 +1105,21 @@ def main() -> None:
 
     normalized_symbol_preview = _normalize_symbol_for_run(symbol, search_market)
     request_symbols = _extract_request_symbols(request)
+    request_symbol_conflicts = [
+        item
+        for item in request_symbols
+        if normalized_symbol_preview and not _symbols_equivalent(item, normalized_symbol_preview)
+    ]
     if normalized_symbol_preview:
         st.caption(f"当前分析标的 / Active Symbol: `{normalized_symbol_preview}`")
     if request_symbols:
         st.caption(f"请求中识别到的标的 / Symbols found in request: `{', '.join(request_symbols)}`")
-    request_symbol_mismatch = bool(
-        normalized_symbol_preview
-        and request_symbols
-        and not any(_symbols_equivalent(item, normalized_symbol_preview) for item in request_symbols)
-    )
+    request_symbol_mismatch = bool(normalized_symbol_preview and request_symbol_conflicts)
     if request_symbol_mismatch:
         st.warning(
-            "请求里的标的与当前代码不一致，可能导致结果混淆。"
-            " / Request symbol differs from active symbol and may produce inconsistent output."
+            "检测到请求标的冲突，执行会被阻断（fail-fast）。"
+            f" 冲突标的: {', '.join(request_symbol_conflicts)}"
+            " / Request symbol conflicts detected; execution will fail-fast."
         )
         if st.button("一键对齐请求到当前标的 / Align Request to Active Symbol"):
             st.session_state.pending_request_input = _build_synced_request_text(request, normalized_symbol_preview)
@@ -1138,7 +1127,7 @@ def main() -> None:
 
     st.caption(
         "按钮说明："
-        "运行规划=仅任务拆解；运行完整分析=执行量化流程与沙箱结果；运行行情+新闻融合分析=行情+新闻+图表。"
+        "运行规划=仅任务拆解；运行完整分析/运行行情+新闻融合分析=统一产出同一 run_id 报告对象。"
     )
     run_btn = st.button("运行规划(仅拆解) / Run Planner (Plan Only)")
     run_full_btn = st.button("运行完整分析(含执行) / Run Full Analysis (Plan+Execute)")
@@ -1184,23 +1173,26 @@ def main() -> None:
         if not request.strip() or not normalized_symbol:
             st.error("请求或代码不能为空。 / Request/Symbol is empty.")
         else:
-            with st.spinner("正在执行完整分析工作流... / Running full workflow in sandbox..."):
+            with st.spinner("正在执行统一研究工作流... / Running unified full+fused research..."):
                 try:
-                    full_output = _run_full_analysis(request, normalized_symbol, period)
+                    _validate_request_symbol_consistency(request, normalized_symbol)
+                    result = _run_unified_analysis(request, normalized_symbol, period)
+                    plan = result.get("plan", {}) if isinstance(result, dict) else {}
                     record = {
                         "time": datetime.now(timezone.utc).isoformat(),
                         "request": request,
-                        "run_mode": "full_analysis",
-                        "provider": full_output["planner_provider"] or "unknown",
-                        "data_source": full_output["data_source"] or "unknown",
-                        "steps": full_output["plan_steps"] or [],
-                        "reason": full_output["planner_reason"] or "",
-                        "full_analysis": full_output,
+                        "run_mode": "unified_research",
+                        "run_id": str(result.get("run_id", "")),
+                        "provider": str(plan.get("provider", "unknown")),
+                        "data_source": str(plan.get("data_source", "unknown")),
+                        "steps": [str(step) for step in plan.get("steps", [])],
+                        "reason": str(plan.get("reason", "")),
+                        "research_result": result,
                     }
                     st.session_state.history.insert(0, record)
-                    st.success("完整分析完成。 / Full analysis completed.")
+                    st.success(f"统一研究完成。 / Unified research completed. run_id={record['run_id']}")
                 except Exception as exc:
-                    st.error(f"完整分析失败 / Full analysis failed: {exc}")
+                    st.error(f"统一研究失败 / Unified research failed: {exc}")
 
     if run_fused_btn:
         _apply_runtime_config(
@@ -1214,29 +1206,32 @@ def main() -> None:
         if not request.strip() or not normalized_symbol:
             st.error("请求或代码不能为空。 / Request/Symbol is empty.")
         else:
-            with st.spinner("正在运行行情+新闻融合分析... / Running market+news fused analysis..."):
+            with st.spinner("正在执行统一研究工作流... / Running unified full+fused research..."):
                 try:
-                    planner_output = _run_planner(request)
-                    fused_output = _run_market_news_fused_analysis(request, normalized_symbol, period)
+                    _validate_request_symbol_consistency(request, normalized_symbol)
+                    result = _run_unified_analysis(request, normalized_symbol, period)
+                    plan = result.get("plan", {}) if isinstance(result, dict) else {}
                     record = {
                         "time": datetime.now(timezone.utc).isoformat(),
                         "request": request,
-                        "run_mode": "market_news_fused",
-                        "provider": planner_output.get("provider", "unknown"),
-                        "data_source": "api+news",
-                        "steps": planner_output.get("steps", []),
-                        "reason": planner_output.get("reason", ""),
-                        "market_news_analysis": fused_output,
+                        "run_mode": "unified_research",
+                        "run_id": str(result.get("run_id", "")),
+                        "provider": str(plan.get("provider", "unknown")),
+                        "data_source": str(plan.get("data_source", "unknown")),
+                        "steps": [str(step) for step in plan.get("steps", [])],
+                        "reason": str(plan.get("reason", "")),
+                        "research_result": result,
                     }
                     st.session_state.history.insert(0, record)
-                    st.success("行情+新闻融合分析完成。 / Market+News analysis completed.")
+                    st.success(f"统一研究完成。 / Unified research completed. run_id={record['run_id']}")
                 except Exception as exc:
-                    st.error(f"行情+新闻融合分析失败 / Market+News analysis failed: {exc}")
+                    st.error(f"统一研究失败 / Unified research failed: {exc}")
 
     if st.session_state.history:
         st.subheader("最新结果 / Latest Result")
         latest = st.session_state.history[0]
-        if latest["provider"] == "fallback":
+        research_result = latest.get("research_result")
+        if latest.get("provider") == "fallback":
             st.warning(
                 "Planner is using local fallback / 当前为本地回退规划。"
                 " Please check OPENAI_API_KEY, OPENAI_API_BASE, OPENAI_MODEL_NAME / "
@@ -1251,10 +1246,15 @@ def main() -> None:
             st.metric("步骤数 / Steps Count", len(latest["steps"]))
         run_mode_label = {
             "planner_only": "仅规划 / Plan Only",
-            "full_analysis": "完整分析 / Full Analysis",
-            "market_news_fused": "行情+新闻融合 / Market+News Fused",
+            "unified_research": "统一研究 / Unified Full+Fused",
         }.get(str(latest.get("run_mode", "")).strip(), "未知 / Unknown")
-        st.caption(f"当前运行模式 / Current Run Mode: {run_mode_label}")
+        run_id_text = str(latest.get("run_id", "")).strip()
+        if not run_id_text and isinstance(research_result, dict):
+            run_id_text = str(research_result.get("run_id", "")).strip()
+        if run_id_text:
+            st.caption(f"当前运行模式 / Current Run Mode: {run_mode_label} | run_id=`{run_id_text}`")
+        else:
+            st.caption(f"当前运行模式 / Current Run Mode: {run_mode_label}")
         plan_tab, full_tab, fused_tab = st.tabs(
             [
                 "规划 / Planning",
@@ -1265,59 +1265,76 @@ def main() -> None:
 
         with plan_tab:
             st.write("执行步骤 / Steps")
-            plan_steps = [str(step) for step in latest.get("steps", [])]
+            plan_payload = (research_result.get("plan", {}) if isinstance(research_result, dict) else {})
+            plan_steps = [str(step) for step in plan_payload.get("steps", latest.get("steps", []))]
             plan_text = "\n".join(_to_bilingual_step(step) for step in plan_steps)
             st.code(plan_text or "(none / 无)", language="text")
             st.write("理由 / Reason")
-            reason_text = str(latest.get("reason", "")).strip()
+            reason_text = str(plan_payload.get("reason", latest.get("reason", ""))).strip()
             st.info(reason_text or "(empty / 空)")
 
         with full_tab:
-            full = latest.get("full_analysis")
-            if isinstance(full, dict):
-                backend = str(full.get("sandbox_backend", "unknown")).strip() or "unknown"
+            if isinstance(research_result, dict):
+                sandbox = research_result.get("sandbox_artifacts", {})
+                bundle_ref = research_result.get("data_bundle_ref", {})
+                metrics = research_result.get("metrics", {})
+                provenance = research_result.get("provenance", [])
+                backend = str(sandbox.get("backend", "unknown")).strip() or "unknown"
                 c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Success / 成功", "Yes / 是" if full.get("success") else "No / 否")
-                c2.metric("Retry Count / 重试次数", int(full.get("retry_count", 0)))
-                c3.metric("Data Source / 数据源", full.get("data_source", ""))
+                c1.metric("Success / 成功", "Yes / 是" if sandbox.get("success") else "No / 否")
+                c2.metric("Retry Count / 重试次数", int(sandbox.get("retry_count", 0)))
+                c3.metric("Data Source / 数据源", str(bundle_ref.get("data_source", latest.get("data_source", ""))))
                 c4.metric("Sandbox Backend / 沙箱后端", backend)
 
-                stderr_text = str(full.get("sandbox_stderr", ""))
+                stderr_text = str(sandbox.get("stderr", ""))
                 if "local-process fallback" in stderr_text.lower() or "local-process-fallback" in backend:
                     st.warning("当前结果来自本地进程降级执行，不是真容器沙箱。 / Result came from local-process fallback.")
                 elif backend.startswith("docker:"):
                     st.success(f"已使用真实容器沙箱执行 / Real Docker sandbox used: `{backend}`")
 
                 st.markdown("**沙箱代码 / Sandbox Code**")
-                st.code(full.get("sandbox_code", ""), language="python")
-                bundle = full.get("market_data_bundle")
-                if isinstance(bundle, dict):
-                    evidence_payload = {
-                        "data_source": bundle.get("data_source", ""),
-                        "asof": bundle.get("asof", ""),
-                        "symbol": bundle.get("symbol", ""),
-                        "market": bundle.get("market", ""),
-                        "interval": bundle.get("interval", ""),
-                        "record_count": ((bundle.get("metadata") or {}).get("record_count", 0)),
+                st.code(sandbox.get("code", ""), language="python")
+
+                evidence_payload = {
+                    "run_id": research_result.get("run_id", ""),
+                    "bundle": {
+                        "data_source": bundle_ref.get("data_source", ""),
+                        "asof": bundle_ref.get("asof", ""),
+                        "symbol": bundle_ref.get("symbol", ""),
+                        "market": bundle_ref.get("market", ""),
+                        "interval": bundle_ref.get("interval", ""),
+                        "record_count": bundle_ref.get("record_count", 0),
+                    },
+                    "sandbox": {
                         "backend": backend,
-                        "retry_count": int(full.get("retry_count", 0)),
-                    }
-                    st.markdown("**证据链 / Evidence Chain**")
-                    st.json(evidence_payload)
-                fetch_message = str(full.get("data_fetch_message", "")).strip()
-                if fetch_message:
-                    st.caption(f"Data fetch status / 取数状态: {fetch_message}")
+                        "retry_count": int(sandbox.get("retry_count", 0)),
+                        "success": bool(sandbox.get("success", False)),
+                    },
+                    "metrics": metrics,
+                    "provenance_count": len(provenance) if isinstance(provenance, list) else 0,
+                }
+                st.markdown("**证据链 / Evidence Chain**")
+                st.json(evidence_payload)
                 st.markdown("**沙箱标准输出 / Sandbox Stdout**")
-                st.code(full.get("sandbox_stdout", "") or "(empty / 空)", language="text")
+                st.code(sandbox.get("stdout", "") or "(empty / 空)", language="text")
                 st.markdown("**沙箱错误输出 / Sandbox Stderr**")
                 st.code(stderr_text or "(empty / 空)", language="text")
                 st.markdown("**异常回溯 / Traceback**")
-                st.code(str(full.get("traceback") or "(none / 无)"), language="text")
+                st.code(str(sandbox.get("traceback") or "(none / 无)"), language="text")
+                st.markdown("**指标溯源 / Metric Provenance**")
+                st.json(provenance if isinstance(provenance, list) else [])
             else:
                 st.info("暂无完整分析沙箱产物。 / No full-analysis sandbox artifacts yet.")
 
         with fused_tab:
-            fused = latest.get("market_news_analysis")
+            fused = None
+            fused_insights = {}
+            if isinstance(research_result, dict):
+                fused_insights = research_result.get("fused_insights", {})
+                if isinstance(fused_insights, dict):
+                    fused = fused_insights.get("raw")
+            if not isinstance(fused, dict):
+                fused = latest.get("market_news_analysis")
             if isinstance(fused, dict):
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Latest Close / 最新收盘", float(fused.get("latest_close", 0.0)))
@@ -1329,7 +1346,7 @@ def main() -> None:
                 c4.metric("Sentiment / 情绪分", float(fused.get("sentiment_score", 0.0)))
 
                 st.markdown("**分析过程 / Analysis Process**")
-                steps = [str(step) for step in fused.get("analysis_steps", [])]
+                steps = [str(step) for step in fused_insights.get("analysis_steps", fused.get("analysis_steps", []))]
                 st.code("\n".join(steps) if steps else "(none / 无)", language="text")
 
                 st.markdown("**技术面快照 / Technical Snapshot**")
@@ -1419,7 +1436,8 @@ def main() -> None:
                     st.info("未获取到股票相关新闻。 / No symbol-specific headlines found.")
 
                 st.markdown("**综合判断 / Final Assessment**")
-                st.info(str(fused.get("final_assessment", "")))
+                summary = str(fused_insights.get("summary", fused.get("final_assessment", "")))
+                st.info(summary)
                 st.markdown("**综合解读 / Expanded Interpretation**")
                 st.write(
                     f"- 当前趋势：{fused.get('trend_signal_zh', '')}，情绪：{fused.get('sentiment_label_zh', '')}（{fused.get('sentiment_score', 0.0):.2f}/100）。"

@@ -7,7 +7,7 @@ import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
 from agents.planner_engine import _extract_json_object, build_fallback_plan, route_data_source
-from agents.workflow_engine import build_week2_graph
+from agents.workflow_engine import build_week2_graph, run_unified_research
 from tools.market_data import MarketDataResult, build_data_bundle
 
 
@@ -166,3 +166,58 @@ async def test_week2_checkpointer_persists_state(monkeypatch: pytest.MonkeyPatch
 
     checkpoint = checkpointer.get_tuple(config)
     assert checkpoint is not None
+
+
+@pytest.mark.asyncio
+async def test_run_unified_research_outputs_single_report_object(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_create_session(self) -> str:  # noqa: ANN001
+        return "fake"
+
+    async def fake_destroy_session(self) -> None:  # noqa: ANN001
+        return None
+
+    async def fake_execute(self, code: str) -> _FakeResult:  # noqa: ANN001
+        return _FakeResult(
+            stdout='METRICS_JSON={"fused_score":77,"strategy_return":0.12}',
+            stderr="",
+            exit_code=0,
+            images=[],
+            traceback=None,
+        )
+
+    call_args: dict[str, object] = {}
+
+    async def fake_run_market_news_analysis(**kwargs):  # noqa: ANN003
+        call_args.update(kwargs)
+        return {
+            "symbol": "AAPL",
+            "period": "1mo",
+            "latest_close": 106.0,
+            "period_change_pct": 6.0,
+            "ma20": 103.2,
+            "rsi14": 58.1,
+            "volatility_pct": 2.1,
+            "volume_ratio": 1.08,
+            "sentiment_score": 62.5,
+            "analysis_steps": ["reuse bundle", "calc metrics", "fuse output"],
+            "final_assessment": "ok",
+        }
+
+    monkeypatch.setattr("core.sandbox_manager.SandboxManager.create_session", fake_create_session)
+    monkeypatch.setattr("core.sandbox_manager.SandboxManager.destroy_session", fake_destroy_session)
+    monkeypatch.setattr("core.sandbox_manager.SandboxManager.execute", fake_execute)
+    monkeypatch.setattr("agents.workflow_engine.fetch_market_data", _fake_fetch_market_data)
+    monkeypatch.setattr("agents.market_news_engine.run_market_news_analysis", fake_run_market_news_analysis)
+
+    out = await run_unified_research(request="分析 AAPL", symbol="AAPL", period="1mo")
+
+    assert str(out["run_id"]).startswith("run-")
+    assert out["plan"]["data_source"] == "api"
+    assert out["data_bundle_ref"]["symbol"] == "AAPL"
+    assert out["data_bundle_ref"]["record_count"] == 5
+    assert out["sandbox_artifacts"]["success"] is True
+    assert out["fused_insights"]["raw"]["latest_close"] == 106.0
+    assert out["metrics"]["latest_close"] == 106.0
+    assert out["metrics"]["sandbox_fused_score"] == 77
+    assert any(item["pointer"] == "fused_insights.raw.latest_close" for item in out["provenance"])
+    assert isinstance(call_args.get("market_data_bundle"), dict)
