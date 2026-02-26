@@ -3,9 +3,11 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from tools import market_data
 from tools.market_data import (
     _normalize_dataframe,
     fetch_market_data,
+    get_company_name,
     get_cn_top100_constituents,
     get_cn_top100_watchlist,
     normalize_market_symbol,
@@ -56,3 +58,14 @@ def test_cn_top100_constituents_include_company_name() -> None:
     constituents = get_cn_top100_constituents()
     assert constituents[0]["symbol"] == "600519.SS"
     assert constituents[0]["name"]
+
+
+def test_get_company_name_us_prefers_cn_name_when_resolve_remote(monkeypatch: pytest.MonkeyPatch) -> None:
+    market_data._US_DYNAMIC_NAME_CACHE["AAPL"] = "Apple Inc."
+    market_data._US_CACHE_REFRESHED = False
+
+    def fake_refresh() -> None:
+        market_data._US_DYNAMIC_NAME_CACHE["AAPL"] = "苹果"
+
+    monkeypatch.setattr(market_data, "_refresh_us_name_cache_from_eastmoney", fake_refresh)
+    assert get_company_name("AAPL", resolve_remote=True) == "苹果"

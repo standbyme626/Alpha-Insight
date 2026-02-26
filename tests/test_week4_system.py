@@ -81,11 +81,12 @@ def test_telemetry_span_and_token_usage() -> None:
 
 def test_build_watchlist_figure() -> None:
     rows = [
-        {"symbol": "AAPL", "pct_change": 0.03, "rsi": 55.0, "priority": "high"},
-        {"symbol": "MSFT", "pct_change": -0.01, "rsi": 45.0, "priority": "normal"},
+        {"symbol": "AAPL", "company_name": "苹果", "pct_change": 0.03, "rsi": 55.0, "priority": "high"},
+        {"symbol": "MSFT", "company_name": "微软", "pct_change": -0.01, "rsi": 45.0, "priority": "normal"},
     ]
     fig = build_watchlist_figure(rows)
     assert len(fig.data) == 1
+    assert fig.data[0]["x"][0] == "AAPL(苹果)"
 
 
 def test_format_signal_message_contains_priority() -> None:
@@ -103,6 +104,10 @@ def test_format_signal_message_contains_priority() -> None:
     assert "[HIGH]" in text
     assert "AAPL" in text
     assert "Apple Inc." in text
+    assert "price/价格=" in text
+    assert "change/涨跌幅=" in text
+    assert "reason/原因=" in text
+    assert "time/时间=" in text
 
 
 def test_format_signal_message_without_name_duplication() -> None:

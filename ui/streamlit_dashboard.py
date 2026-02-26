@@ -27,25 +27,45 @@ from core.observability import QuantTelemetry
 from tools.market_data import get_market_top100_constituents, get_market_top100_watchlist
 
 
+def _format_symbol_display(symbol: str, company_name: str) -> str:
+    code = (symbol or "").strip().upper()
+    name = (company_name or "").strip()
+    if not name:
+        return code
+    if name in {code, symbol}:
+        return code
+    return f"{code}({name})"
+
+
 def build_watchlist_figure(signals: list[dict]) -> go.Figure:
     df = pd.DataFrame(signals)
     fig = go.Figure()
     if df.empty:
-        fig.update_layout(title="No signals yet")
+        fig.update_layout(title="No signals yet / 暂无信号")
         return fig
+
+    if "symbol_display" not in df.columns:
+        df["symbol_display"] = [
+            _format_symbol_display(str(row.get("symbol", "")), str(row.get("company_name", "")))
+            for _, row in df.iterrows()
+        ]
 
     color_map = {"critical": "#d62728", "high": "#ff7f0e", "normal": "#1f77b4"}
     colors = [color_map.get(item, "#1f77b4") for item in df["priority"]]
     fig.add_trace(
         go.Bar(
-            x=df["symbol"],
+            x=df["symbol_display"],
             y=df["pct_change"] * 100,
-            marker_color=colors,
+            marker_color=colors,            
             text=[f"RSI={r:.1f}" for r in df["rsi"]],
-            name="Change %",
+            name="Change % / 涨跌幅",
         )
     )
-    fig.update_layout(title="Watchlist Signals / 监控池信号", xaxis_title="Symbol / 标的", yaxis_title="% Change / 涨跌幅")
+    fig.update_layout(
+        title="Watchlist Signals / 监控池信号",
+        xaxis_title="Code(Name) / 代码(公司名)",
+        yaxis_title="% Change / 涨跌幅",
+    )
     return fig
 
 
@@ -187,7 +207,7 @@ def run_dashboard() -> None:
 
     if run_scan:
         telemetry = QuantTelemetry()
-        push_log("Planner: reading watchlist request")
+        push_log("Planner / 规划器: reading watchlist request / 读取监控列表请求")
         with telemetry.span("planner.parse_watchlist"):
             watchlist = [item.strip().upper() for item in watchlist_raw.split(",") if item.strip()]
             if market in {"CN", "HK", "US"} and use_top100:
@@ -199,17 +219,18 @@ def run_dashboard() -> None:
                 interval=_granularity_to_interval(granularity),
                 pct_alert_threshold=threshold / 100.0,
             )
-        push_log("Scheduler: dispatching concurrent market fetch tasks")
+        push_log("Scheduler / 调度器: dispatching concurrent market fetch tasks / 并发分发行情抓取任务")
         with telemetry.span("scanner.scan_watchlist"):
             signals = asyncio.run(scan_watchlist(cfg))
-        push_log(f"Engine: generated {len(signals)} signals")
-        push_log("Reviewer: classifying priorities and preparing dashboard payload")
+        push_log(f"Engine / 引擎: generated {len(signals)} signals / 生成 {len(signals)} 条信号")
+        push_log("Reviewer / 评审器: classifying priorities and preparing dashboard payload / 进行优先级分类并准备看板数据")
         with telemetry.span("reviewer.select_alert_mode"):
             selected = select_alerts_for_mode(signals, mode)
 
         rows = [
             {
                 "symbol": item.symbol,
+                "symbol_display": _format_symbol_display(item.symbol, item.company_name),
                 "price": item.price,
                 "pct_change": item.pct_change,
                 "rsi": item.rsi,
@@ -253,6 +274,7 @@ def run_dashboard() -> None:
         with tab_signals:
             st.dataframe(pd.DataFrame(rows), use_container_width=True, column_config={
                 "symbol": "Symbol / 标的",
+                "symbol_display": "Code(Name) / 代码(公司名)",
                 "price": "Price / 价格",
                 "pct_change": "PctChange / 涨跌幅",
                 "rsi": "RSI",

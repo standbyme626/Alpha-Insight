@@ -38,6 +38,7 @@ _CN_COMPANY_SYMBOL_MAP: dict[str, str] = {
 _CN_DYNAMIC_NAME_CACHE: dict[str, str] = {}
 _HK_DYNAMIC_NAME_CACHE: dict[str, str] = {}
 _US_DYNAMIC_NAME_CACHE: dict[str, str] = {}
+_US_CACHE_REFRESHED: bool = False
 
 # Curated A-share large-cap monitoring pool (100 symbols).
 CN_TOP100_SYMBOLS: list[str] = [
@@ -230,6 +231,44 @@ def _is_number_value(value: Any) -> bool:
         return False
 
 
+def _contains_cjk(text: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", text))
+
+
+def _looks_like_us_symbol(text: str) -> bool:
+    return bool(re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", text)) and "." not in text
+
+
+def _refresh_us_name_cache_from_eastmoney() -> None:
+    global _US_CACHE_REFRESHED
+    if _US_CACHE_REFRESHED:
+        return
+    url = "https://push2.eastmoney.com/api/qt/clist/get"
+    params = {
+        "pn": 1,
+        "pz": 1000,
+        "po": 1,
+        "np": 1,
+        "fltt": 2,
+        "invt": 2,
+        "fid": "f20",
+        "fields": "f12,f14",
+        "fs": "m:105,m:106,m:107",
+    }
+    try:
+        data = requests.get(url, params=params, timeout=20).json()
+    except Exception:
+        _US_CACHE_REFRESHED = True
+        return
+    diff = ((data or {}).get("data") or {}).get("diff") or []
+    for item in diff:
+        symbol = str(item.get("f12", "")).strip().upper().replace(".", "-")
+        name = str(item.get("f14", "")).strip()
+        if _looks_like_us_symbol(symbol) and name:
+            _US_DYNAMIC_NAME_CACHE[symbol] = name
+    _US_CACHE_REFRESHED = True
+
+
 def _refresh_hk_name_cache_from_eastmoney() -> None:
     if _HK_DYNAMIC_NAME_CACHE:
         return
@@ -299,6 +338,45 @@ def _fetch_hk_top100_by_market_cap_eastmoney() -> list[dict[str, str]]:
     return [{"symbol": row["symbol"], "name": row["name"]} for row in rows[:100]]
 
 
+def _fetch_us_top100_by_market_cap_eastmoney() -> list[dict[str, str]]:
+    url = "https://push2.eastmoney.com/api/qt/clist/get"
+    params = {
+        "pn": 1,
+        "pz": 8000,
+        "po": 1,
+        "np": 1,
+        "fltt": 2,
+        "invt": 2,
+        "fid": "f20",
+        "fields": "f12,f14,f20",
+        "fs": "m:105,m:106,m:107",
+    }
+    try:
+        data = requests.get(url, params=params, timeout=20).json()
+    except Exception:
+        return []
+    diff = ((data or {}).get("data") or {}).get("diff") or []
+    rows: list[dict[str, str]] = []
+    seen: set[str] = set()
+    excluded_keywords = ("ETF", "TRUST", "FUND", "3X", "2X", "BEAR", "BULL")
+    for item in diff:
+        symbol = str(item.get("f12", "")).strip().upper().replace(".", "-")
+        name = str(item.get("f14", "")).strip()
+        market_cap = item.get("f20")
+        if not _looks_like_us_symbol(symbol):
+            continue
+        if symbol in seen or not name or not _is_number_value(market_cap):
+            continue
+        upper_name = name.upper()
+        if any(key in upper_name for key in excluded_keywords):
+            continue
+        seen.add(symbol)
+        _US_DYNAMIC_NAME_CACHE[symbol] = name
+        rows.append({"symbol": symbol, "name": name, "market_cap": float(market_cap)})
+    rows.sort(key=lambda x: x["market_cap"], reverse=True)
+    return [{"symbol": row["symbol"], "name": row["name"]} for row in rows[:100]]
+
+
 def get_market_top100_constituents(market: str) -> list[dict[str, str]]:
     market_lower = market.strip().lower()
     if market_lower == "cn":
@@ -312,7 +390,9 @@ def get_market_top100_constituents(market: str) -> list[dict[str, str]]:
             rows = _fetch_hk_top100_by_market_proxy()
         return rows
     if market_lower == "us":
-        rows = _fetch_us_top100_by_market_proxy()
+        rows = _fetch_us_top100_by_market_cap_eastmoney()
+        if not rows:
+            rows = _fetch_us_top100_by_market_proxy()
         return rows
     return []
 
@@ -341,7 +421,11 @@ def get_company_name(symbol: str, resolve_remote: bool = False) -> str:
         market_guess = "auto"
     normalized = normalize_market_symbol(symbol, market=market_guess)
     if normalized in _US_DYNAMIC_NAME_CACHE:
-        return _US_DYNAMIC_NAME_CACHE[normalized]
+        cached = _US_DYNAMIC_NAME_CACHE[normalized]
+        if resolve_remote and _looks_like_us_symbol(normalized) and not _contains_cjk(cached):
+            _refresh_us_name_cache_from_eastmoney()
+            return _US_DYNAMIC_NAME_CACHE.get(normalized, cached)
+        return cached
     if normalized in _HK_DYNAMIC_NAME_CACHE:
         return _HK_DYNAMIC_NAME_CACHE[normalized]
     if normalized in _CN_DYNAMIC_NAME_CACHE:
@@ -352,6 +436,10 @@ def get_company_name(symbol: str, resolve_remote: bool = False) -> str:
     if not resolve_remote:
         return normalized
     try:
+        if _looks_like_us_symbol(normalized):
+            _refresh_us_name_cache_from_eastmoney()
+            if normalized in _US_DYNAMIC_NAME_CACHE:
+                return _US_DYNAMIC_NAME_CACHE[normalized]
         if normalized.endswith(".HK"):
             hk_name = _fetch_hk_name_from_sina(normalized)
             if hk_name and hk_name != normalized:

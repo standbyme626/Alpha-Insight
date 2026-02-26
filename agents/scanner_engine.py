@@ -72,9 +72,9 @@ def format_signal_message(signal: WatchSignal) -> str:
         display = signal.symbol
     return (
         f"[{signal.priority.upper()}] {display} {arrow}\n"
-        f"price={signal.price:.2f}, change={pct}%\n"
-        f"rsi={signal.rsi:.2f}, reason={signal.reason}\n"
-        f"time={signal.timestamp.isoformat()}"
+        f"price/价格={signal.price:.2f}, change/涨跌幅={pct}%\n"
+        f"rsi/相对强弱={signal.rsi:.2f}, reason/原因={signal.reason}\n"
+        f"time/时间={signal.timestamp.isoformat()}"
     )
 
 
