@@ -5,8 +5,8 @@ from dataclasses import dataclass
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
-from agents.week2_planner import _extract_json_object, build_fallback_plan, route_data_source
-from agents.week2_workflow import build_week2_graph
+from agents.planner_engine import _extract_json_object, build_fallback_plan, route_data_source
+from agents.workflow_engine import build_week2_graph
 
 
 @dataclass

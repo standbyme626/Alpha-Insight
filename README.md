@@ -11,12 +11,13 @@ Alpha-Insight 是一个基于 LangGraph 的多 Agent 量化投研系统，支持
 
 ## 目录结构
 
-- `agents/`：各周工作流与 Agent 逻辑（`week2_*`, `week3_*`, `week4_engine.py`）
+- `agents/`：工作流与 Agent 逻辑（`planner_engine.py`, `workflow_engine.py`, `report_workflow.py`, `scanner_engine.py`）
 - `core/`：沙箱、模型、安全策略、观测模块
 - `tools/`：行情、Telegram、产物提取
 - `scripts/`：集成脚本、定时任务脚本、真实 LLM 测试脚本
 - `ui/`：前端页面（Streamlit）
 - `tests/`：Week1-Week4 的 pytest 测试
+- `models/`：模型目录（本项目当前主要使用远程 API 模型，见 `models/MODELS.md`）
 
 ## 环境准备
 

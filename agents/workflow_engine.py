@@ -7,9 +7,9 @@ from typing import Any, TypedDict
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, StateGraph
 
-from agents.week2_coder import generate_code
-from agents.week2_debugger import build_debug_advice
-from agents.week2_planner import plan_tasks
+from agents.coder_engine import generate_code
+from agents.debugger_engine import build_debug_advice
+from agents.planner_engine import plan_tasks
 from core.sandbox_manager import SandboxManager
 
 
@@ -104,7 +104,7 @@ def _after_executor(state: Week2GraphState) -> str:
     return "done"
 
 
-def build_week2_graph(*, checkpointer: InMemorySaver | None = None):
+def build_repair_graph(*, checkpointer: InMemorySaver | None = None):
     print("[DEBUG] QuantNode week2.build_week2_graph Start")
     graph = StateGraph(Week2GraphState)
     graph.add_node("planner", planner_node)
@@ -127,3 +127,7 @@ def build_week2_graph(*, checkpointer: InMemorySaver | None = None):
 
     cp = checkpointer if checkpointer is not None else InMemorySaver()
     return graph.compile(checkpointer=cp)
+
+
+# Backward-compatible alias.
+build_week2_graph = build_repair_graph

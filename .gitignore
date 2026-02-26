@@ -1,0 +1,15 @@
+# Python cache/artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+.venv_local/
+venv/
+
+# Test/cache tooling
+.pytest_cache/
+
+# Local environment overrides
+.env.local

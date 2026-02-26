@@ -7,7 +7,7 @@ import asyncio
 import os
 from datetime import datetime, timezone
 
-from agents.week4_engine import ScanConfig, dispatch_telegram_alerts, format_signal_message, scan_watchlist
+from agents.scanner_engine import ScanConfig, dispatch_telegram_alerts, format_signal_message, scan_watchlist
 
 
 def _parse_watchlist(raw: str) -> list[str]:

@@ -8,7 +8,7 @@ from datetime import datetime
 
 import streamlit as st
 
-from agents.week2_planner import plan_tasks
+from agents.planner_engine import plan_tasks
 
 
 def _mask_key(key: str) -> str:

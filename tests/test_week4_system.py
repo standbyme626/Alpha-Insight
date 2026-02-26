@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pandas as pd
 import pytest
 
-from agents.week4_engine import (
+from agents.scanner_engine import (
     ScanConfig,
     WatchSignal,
     format_signal_message,

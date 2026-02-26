@@ -11,7 +11,7 @@ def _sanitize(value: str, fallback: str) -> str:
     return value if value else fallback
 
 
-def build_week3_code(state: dict[str, Any]) -> str:
+def build_report_code(state: dict[str, Any]) -> str:
     symbol = _sanitize(str(state.get("symbol", "AAPL")), "AAPL")
     period = _sanitize(str(state.get("period", "6mo")), "6mo")
     sentiment_score = float(state.get("sentiment_score", 0.0))
@@ -162,3 +162,7 @@ print("ARTIFACT_HTML=" + str(html_path))
 print("ARTIFACT_PNG=" + str(png_path))
 print("ARTIFACT_PDF=" + str(pdf_path))
 """.strip()
+
+
+# Backward-compatible alias.
+build_week3_code = build_report_code

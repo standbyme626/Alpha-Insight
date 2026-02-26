@@ -8,8 +8,8 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.types import interrupt
 
-from agents.week3_coder import build_week3_code
-from agents.week3_reviewer import build_markdown_report, extract_metrics_from_stdout
+from agents.report_coder import build_report_code
+from agents.report_reviewer import build_markdown_report, extract_metrics_from_stdout
 from core.sandbox_manager import SandboxManager
 from tools.artifact_extractor import build_transfer_payload
 
@@ -52,7 +52,7 @@ async def planner_node(state: Week3GraphState) -> Week3GraphState:
 
 async def coder_node(state: Week3GraphState) -> Week3GraphState:
     print("[DEBUG] QuantNode week3.coder_node Start")
-    return {"sandbox_code": build_week3_code(state)}
+    return {"sandbox_code": build_report_code(state)}
 
 
 async def executor_node(state: Week3GraphState) -> Week3GraphState:
@@ -140,7 +140,7 @@ def _route_after_executor(state: Week3GraphState) -> str:
     return "reviewer" if state.get("traceback") is None else "done"
 
 
-def build_week3_graph(*, checkpointer: InMemorySaver | None = None):
+def build_report_graph(*, checkpointer: InMemorySaver | None = None):
     print("[DEBUG] QuantNode week3.build_week3_graph Start")
     graph = StateGraph(Week3GraphState)
     graph.add_node("planner", planner_node)
@@ -165,3 +165,7 @@ def build_week3_graph(*, checkpointer: InMemorySaver | None = None):
 
     cp = checkpointer if checkpointer is not None else InMemorySaver()
     return graph.compile(checkpointer=cp)
+
+
+# Backward-compatible alias.
+build_week3_graph = build_report_graph

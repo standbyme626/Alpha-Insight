@@ -6,9 +6,9 @@ from pathlib import Path
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
-from agents.week3_coder import build_week3_code
-from agents.week3_reviewer import extract_metrics_from_stdout
-from agents.week3_workflow import build_week3_graph, hitl_node, reviewer_node
+from agents.report_coder import build_week3_code
+from agents.report_reviewer import extract_metrics_from_stdout
+from agents.report_workflow import build_week3_graph, hitl_node, reviewer_node
 from tools.artifact_extractor import build_transfer_payload
 
 
@@ -80,7 +80,7 @@ async def test_week3_workflow_with_hitl_approved(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr("core.sandbox_manager.SandboxManager.create_session", fake_create_session)
     monkeypatch.setattr("core.sandbox_manager.SandboxManager.destroy_session", fake_destroy_session)
     monkeypatch.setattr("core.sandbox_manager.SandboxManager.execute", fake_execute)
-    monkeypatch.setattr("agents.week3_workflow.interrupt", lambda payload: True)
+    monkeypatch.setattr("agents.report_workflow.interrupt", lambda payload: True)
 
     app = build_week3_graph()
     output = await app.ainvoke(
@@ -143,7 +143,7 @@ async def test_week3_checkpointer_memory(monkeypatch: pytest.MonkeyPatch, tmp_pa
     monkeypatch.setattr("core.sandbox_manager.SandboxManager.create_session", fake_create_session)
     monkeypatch.setattr("core.sandbox_manager.SandboxManager.destroy_session", fake_destroy_session)
     monkeypatch.setattr("core.sandbox_manager.SandboxManager.execute", fake_execute)
-    monkeypatch.setattr("agents.week3_workflow.interrupt", lambda payload: True)
+    monkeypatch.setattr("agents.report_workflow.interrupt", lambda payload: True)
 
     cp = InMemorySaver()
     app = build_week3_graph(checkpointer=cp)
@@ -157,7 +157,7 @@ async def test_week3_checkpointer_memory(monkeypatch: pytest.MonkeyPatch, tmp_pa
 
 @pytest.mark.asyncio
 async def test_week3_hitl_reject(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("agents.week3_workflow.interrupt", lambda payload: False)
+    monkeypatch.setattr("agents.report_workflow.interrupt", lambda payload: False)
     out = await hitl_node({"recommendation": "BUY", "symbol": "AAPL", "metrics": {"fused_score": 80}})
     assert out["hitl_status"] == "rejected"
     assert out["human_approved"] is False

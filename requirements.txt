@@ -3,7 +3,7 @@ numpy
 matplotlib
 yfinance
 scipy
-ta-lib-bin
+TA-Lib
 pydantic
 langgraph
 aiohttp

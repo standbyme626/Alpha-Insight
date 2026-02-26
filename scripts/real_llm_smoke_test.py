@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 
-from agents.week2_planner import plan_tasks
+from agents.planner_engine import plan_tasks
 
 
 async def _run_case(request: str) -> None:

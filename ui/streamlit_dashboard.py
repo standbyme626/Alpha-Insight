@@ -8,7 +8,7 @@ from datetime import datetime
 import pandas as pd
 import plotly.graph_objects as go
 
-from agents.week4_engine import ScanConfig, scan_watchlist
+from agents.scanner_engine import ScanConfig, scan_watchlist
 
 
 def build_watchlist_figure(signals: list[dict]) -> go.Figure:
