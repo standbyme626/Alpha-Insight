@@ -47,6 +47,7 @@ class SandboxExecutionResult:
     exit_code: int
     images: list[str]
     output_files: list[str]
+    execution_backend: str
 
 
 class LocalDockerSandbox:
@@ -54,7 +55,7 @@ class LocalDockerSandbox:
 
     def __init__(
         self,
-        image: str = "quant-sandbox",
+        image: str = "quant-sandbox:latest",
         timeout_seconds: int = 30,
         memory_limit: str = "512m",
         outputs_dir: str = "storage/outputs",
@@ -143,6 +144,7 @@ class LocalDockerSandbox:
                         exit_code=exit_code,
                         images=images,
                         output_files=output_files,
+                        execution_backend=f"docker:{self.image}",
                     )
                 )
             except SandboxError:

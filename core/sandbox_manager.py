@@ -35,6 +35,7 @@ class SandboxResult:
     images: list[str]
     output_files: list[str]
     traceback: StructuredTraceback | None
+    execution_backend: str = "unknown"
 
 
 class SandboxManager:
@@ -85,6 +86,7 @@ class SandboxManager:
                 images=payload.get("images", []),
                 output_files=payload.get("output_files", payload.get("images", [])),
                 traceback=tb,
+                execution_backend=str(payload.get("execution_backend", "local-docker")),
             )
 
         payload = await asyncio.to_thread(self._execute_e2b_code, code)
@@ -96,6 +98,7 @@ class SandboxManager:
             images=payload.get("images", []),
             output_files=payload.get("output_files", payload.get("images", [])),
             traceback=tb,
+            execution_backend=str(payload.get("execution_backend", "e2b")),
         )
 
     async def destroy_session(self) -> None:
@@ -135,6 +138,7 @@ class SandboxManager:
             "exit_code": int(exit_code),
             "images": [],
             "output_files": [],
+            "execution_backend": "e2b",
         }
 
     def _safe_close_e2b_session(self) -> None:
@@ -224,6 +228,7 @@ class SandboxManager:
                     "exit_code": 124,
                     "images": [],
                     "output_files": [],
+                    "execution_backend": "local-process-fallback",
                 }
 
             fallback_note = (
@@ -237,4 +242,5 @@ class SandboxManager:
                 "exit_code": proc.returncode or 0,
                 "images": [],
                 "output_files": [],
+                "execution_backend": "local-process-fallback",
             }

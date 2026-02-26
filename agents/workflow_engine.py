@@ -26,6 +26,7 @@ class Week2GraphState(TypedDict, total=False):
     sandbox_code: str
     sandbox_stdout: str
     sandbox_stderr: str
+    sandbox_backend: str
     traceback: dict[str, Any] | None
 
     debug_advice: str
@@ -81,6 +82,7 @@ async def executor_node(state: Week2GraphState) -> Week2GraphState:
     return {
         "sandbox_stdout": result.stdout,
         "sandbox_stderr": result.stderr,
+        "sandbox_backend": str(getattr(result, "execution_backend", "unknown")),
         "traceback": tb,
         "retry_count": retry_count,
         "success": tb is None,
