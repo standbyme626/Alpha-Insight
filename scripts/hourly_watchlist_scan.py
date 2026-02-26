@@ -83,6 +83,11 @@ async def _run_once(
     triggered_runs = [item.research_run_id for item in result.snapshots if item.research_run_id]
     if triggered_runs:
         print(f"[INFO] Triggered research run_ids: {', '.join(triggered_runs)}")
+    print(f"[INFO] Runtime metrics: {json.dumps(result.runtime_metrics, ensure_ascii=False)}")
+    if result.alarms:
+        print("[WARN] Threshold alarms triggered:")
+        for alarm in result.alarms:
+            print(f"  - [{alarm['severity']}] {alarm['rule']}: {alarm['message']}")
     return 0
 
 
@@ -119,6 +124,9 @@ def main() -> int:
     parser.add_argument("--granularity", default=os.getenv("WATCH_GRANULARITY", "day"), choices=["day", "hour", "minute"])
     parser.add_argument("--mode", default=os.getenv("ALERT_MODE", "anomaly"), choices=["anomaly", "digest"])
     parser.add_argument("--threshold", type=float, default=float(os.getenv("ALERT_THRESHOLD", "0.03")))
+    parser.add_argument("--fallback-spike-rate", type=float, default=float(os.getenv("FALLBACK_SPIKE_RATE", "0.25")))
+    parser.add_argument("--failure-spike-count", type=int, default=int(os.getenv("FAILURE_SPIKE_COUNT", "3")))
+    parser.add_argument("--latency-anomaly-ms", type=float, default=float(os.getenv("LATENCY_ANOMALY_MS", "2500")))
     parser.add_argument("--trigger-type", default=os.getenv("SCAN_TRIGGER_TYPE", "scheduled"), choices=["scheduled", "event"])
     parser.add_argument("--trigger-id", default=os.getenv("SCAN_TRIGGER_ID", ""))
     parser.add_argument(
@@ -146,6 +154,9 @@ def main() -> int:
         period=args.period,
         interval=_granularity_to_interval(args.granularity),
         pct_alert_threshold=args.threshold,
+        fallback_spike_rate=args.fallback_spike_rate,
+        failure_spike_count=args.failure_spike_count,
+        latency_anomaly_ms=args.latency_anomaly_ms,
     )
     trigger_metadata = _parse_trigger_metadata(args.trigger_metadata)
     if args.once:

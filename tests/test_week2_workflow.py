@@ -127,6 +127,8 @@ async def test_week2_self_correction_loop(monkeypatch: pytest.MonkeyPatch) -> No
     assert "yfinance" not in output["sandbox_code"]
     assert "bundle_meta" in output["sandbox_code"]
     assert output["market_data_bundle"]["metadata"]["record_count"] == 5
+    assert len(output["failure_events"]) == 1
+    assert output["failure_events"][0]["cluster"] == "sandbox"
 
 
 @pytest.mark.asyncio
@@ -219,5 +221,11 @@ async def test_run_unified_research_outputs_single_report_object(monkeypatch: py
     assert out["fused_insights"]["raw"]["latest_close"] == 106.0
     assert out["metrics"]["latest_close"] == 106.0
     assert out["metrics"]["sandbox_fused_score"] == 77
+    assert "runtime_market_data_latency_ms" in out["metrics"]
+    assert "runtime_executor_latency_ms" in out["metrics"]
+    assert out["metrics"]["runtime_fallback_used"] is False
+    assert out["metrics"]["runtime_retry_count"] == 0
+    assert out["metrics"]["runtime_failure_count"] == 0
+    assert isinstance(out["metrics"]["runtime_failure_clusters"], dict)
     assert any(item["pointer"] == "fused_insights.raw.latest_close" for item in out["provenance"])
     assert isinstance(call_args.get("market_data_bundle"), dict)

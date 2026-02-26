@@ -14,6 +14,7 @@ from agents.scanner_engine import (
     format_signal_message,
     run_watchlist_cycle,
     scan_watchlist,
+    scan_watchlist_with_diagnostics,
     select_alerts_for_mode,
 )
 from core.guardrails import GuardrailError, validate_sandbox_code
@@ -92,10 +93,15 @@ def test_telemetry_span_and_token_usage() -> None:
     with telemetry.span("week4.scan"):
         _ = 1 + 1
     telemetry.add_token_usage(prompt_tokens=12, completion_tokens=8)
+    telemetry.record_retry(node="week4.scan", retry_count=2)
+    telemetry.record_fallback(node="week4.scan", used_fallback=True, reason="local-process")
     events = telemetry.flush()
+    metrics = telemetry.flush_metrics()
     assert len(events) == 2
     assert events[0].name == "week4.scan"
     assert events[0].status == "ok"
+    assert any(item.name == "runtime.retry_count" for item in metrics)
+    assert any(item.name == "runtime.fallback_count" for item in metrics)
 
 
 def test_build_watchlist_figure() -> None:
@@ -325,6 +331,88 @@ async def test_run_watchlist_cycle_triggers_research_and_persists_snapshot(tmp_p
     assert len(result.notifications) == 2
     assert len(notifier.messages) == 2
     assert "research_run_id=run-auto-critical-1" in notifier.messages[0]
+    assert result.runtime_metrics["failure_count"] == 0
+    assert result.failure_clusters == {}
+
+
+@pytest.mark.asyncio
+async def test_scan_watchlist_with_diagnostics_and_threshold_alarms() -> None:
+    async def fake_fetch(symbol: str, period: str, interval: str = "1d") -> MarketDataResult:
+        if symbol == "FAIL":
+            return MarketDataResult(ok=False, symbol=symbol, message="no data", records=[])
+        closes = [100, 106] if symbol == "AAPL" else [100, 103]
+        df = pd.DataFrame(
+            {
+                "Date": ["2026-01-01", "2026-01-02"],
+                "Close": closes,
+                "Open": [100, 100],
+                "High": [101, 107],
+                "Low": [99, 99],
+                "Volume": [1, 1],
+            }
+        )
+        return MarketDataResult(ok=True, symbol=symbol, message="ok", records=df.to_dict(orient="records"))
+
+    cfg = ScanConfig(
+        watchlist=["AAPL", "FAIL"],
+        pct_alert_threshold=0.03,
+        failure_spike_count=1,
+        latency_anomaly_ms=0.0,
+    )
+    signals, failures, fallback_count, scan_latency_ms = await scan_watchlist_with_diagnostics(cfg, fetcher=fake_fetch)
+    assert [item.symbol for item in signals] == ["AAPL"]
+    assert fallback_count == 0
+    assert scan_latency_ms >= 0
+    assert len(failures) == 1
+    assert failures[0].cluster == "data"
+
+    trigger = build_scan_trigger(trigger_type="scheduled", trigger_id="sched-alarm")
+    result = await run_watchlist_cycle(
+        cfg,
+        trigger=trigger,
+        mode="anomaly",
+        fetcher=fake_fetch,
+        enable_triggered_research=False,
+    )
+    rules = {item["rule"] for item in result.alarms}
+    assert "failure_spike" in rules
+    assert "latency_anomaly" in rules
+    assert result.failure_clusters.get("data") == 1
+
+
+@pytest.mark.asyncio
+async def test_run_watchlist_cycle_triggers_fallback_spike_alarm_with_legacy_fetcher() -> None:
+    async def legacy_fetch(symbol: str, period: str) -> MarketDataResult:
+        df = pd.DataFrame(
+            {
+                "Date": ["2026-01-01", "2026-01-02"],
+                "Close": [100, 106],
+                "Open": [100, 100],
+                "High": [101, 107],
+                "Low": [99, 99],
+                "Volume": [1, 1],
+            }
+        )
+        return MarketDataResult(ok=True, symbol=symbol, message="ok", records=df.to_dict(orient="records"))
+
+    cfg = ScanConfig(
+        watchlist=["AAPL"],
+        pct_alert_threshold=0.03,
+        fallback_spike_rate=0.1,
+        failure_spike_count=5,
+        latency_anomaly_ms=999999.0,
+    )
+    trigger = build_scan_trigger(trigger_type="scheduled", trigger_id="sched-fallback")
+    result = await run_watchlist_cycle(
+        cfg,
+        trigger=trigger,
+        mode="anomaly",
+        fetcher=legacy_fetch,  # type: ignore[arg-type]
+        enable_triggered_research=False,
+    )
+    rules = {item["rule"] for item in result.alarms}
+    assert "fallback_spike" in rules
+    assert result.runtime_metrics["fallback_count"] == 1
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from typing import Any, TypedDict
 from uuid import uuid4
@@ -14,6 +15,7 @@ from agents.debugger_engine import build_debug_advice
 from agents.planner_engine import plan_tasks
 from agents.report_reviewer import extract_metrics_from_stdout
 from core.models import DataBundleRef, FusedInsights, ProvenanceEntry, ResearchPlan, ResearchResult, SandboxArtifacts
+from core.observability import FailureEvent, aggregate_failure_clusters, aggregate_failure_tags, classify_failure
 from core.sandbox_manager import SandboxManager
 from tools.market_data import fetch_market_data
 
@@ -42,6 +44,10 @@ class Week2GraphState(TypedDict, total=False):
     max_retries: int
     success: bool
     inject_failure: bool
+    market_data_latency_ms: float
+    executor_latency_ms: float
+    fallback_used: bool
+    failure_events: list[dict[str, Any]]
 
 
 async def planner_node(state: Week2GraphState) -> Week2GraphState:
@@ -60,12 +66,19 @@ async def planner_node(state: Week2GraphState) -> Week2GraphState:
 
 async def market_data_node(state: Week2GraphState) -> Week2GraphState:
     print("[DEBUG] QuantNode week2.market_data_node Start")
+    started_at = time.perf_counter()
     symbol = str(state.get("symbol", "AAPL"))
     period = str(state.get("period", "1mo"))
     interval = str(state.get("interval", "1d"))
     result = await fetch_market_data(symbol, period=period, interval=interval)
+    latency_ms = (time.perf_counter() - started_at) * 1000
 
     if not result.ok or not result.records:
+        failure = classify_failure(
+            source="workflow.market_data",
+            error_type="DataFetchError",
+            message=result.message,
+        )
         return {
             "data_fetch_message": result.message,
             "traceback": {
@@ -77,6 +90,8 @@ async def market_data_node(state: Week2GraphState) -> Week2GraphState:
             "success": False,
             "sandbox_stdout": "",
             "sandbox_stderr": result.message,
+            "market_data_latency_ms": latency_ms,
+            "failure_events": [failure.to_dict()],
         }
 
     bundle_payload = result.bundle.to_serializable_dict() if result.bundle else {
@@ -91,6 +106,8 @@ async def market_data_node(state: Week2GraphState) -> Week2GraphState:
         "market_data_bundle": bundle_payload,
         "data_fetch_message": result.message,
         "traceback": None,
+        "market_data_latency_ms": latency_ms,
+        "failure_events": list(state.get("failure_events", [])),
     }
 
 
@@ -106,12 +123,14 @@ async def executor_node(state: Week2GraphState) -> Week2GraphState:
     print("[DEBUG] QuantNode week2.executor_node Start")
     code = state.get("sandbox_code", "")
     manager = SandboxManager()
+    started_at = time.perf_counter()
 
     await manager.create_session()
     try:
         result = await manager.execute(code)
     finally:
         await manager.destroy_session()
+    latency_ms = (time.perf_counter() - started_at) * 1000
 
     tb = None
     if result.traceback:
@@ -122,6 +141,19 @@ async def executor_node(state: Week2GraphState) -> Week2GraphState:
             "raw": result.traceback.raw,
         }
 
+    backend = str(getattr(result, "execution_backend", "unknown"))
+    backend_lower = backend.lower()
+    used_fallback = "fallback" in backend_lower or "local-process" in backend_lower
+    failure_events = list(state.get("failure_events", []))
+    if tb:
+        failure = classify_failure(
+            source="workflow.executor",
+            error_type=str(tb.get("error_type", "RuntimeError")),
+            message=str(tb.get("message", "")),
+            backend=backend,
+        )
+        failure_events.append(failure.to_dict())
+
     retry_count = int(state.get("retry_count", 0))
     if tb:
         retry_count += 1
@@ -129,10 +161,13 @@ async def executor_node(state: Week2GraphState) -> Week2GraphState:
     return {
         "sandbox_stdout": result.stdout,
         "sandbox_stderr": result.stderr,
-        "sandbox_backend": str(getattr(result, "execution_backend", "unknown")),
+        "sandbox_backend": backend,
         "traceback": tb,
         "retry_count": retry_count,
         "success": tb is None,
+        "executor_latency_ms": latency_ms,
+        "fallback_used": used_fallback,
+        "failure_events": failure_events,
     }
 
 
@@ -358,12 +393,26 @@ async def run_unified_research(
         raw=fused_raw,
     )
     sandbox_metrics = extract_metrics_from_stdout(sandbox.stdout) or {}
+    failure_events_raw = full_output.get("failure_events", [])
+    failure_events: list[FailureEvent] = []
+    if isinstance(failure_events_raw, list):
+        for item in failure_events_raw:
+            if isinstance(item, dict):
+                failure_events.append(FailureEvent.from_dict(item))
     metrics = _build_metrics(
         sandbox=sandbox,
         fused_raw=fused_raw,
         sandbox_metrics=sandbox_metrics,
         data_bundle_ref=data_bundle_ref,
     )
+    metrics["runtime_market_data_latency_ms"] = round(float(full_output.get("market_data_latency_ms", 0.0)), 3)
+    metrics["runtime_executor_latency_ms"] = round(float(full_output.get("executor_latency_ms", 0.0)), 3)
+    metrics["runtime_fallback_used"] = bool(full_output.get("fallback_used", False))
+    metrics["runtime_retry_count"] = int(sandbox.retry_count)
+    metrics["runtime_success"] = bool(sandbox.success)
+    metrics["runtime_failure_count"] = len(failure_events)
+    metrics["runtime_failure_clusters"] = aggregate_failure_clusters(failure_events)
+    metrics["runtime_failure_tags"] = aggregate_failure_tags(failure_events)
     provenance = _build_provenance(
         sandbox=sandbox,
         data_bundle_ref=data_bundle_ref,

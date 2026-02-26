@@ -18,13 +18,17 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from agents.scanner_engine import (
     ScanConfig,
+    build_scan_trigger,
     dispatch_telegram_alerts,
     format_signal_message,
-    scan_watchlist,
-    select_alerts_for_mode,
+    run_watchlist_cycle,
 )
 from core.observability import QuantTelemetry
-from tools.market_data import get_market_top100_constituents, get_market_top100_watchlist
+from tools.market_data import (
+    get_cn_top100_watchlist,
+    get_company_names_batch,
+    get_market_top100_watchlist,
+)
 
 
 def _format_symbol_display(symbol: str, company_name: str) -> str:
@@ -151,6 +155,29 @@ def _granularity_to_interval(value: str) -> str:
     return mapping.get(value, "1d")
 
 
+def _safe_get_top100_symbols(market: str) -> list[str]:
+    market_lower = market.strip().lower()
+    if market_lower == "cn":
+        return get_cn_top100_watchlist(use_live_market_cap=False)
+    try:
+        return get_market_top100_watchlist(market_lower)
+    except Exception:
+        return []
+
+
+def _build_visible_constituents(market: str, visible_count: int) -> pd.DataFrame:
+    market_lower = market.strip().lower()
+    symbols = _safe_get_top100_symbols(market)
+    visible_symbols = symbols[:visible_count]
+    name_map = get_company_names_batch(visible_symbols, market=market_lower, resolve_remote=False)
+    rows: list[dict[str, str]] = []
+    for symbol in visible_symbols:
+        normalized = symbol.strip().upper()
+        name = name_map.get(normalized, normalized)
+        rows.append({"symbol": symbol, "name": name or symbol})
+    return pd.DataFrame(rows)
+
+
 def run_dashboard() -> None:
     import streamlit as st
 
@@ -170,7 +197,7 @@ def run_dashboard() -> None:
         )
         granularity = st.selectbox("Granularity / 粒度", ["day", "hour", "minute"], index=0)
         if market in {"CN", "HK", "US"}:
-            default_watchlist = ",".join(get_market_top100_watchlist(market.lower())[:100]) if use_top100 else (
+            default_watchlist = ",".join(_safe_get_top100_symbols(market)[:100]) if use_top100 else (
                 "贵州茅台,宁德时代,招商银行,600519,000001" if market == "CN" else "AAPL,MSFT,TSLA,NVDA"
             )
         else:
@@ -179,20 +206,30 @@ def run_dashboard() -> None:
         period = st.selectbox("Period / 时间区间", ["5d", "1mo", "3mo"], index=0)
         mode = st.selectbox("Alert Mode / 告警模式", ["anomaly", "digest"], index=0)
         threshold = st.slider("Alert Threshold (%) / 阈值", min_value=1.0, max_value=10.0, value=3.0)
+        fallback_spike_rate = st.slider("Fallback Spike Threshold (%) / 回退占比阈值", min_value=5.0, max_value=100.0, value=25.0)
+        failure_spike_count = st.slider("Failure Spike Count / 失败数阈值", min_value=1, max_value=20, value=3)
+        latency_anomaly_ms = st.slider("Latency Anomaly (ms) / 延迟阈值", min_value=100, max_value=20000, value=2500, step=100)
         send_to_telegram = st.checkbox("Send Telegram / 发送电报", value=False)
         run_scan = st.button("点击分析 / Analyze Now")
         if market in {"CN", "HK", "US"} and use_top100:
             st.markdown("**Top100 Constituents / 市值前100成分（代码+公司名）**")
-            cache_key = f"top100_df_{market.lower()}"
-            if cache_key not in st.session_state:
-                with st.spinner("Loading company names / 正在加载公司名..."):
-                    st.session_state[cache_key] = pd.DataFrame(get_market_top100_constituents(market.lower()))
+            visible_key = f"top100_visible_{market.lower()}"
+            if visible_key not in st.session_state:
+                st.session_state[visible_key] = 10
+            visible_count = int(st.session_state[visible_key])
+
+            with st.spinner("Loading visible rows / 加载可见行..."):
+                current_df = _build_visible_constituents(market, visible_count)
             st.dataframe(
-                st.session_state[cache_key],
+                current_df,
                 use_container_width=True,
-                height=420,
+                height=300,
                 column_config={"symbol": "Symbol / 代码", "name": "Company / 公司名"},
             )
+            if len(current_df) >= visible_count:
+                if st.button("Load 10 More / 再加载10条", key=f"load_more_{market.lower()}"):
+                    st.session_state[visible_key] = visible_count + 10
+                    st.rerun()
 
     st.subheader("Runtime Log / 运行日志")
     if "logs" not in st.session_state:
@@ -211,21 +248,36 @@ def run_dashboard() -> None:
         with telemetry.span("planner.parse_watchlist"):
             watchlist = [item.strip().upper() for item in watchlist_raw.split(",") if item.strip()]
             if market in {"CN", "HK", "US"} and use_top100:
-                watchlist = get_market_top100_watchlist(market.lower())[:100]
+                watchlist = _safe_get_top100_symbols(market)[:100]
             cfg = ScanConfig(
                 watchlist=watchlist,
                 market=market.lower(),
                 period=period,
                 interval=_granularity_to_interval(granularity),
                 pct_alert_threshold=threshold / 100.0,
+                fallback_spike_rate=fallback_spike_rate / 100.0,
+                failure_spike_count=int(failure_spike_count),
+                latency_anomaly_ms=float(latency_anomaly_ms),
             )
         push_log("Scheduler / 调度器: dispatching concurrent market fetch tasks / 并发分发行情抓取任务")
-        with telemetry.span("scanner.scan_watchlist"):
-            signals = asyncio.run(scan_watchlist(cfg))
+        with telemetry.span("scanner.run_watchlist_cycle"):
+            run_result = asyncio.run(
+                run_watchlist_cycle(
+                    cfg,
+                    trigger=build_scan_trigger(trigger_type="scheduled", metadata={"source": "dashboard"}),
+                    mode=mode,
+                    enable_triggered_research=False,
+                )
+            )
+        signals = run_result.signals
         push_log(f"Engine / 引擎: generated {len(signals)} signals / 生成 {len(signals)} 条信号")
         push_log("Reviewer / 评审器: classifying priorities and preparing dashboard payload / 进行优先级分类并准备看板数据")
         with telemetry.span("reviewer.select_alert_mode"):
-            selected = select_alerts_for_mode(signals, mode)
+            selected = run_result.selected_alerts
+        alarms = run_result.alarms
+        runtime_metrics = run_result.runtime_metrics
+        if alarms:
+            push_log(f"AlertGuard / 阈值告警: triggered={len(alarms)}")
 
         rows = [
             {
@@ -257,6 +309,14 @@ def run_dashboard() -> None:
             c3.metric("Selected / 入选告警", len(selected))
             c4.metric("Market / 市场", cfg.market.upper())
             st.caption(f"Granularity / 粒度: `{granularity}` | Interval: `{cfg.interval}` | Watchlist Size / 监控数量: `{len(cfg.watchlist)}`")
+            if alarms:
+                for alarm in alarms:
+                    if alarm["severity"] == "critical":
+                        st.error(f"[{alarm['rule']}] {alarm['message']}")
+                    else:
+                        st.warning(f"[{alarm['rule']}] {alarm['message']}")
+            else:
+                st.success("No threshold alarms triggered / 阈值告警未触发")
             st.plotly_chart(build_watchlist_figure(rows), use_container_width=True)
 
         with tab_pipeline:
@@ -265,6 +325,8 @@ def run_dashboard() -> None:
                 "Planner -> Scanner -> Reviewer -> Dispatcher",
                 language="text",
             )
+            st.markdown("**Runtime Metrics / 运行指标**")
+            st.dataframe(pd.DataFrame([runtime_metrics]), use_container_width=True)
             st.markdown("**Node Runtime / 节点耗时**")
             node_df = _build_node_status(trace_rows, len(selected), sent_count)
             st.dataframe(node_df, use_container_width=True)
@@ -290,6 +352,13 @@ def run_dashboard() -> None:
         with tab_artifacts:
             st.markdown("**Code Flow / 代码流**")
             st.code(build_execution_code(cfg, mode, rows), language="python")
+            st.markdown("**Threshold Alerts / 阈值告警**")
+            st.code(
+                "\n".join(f"[{item['severity']}] {item['rule']}: {item['message']}" for item in alarms)
+                if alarms
+                else "No threshold alarms.",
+                language="text",
+            )
             st.markdown("**Telegram Preview / 电报预览**")
             preview = [format_signal_message(item) for item in selected]
             st.code("\n\n".join(preview) if preview else "No alerts selected for current mode. / 当前模式未选出告警。", language="text")

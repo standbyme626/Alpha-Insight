@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,6 +13,13 @@ from uuid import uuid4
 import pandas as pd
 
 from core.models import AlertSignalSnapshot, AlertSnapshot, ResearchResult
+from core.observability import (
+    FailureEvent,
+    aggregate_failure_clusters,
+    aggregate_failure_tags,
+    classify_failure,
+    evaluate_threshold_alarms,
+)
 from tools.market_data import (
     MarketDataResult,
     fetch_market_data,
@@ -31,6 +39,9 @@ class ScanConfig:
     pct_alert_threshold: float = 0.03
     rsi_overbought: float = 70.0
     rsi_oversold: float = 30.0
+    fallback_spike_rate: float = 0.25
+    failure_spike_count: int = 3
+    latency_anomaly_ms: float = 2500.0
 
 
 @dataclass
@@ -60,6 +71,17 @@ class WatchlistRunResult:
     selected_alerts: list[WatchSignal]
     snapshots: list[AlertSnapshot]
     notifications: list[dict[str, Any]]
+    runtime_metrics: dict[str, Any] = field(default_factory=dict)
+    failure_events: list[dict[str, Any]] = field(default_factory=list)
+    failure_clusters: dict[str, int] = field(default_factory=dict)
+    alarms: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class SymbolAnalysisResult:
+    signal: WatchSignal | None
+    failure: FailureEvent | None = None
+    used_fallback: bool = False
 
 
 ResearchRunner = Callable[..., Awaitable[dict[str, Any] | ResearchResult]]
@@ -196,24 +218,64 @@ def _snapshot_lookup_by_symbol(snapshots: list[AlertSnapshot]) -> dict[str, Aler
     return lookup
 
 
-async def analyze_symbol(
+async def _analyze_symbol_with_diagnostics(
     symbol: str,
     config: ScanConfig,
     *,
     fetcher: Callable[..., Awaitable[MarketDataResult]] = fetch_market_data,
-) -> WatchSignal | None:
+) -> SymbolAnalysisResult:
     query_symbol = normalize_market_symbol(symbol, market=config.market)
+    used_fallback = False
     try:
         result = await fetcher(query_symbol, config.period, config.interval)
     except TypeError:
         # Backward compatibility for older test doubles accepting only (symbol, period).
-        result = await fetcher(query_symbol, config.period)
+        used_fallback = True
+        try:
+            result = await fetcher(query_symbol, config.period)
+        except Exception as exc:
+            return SymbolAnalysisResult(
+                signal=None,
+                failure=classify_failure(
+                    source="scanner.fetch",
+                    error_type=exc.__class__.__name__,
+                    message=str(exc),
+                    backend="legacy_fetcher_fallback",
+                ),
+                used_fallback=True,
+            )
+    except Exception as exc:
+        return SymbolAnalysisResult(
+            signal=None,
+            failure=classify_failure(
+                source="scanner.fetch",
+                error_type=exc.__class__.__name__,
+                message=str(exc),
+            ),
+            used_fallback=False,
+        )
     if not result.ok or not result.records:
-        return None
+        return SymbolAnalysisResult(
+            signal=None,
+            failure=classify_failure(
+                source="scanner.fetch",
+                error_type="DataFetchError",
+                message=result.message,
+            ),
+            used_fallback=used_fallback,
+        )
 
     df = pd.DataFrame(result.records)
     if "Close" not in df.columns or len(df) < 2:
-        return None
+        return SymbolAnalysisResult(
+            signal=None,
+            failure=classify_failure(
+                source="scanner.parse",
+                error_type="DataShapeError",
+                message="invalid Close column or insufficient rows",
+            ),
+            used_fallback=used_fallback,
+        )
 
     close = pd.to_numeric(df["Close"], errors="coerce").ffill().fillna(0)
     last = float(close.iloc[-1])
@@ -229,26 +291,45 @@ async def analyze_symbol(
         config.rsi_oversold,
     )
 
-    return WatchSignal(
-        symbol=symbol.strip().upper() if symbol.strip() else query_symbol,
-        timestamp=datetime.now(timezone.utc),
-        price=last,
-        pct_change=pct_change,
-        rsi=rsi,
-        priority=priority,
-        reason=reason,
-        company_name=get_company_name(query_symbol, resolve_remote=False),
+    return SymbolAnalysisResult(
+        signal=WatchSignal(
+            symbol=symbol.strip().upper() if symbol.strip() else query_symbol,
+            timestamp=datetime.now(timezone.utc),
+            price=last,
+            pct_change=pct_change,
+            rsi=rsi,
+            priority=priority,
+            reason=reason,
+            company_name=get_company_name(query_symbol, resolve_remote=False),
+        ),
+        failure=None,
+        used_fallback=used_fallback,
     )
 
 
-async def scan_watchlist(
+async def analyze_symbol(
+    symbol: str,
     config: ScanConfig,
     *,
     fetcher: Callable[..., Awaitable[MarketDataResult]] = fetch_market_data,
-) -> list[WatchSignal]:
-    tasks = [analyze_symbol(symbol, config, fetcher=fetcher) for symbol in config.watchlist]
+) -> WatchSignal | None:
+    result = await _analyze_symbol_with_diagnostics(symbol, config, fetcher=fetcher)
+    return result.signal
+
+
+async def scan_watchlist_with_diagnostics(
+    config: ScanConfig,
+    *,
+    fetcher: Callable[..., Awaitable[MarketDataResult]] = fetch_market_data,
+) -> tuple[list[WatchSignal], list[FailureEvent], int, float]:
+    started_at = time.perf_counter()
+    tasks = [_analyze_symbol_with_diagnostics(symbol, config, fetcher=fetcher) for symbol in config.watchlist]
     results = await asyncio.gather(*tasks)
-    signals = [item for item in results if item is not None]
+
+    signals = [item.signal for item in results if item.signal is not None]
+    failures = [item.failure for item in results if item.failure is not None]
+    fallback_count = sum(1 for item in results if item.used_fallback)
+
     if signals:
         try:
             name_map = get_company_names_batch([sig.symbol for sig in signals], market=config.market, resolve_remote=False)
@@ -257,10 +338,27 @@ async def scan_watchlist(
                 resolved = name_map.get(normalized) or name_map.get(sig.symbol, "")
                 if resolved:
                     sig.company_name = resolved
-        except Exception:
-            pass
+        except Exception as exc:
+            failures.append(
+                classify_failure(
+                    source="scanner.company_name",
+                    error_type=exc.__class__.__name__,
+                    message=str(exc),
+                )
+            )
     order = {"critical": 0, "high": 1, "normal": 2}
-    return sorted(signals, key=lambda x: order.get(x.priority, 9))
+    sorted_signals = sorted(signals, key=lambda x: order.get(x.priority, 9))
+    latency_ms = (time.perf_counter() - started_at) * 1000
+    return sorted_signals, failures, fallback_count, latency_ms
+
+
+async def scan_watchlist(
+    config: ScanConfig,
+    *,
+    fetcher: Callable[..., Awaitable[MarketDataResult]] = fetch_market_data,
+) -> list[WatchSignal]:
+    signals, _, _, _ = await scan_watchlist_with_diagnostics(config, fetcher=fetcher)
+    return signals
 
 
 def select_alerts_for_mode(signals: list[WatchSignal], mode: str) -> list[WatchSignal]:
@@ -311,9 +409,11 @@ async def run_watchlist_cycle(
     enable_triggered_research: bool = True,
     research_runner: ResearchRunner | None = None,
 ) -> WatchlistRunResult:
-    signals = await scan_watchlist(config, fetcher=fetcher)
+    cycle_started_at = time.perf_counter()
+    signals, scan_failures, fallback_count, scan_latency_ms = await scan_watchlist_with_diagnostics(config, fetcher=fetcher)
     selected = select_alerts_for_mode(signals, mode)
     snapshots: list[AlertSnapshot] = []
+    failure_events = list(scan_failures)
     runner = research_runner or _run_unified_research_default
 
     for signal in selected:
@@ -339,9 +439,19 @@ async def run_watchlist_cycle(
                 snapshot.research_status = "triggered"
                 snapshot.research_run_id = research.run_id
                 snapshot.research_result = research
+                backend = (research.sandbox_artifacts.backend or "").lower()
+                if "fallback" in backend or "local-process" in backend:
+                    fallback_count += 1
             except Exception as exc:  # pragma: no cover - defensive branch for runtime.
                 snapshot.research_status = "failed"
                 snapshot.research_error = str(exc)
+                failure_events.append(
+                    classify_failure(
+                        source="scanner.research",
+                        error_type=exc.__class__.__name__,
+                        message=str(exc),
+                    )
+                )
         snapshots.append(snapshot)
 
     notifications: list[dict[str, Any]] = []
@@ -360,12 +470,42 @@ async def run_watchlist_cycle(
     if snapshot_store is not None:
         snapshot_store.persist(snapshots)
 
+    cycle_latency_ms = (time.perf_counter() - cycle_started_at) * 1000
+    denominator = max(1, len(selected))
+    fallback_rate = fallback_count / denominator
+    failure_clusters = aggregate_failure_clusters(failure_events)
+    failure_tags = aggregate_failure_tags(failure_events)
+    alarms = evaluate_threshold_alarms(
+        fallback_rate=fallback_rate,
+        failure_count=len(failure_events),
+        latency_ms=cycle_latency_ms,
+        fallback_spike_rate=config.fallback_spike_rate,
+        failure_spike_count=config.failure_spike_count,
+        latency_anomaly_ms=config.latency_anomaly_ms,
+    )
+    runtime_metrics: dict[str, Any] = {
+        "watchlist_size": len(config.watchlist),
+        "signal_count": len(signals),
+        "selected_alert_count": len(selected),
+        "scan_latency_ms": round(scan_latency_ms, 3),
+        "cycle_latency_ms": round(cycle_latency_ms, 3),
+        "failure_count": len(failure_events),
+        "fallback_count": fallback_count,
+        "fallback_rate": round(fallback_rate, 6),
+        "failure_clusters": failure_clusters,
+        "failure_tags": failure_tags,
+    }
+
     return WatchlistRunResult(
         trigger=trigger,
         signals=signals,
         selected_alerts=selected,
         snapshots=snapshots,
         notifications=notifications,
+        runtime_metrics=runtime_metrics,
+        failure_events=[event.to_dict() for event in failure_events],
+        failure_clusters=failure_clusters,
+        alarms=[item.to_dict() for item in alarms],
     )
 
 

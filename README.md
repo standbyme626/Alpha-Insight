@@ -85,6 +85,12 @@ docker compose --env-file .env run --rm dev bash -lc "export PYTHONPATH=/workspa
 
 可选市场：`us | hk | cn | auto`
 
+阈值告警参数（D'）：
+
+- `--fallback-spike-rate`：回退占比阈值（默认 `0.25`）
+- `--failure-spike-count`：失败数阈值（默认 `3`）
+- `--latency-anomaly-ms`：延迟阈值（默认 `2500`）
+
 ### 2) 真实 LLM 连通性测试
 
 ```bash
@@ -150,7 +156,11 @@ docker stop alpha-insight-ui-cockpit alpha-insight-ui-llm
 ## 安全与观测
 
 - `core/guardrails.py`：限制危险导入、网络调用、危险执行函数与越界路径
-- `core/observability.py`：span 计时、token 事件记录、Phoenix 对接预留
+- `core/observability.py`：span 计时、token 事件、success/fallback/retry/latency 指标、失败聚类与阈值告警规则
+
+## 运维 Runbook
+
+- 详细冷启动与应急流程见：[docs/runbook.md](docs/runbook.md)
 
 ## 常见问题
 
