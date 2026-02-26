@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import re
+import sys
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from core.guardrails import validate_sandbox_code
@@ -64,7 +67,16 @@ class SandboxManager:
             await self.create_session()
 
         if self._session == "local-docker":
-            payload = await self._local.execute_code(code)
+            try:
+                payload = await self._local.execute_code(code)
+            except Exception as exc:
+                if not self._should_fallback_to_local_process(exc):
+                    raise
+                payload = await self._execute_local_process(
+                    code,
+                    reason=str(exc),
+                    timeout_seconds=self._local.timeout_seconds,
+                )
             tb = self._parse_traceback(payload.get("stderr", ""))
             return SandboxResult(
                 stdout=payload.get("stdout", ""),
@@ -171,3 +183,58 @@ class SandboxManager:
             frames=frames,
             raw=stderr,
         )
+
+    @staticmethod
+    def _should_fallback_to_local_process(exc: Exception) -> bool:
+        text = str(exc).lower()
+        markers = (
+            "docker.sock",
+            "permission denied",
+            "cannot connect to the docker daemon",
+            "docker image",
+            "not found",
+            "failed to create sandbox container",
+        )
+        return any(marker in text for marker in markers)
+
+    async def _execute_local_process(
+        self,
+        code: str,
+        *,
+        reason: str,
+        timeout_seconds: int,
+    ) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory(prefix="quant-local-fallback-") as temp_dir:
+            script_path = Path(temp_dir) / "user_code.py"
+            script_path.write_text(code, encoding="utf-8")
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable,
+                str(script_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.communicate()
+                return {
+                    "stdout": "",
+                    "stderr": f"Local fallback timed out after {timeout_seconds}s.",
+                    "exit_code": 124,
+                    "images": [],
+                    "output_files": [],
+                }
+
+            fallback_note = (
+                "[WARN] Docker sandbox unavailable; used local-process fallback.\n"
+                f"reason={reason}\n"
+            )
+            stderr = fallback_note + stderr_b.decode("utf-8", errors="replace")
+            return {
+                "stdout": stdout_b.decode("utf-8", errors="replace"),
+                "stderr": stderr,
+                "exit_code": proc.returncode or 0,
+                "images": [],
+                "output_files": [],
+            }
