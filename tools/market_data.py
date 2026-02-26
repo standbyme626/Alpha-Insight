@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import re
-from functools import lru_cache
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from functools import lru_cache
 from io import StringIO
 from typing import Any
 
 import pandas as pd
 import requests
-import yfinance as yf
+try:  # pragma: no cover - optional runtime dependency
+    import yfinance as yf
+except Exception:  # pragma: no cover - optional runtime dependency
+    yf = None  # type: ignore[assignment]
+
+from core.models import DataBundle
 
 
 @dataclass
@@ -20,6 +26,7 @@ class MarketDataResult:
     symbol: str
     message: str
     records: list[dict[str, Any]]
+    bundle: DataBundle | None = None
 
 
 _CN_COMPANY_SYMBOL_MAP: dict[str, str] = {
@@ -136,6 +143,46 @@ def _fetch_cn_name_from_sina(symbol: str) -> str:
     except Exception:
         pass
     return normalized
+
+
+def _fetch_cn_names_batch_from_sina(symbols: list[str]) -> dict[str, str]:
+    normalized_symbols: list[str] = []
+    code_pairs: list[tuple[str, str]] = []
+    for raw in symbols:
+        normalized = normalize_market_symbol(raw, market="cn")
+        if normalized.endswith(".SZ"):
+            code_pairs.append((normalized, f"sz{normalized[:6]}"))
+            normalized_symbols.append(normalized)
+        elif normalized.endswith(".SS"):
+            code_pairs.append((normalized, f"sh{normalized[:6]}"))
+            normalized_symbols.append(normalized)
+
+    if not code_pairs:
+        return {}
+
+    query_codes = ",".join(code for _, code in code_pairs)
+    try:
+        text = _http_get(f"https://hq.sinajs.cn/list={query_codes}")
+    except Exception:
+        return {}
+
+    raw_name_map: dict[str, str] = {}
+    for match in re.finditer(r'var hq_str_(?P<code>[a-z]{2}\d{6})="(?P<body>[^"]*)";', text):
+        code = match.group("code")
+        body = match.group("body")
+        name = body.split(",", 1)[0].strip()
+        if not name:
+            continue
+        raw_name_map[code] = name
+
+    out: dict[str, str] = {}
+    for normalized, raw_code in code_pairs:
+        name = raw_name_map.get(raw_code, "").strip()
+        if not name:
+            continue
+        _CN_DYNAMIC_NAME_CACHE[normalized] = name
+        out[normalized] = name
+    return out
 
 
 def _fetch_hk_name_from_sina(symbol: str) -> str:
@@ -410,6 +457,34 @@ def get_market_top100_watchlist(market: str) -> list[str]:
     return out
 
 
+def get_company_names_batch(
+    symbols: list[str],
+    *,
+    market: str = "auto",
+    resolve_remote: bool = False,
+) -> dict[str, str]:
+    if not symbols:
+        return {}
+
+    market_lower = market.strip().lower()
+    normalized: list[str] = []
+    for symbol in symbols:
+        value = normalize_market_symbol(symbol, market=market_lower or "auto")
+        if value:
+            normalized.append(value)
+
+    out: dict[str, str] = {}
+    cn_candidates = [sym for sym in normalized if sym.endswith((".SZ", ".SS"))]
+    if cn_candidates:
+        out.update(_fetch_cn_names_batch_from_sina(cn_candidates))
+
+    for symbol in normalized:
+        if symbol in out:
+            continue
+        out[symbol] = get_company_name(symbol, resolve_remote=resolve_remote)
+    return out
+
+
 @lru_cache(maxsize=2048)
 def get_company_name(symbol: str, resolve_remote: bool = False) -> str:
     text = symbol.strip().upper()
@@ -453,11 +528,12 @@ def get_company_name(symbol: str, resolve_remote: bool = False) -> str:
             if name and name != normalized:
                 _CN_DYNAMIC_NAME_CACHE[normalized] = name
                 return name
-        ticker = yf.Ticker(normalized)
-        info = ticker.info if isinstance(ticker.info, dict) else {}
-        name = info.get("shortName") or info.get("longName") or ""
-        if isinstance(name, str) and name.strip():
-            return name.strip()
+        if yf is not None:
+            ticker = yf.Ticker(normalized)
+            info = ticker.info if isinstance(ticker.info, dict) else {}
+            name = info.get("shortName") or info.get("longName") or ""
+            if isinstance(name, str) and name.strip():
+                return name.strip()
     except Exception:
         pass
     return normalized
@@ -497,6 +573,85 @@ def normalize_market_symbol(symbol: str, market: str = "auto") -> str:
     return normalized
 
 
+def infer_market_from_symbol(symbol: str) -> str:
+    value = symbol.strip().upper()
+    if value.endswith((".SZ", ".SS")):
+        return "cn"
+    if value.endswith(".HK"):
+        return "hk"
+    if re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", value):
+        return "us"
+    return "auto"
+
+
+def _to_json_safe_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc).isoformat()
+        return value.astimezone(timezone.utc).isoformat()
+    if isinstance(value, pd.Timestamp):
+        if value.tzinfo is None:
+            return value.to_pydatetime().replace(tzinfo=timezone.utc).isoformat()
+        return value.to_pydatetime().astimezone(timezone.utc).isoformat()
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            return value
+    return value
+
+
+def _to_json_safe_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in records:
+        normalized_row: dict[str, Any] = {}
+        for key, value in row.items():
+            normalized_row[str(key)] = _to_json_safe_value(value)
+        out.append(normalized_row)
+    return out
+
+
+def build_data_bundle(
+    *,
+    symbol: str,
+    period: str,
+    interval: str,
+    records: list[dict[str, Any]],
+    data_source: str,
+) -> DataBundle:
+    safe_records = _to_json_safe_records(records)
+    asof = datetime.now(timezone.utc)
+    if safe_records:
+        maybe_asof = safe_records[-1].get("Date")
+        if isinstance(maybe_asof, str) and maybe_asof.strip():
+            try:
+                parsed = datetime.fromisoformat(maybe_asof.replace("Z", "+00:00"))
+                asof = parsed.astimezone(timezone.utc)
+            except Exception:
+                pass
+    sample_keys = sorted(safe_records[0].keys()) if safe_records else []
+    return DataBundle(
+        records=safe_records,
+        metadata={
+            "period": period,
+            "record_count": len(safe_records),
+            "columns": sample_keys,
+        },
+        data_source=data_source,
+        asof=asof,
+        symbol=symbol,
+        market=infer_market_from_symbol(symbol),
+        interval=interval,
+    )
+
+
 def _normalize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     out = df.reset_index().copy()
     if "Date" in out.columns:
@@ -517,6 +672,16 @@ async def fetch_market_data(symbol: str, period: str = "1mo", interval: str = "1
             symbol=normalized_symbol,
             message="数据未找到: symbol 为空。",
             records=[],
+            bundle=None,
+        )
+
+    if yf is None:
+        return MarketDataResult(
+            ok=False,
+            symbol=normalized_symbol,
+            message="数据未找到: yfinance 未安装。",
+            records=[],
+            bundle=None,
         )
 
     try:
@@ -528,6 +693,7 @@ async def fetch_market_data(symbol: str, period: str = "1mo", interval: str = "1
             symbol=normalized_symbol,
             message=f"数据未找到: yfinance 请求失败 ({exc})",
             records=[],
+            bundle=None,
         )
 
     if df.empty:
@@ -536,13 +702,22 @@ async def fetch_market_data(symbol: str, period: str = "1mo", interval: str = "1
             symbol=normalized_symbol,
             message="数据未找到",
             records=[],
+            bundle=None,
         )
 
     normalized = _normalize_dataframe(df)
     records = normalized.to_dict(orient="records")
+    bundle = build_data_bundle(
+        symbol=normalized_symbol,
+        period=period,
+        interval=interval,
+        records=records,
+        data_source="yfinance",
+    )
     return MarketDataResult(
         ok=True,
         symbol=normalized_symbol,
         message="ok",
-        records=records,
+        records=bundle.records,
+        bundle=bundle,
     )

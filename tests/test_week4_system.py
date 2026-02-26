@@ -68,6 +68,20 @@ def test_guardrails_allow_safe_code() -> None:
     validate_sandbox_code("import pandas as pd\nprint('ok')")
 
 
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import requests\nrequests.get('https://example.com')",
+        "import yfinance as yf\nyf.Ticker('AAPL').history(period='1mo')",
+        "import os\nos.system('pip install numpy')",
+        "python -m pip install pandas",
+    ],
+)
+def test_guardrails_block_network_or_dynamic_install(code: str) -> None:
+    with pytest.raises(GuardrailError):
+        validate_sandbox_code(code)
+
+
 def test_telemetry_span_and_token_usage() -> None:
     telemetry = QuantTelemetry()
     with telemetry.span("week4.scan"):

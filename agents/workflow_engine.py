@@ -11,17 +11,21 @@ from agents.coder_engine import generate_code
 from agents.debugger_engine import build_debug_advice
 from agents.planner_engine import plan_tasks
 from core.sandbox_manager import SandboxManager
+from tools.market_data import fetch_market_data
 
 
 class Week2GraphState(TypedDict, total=False):
     request: str
     symbol: str
     period: str
+    interval: str
 
     plan_steps: list[str]
     data_source: str
     planner_reason: str
     planner_provider: str
+    market_data_bundle: dict[str, Any]
+    data_fetch_message: str
 
     sandbox_code: str
     sandbox_stdout: str
@@ -44,13 +48,52 @@ async def planner_node(state: Week2GraphState) -> Week2GraphState:
         "data_source": plan.data_source,
         "planner_reason": plan.reason,
         "planner_provider": plan.provider,
+        "interval": str(state.get("interval", "1d")),
         "retry_count": int(state.get("retry_count", 0)),
         "max_retries": int(state.get("max_retries", 2)),
     }
 
 
+async def market_data_node(state: Week2GraphState) -> Week2GraphState:
+    print("[DEBUG] QuantNode week2.market_data_node Start")
+    symbol = str(state.get("symbol", "AAPL"))
+    period = str(state.get("period", "1mo"))
+    interval = str(state.get("interval", "1d"))
+    result = await fetch_market_data(symbol, period=period, interval=interval)
+
+    if not result.ok or not result.records:
+        return {
+            "data_fetch_message": result.message,
+            "traceback": {
+                "error_type": "DataFetchError",
+                "message": result.message,
+                "frames": [],
+                "raw": result.message,
+            },
+            "success": False,
+            "sandbox_stdout": "",
+            "sandbox_stderr": result.message,
+        }
+
+    bundle_payload = result.bundle.to_serializable_dict() if result.bundle else {
+        "records": result.records,
+        "metadata": {"period": period, "record_count": len(result.records)},
+        "data_source": "api",
+        "symbol": result.symbol or symbol,
+        "market": "auto",
+        "interval": interval,
+    }
+    return {
+        "market_data_bundle": bundle_payload,
+        "data_fetch_message": result.message,
+        "traceback": None,
+    }
+
+
 async def coder_node(state: Week2GraphState) -> Week2GraphState:
     print("[DEBUG] QuantNode week2.coder_node Start")
+    if state.get("traceback"):
+        return {}
     code = generate_code(state)
     return {"sandbox_code": code}
 
@@ -95,6 +138,12 @@ async def debugger_node(state: Week2GraphState) -> Week2GraphState:
     return {"debug_advice": advice}
 
 
+def _after_market_data(state: Week2GraphState) -> str:
+    if state.get("traceback") is not None:
+        return "done"
+    return "coder"
+
+
 def _after_executor(state: Week2GraphState) -> str:
     if state.get("traceback") is None:
         return "done"
@@ -110,12 +159,21 @@ def build_repair_graph(*, checkpointer: InMemorySaver | None = None):
     print("[DEBUG] QuantNode week2.build_week2_graph Start")
     graph = StateGraph(Week2GraphState)
     graph.add_node("planner", planner_node)
+    graph.add_node("market_data", market_data_node)
     graph.add_node("coder", coder_node)
     graph.add_node("executor", executor_node)
     graph.add_node("debugger", debugger_node)
 
     graph.set_entry_point("planner")
-    graph.add_edge("planner", "coder")
+    graph.add_edge("planner", "market_data")
+    graph.add_conditional_edges(
+        "market_data",
+        _after_market_data,
+        {
+            "coder": "coder",
+            "done": END,
+        },
+    )
     graph.add_edge("coder", "executor")
     graph.add_conditional_edges(
         "executor",

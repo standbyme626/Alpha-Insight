@@ -81,6 +81,8 @@ def _run_full_analysis(request: str, symbol: str, period: str) -> dict:
         "planner_provider": str(output.get("planner_provider", "")),
         "planner_reason": str(output.get("planner_reason", "")),
         "data_source": str(output.get("data_source", "")),
+        "data_fetch_message": str(output.get("data_fetch_message", "")),
+        "market_data_bundle": output.get("market_data_bundle"),
         "plan_steps": [str(step) for step in output.get("plan_steps", [])],
         "sandbox_code": str(output.get("sandbox_code", "")),
         "sandbox_stdout": str(output.get("sandbox_stdout", "")),
@@ -1288,6 +1290,23 @@ def main() -> None:
 
                 st.markdown("**沙箱代码 / Sandbox Code**")
                 st.code(full.get("sandbox_code", ""), language="python")
+                bundle = full.get("market_data_bundle")
+                if isinstance(bundle, dict):
+                    evidence_payload = {
+                        "data_source": bundle.get("data_source", ""),
+                        "asof": bundle.get("asof", ""),
+                        "symbol": bundle.get("symbol", ""),
+                        "market": bundle.get("market", ""),
+                        "interval": bundle.get("interval", ""),
+                        "record_count": ((bundle.get("metadata") or {}).get("record_count", 0)),
+                        "backend": backend,
+                        "retry_count": int(full.get("retry_count", 0)),
+                    }
+                    st.markdown("**证据链 / Evidence Chain**")
+                    st.json(evidence_payload)
+                fetch_message = str(full.get("data_fetch_message", "")).strip()
+                if fetch_message:
+                    st.caption(f"Data fetch status / 取数状态: {fetch_message}")
                 st.markdown("**沙箱标准输出 / Sandbox Stdout**")
                 st.code(full.get("sandbox_stdout", "") or "(empty / 空)", language="text")
                 st.markdown("**沙箱错误输出 / Sandbox Stderr**")

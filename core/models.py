@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Literal
+from datetime import datetime, timezone
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -34,6 +34,19 @@ class TracebackInfo(BaseModel):
     raw: str
 
 
+class DataBundle(BaseModel):
+    records: list[dict[str, Any]] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    data_source: str = "api"
+    asof: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    symbol: str = ""
+    market: str = "auto"
+    interval: str = "1d"
+
+    def to_serializable_dict(self) -> dict[str, Any]:
+        return self.model_dump(mode="json")
+
+
 class AgentState(BaseModel):
     request: str
     symbol: str = "AAPL"
@@ -62,6 +75,7 @@ class Week2AgentState(BaseModel):
     data_source: Literal["api", "scraper"] = "api"
     planner_reason: str = ""
     planner_provider: str = "fallback"
+    market_data_bundle: DataBundle | None = None
 
     sandbox_code: str | None = None
     sandbox_stdout: str | None = None
