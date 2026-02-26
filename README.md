@@ -9,6 +9,17 @@ Alpha-Insight 是一个基于 LangGraph 的多 Agent 量化投研系统，支持
 - 第 3 周：MACD/RSI、向量化回测、多模态研报、HITL 人工确认
 - 第 4 周：实时异动扫描、分级告警、Streamlit 驾驶舱、安全 Guardrails、观测封装
 
+## 当前可用功能（在历史能力基础上的增量）
+
+- 三市场监控：A 股 / 港股 / 美股，支持 Top100 监控池
+- 公司名展示：前端与告警统一展示公司名，支持 `代码(公司名)` 与 `代码 | 公司名`
+- Telegram 告警：分级告警文案中英双语，字段统一（价格/涨跌幅/RSI/原因/时间）
+- 双前端页面：
+  - `8501` 实时驾驶舱（扫描、信号、流水线、告警）
+  - `8502` Planner 控制台（规划）+ Full Analysis（完整分析产物）
+- Full Analysis 模式：可展示沙箱代码、stdout/stderr、traceback、重试次数
+- 沙箱容灾：Docker 沙箱不可用（如 `docker.sock permission denied`）时，自动回退本地进程执行（仍受 guardrails）
+
 ## 目录结构
 
 - `agents/`：工作流与 Agent 逻辑（`planner_engine.py`, `workflow_engine.py`, `report_workflow.py`, `scanner_engine.py`）
@@ -27,7 +38,7 @@ Alpha-Insight 是一个基于 LangGraph 的多 Agent 量化投研系统，支持
 cp .env.example .env
 ```
 
-2. 关键变量说明：
+2. 关键变量：
 
 - `OPENAI_API_KEY`
 - `OPENAI_API_BASE`（例如 DashScope OpenAI 兼容地址）
@@ -37,15 +48,28 @@ cp .env.example .env
 - `TELEGRAM_BOT_TOKEN`（可选）
 - `TELEGRAM_CHAT_ID`（可选）
 
-## 一键测试
+3. 推荐本地 Python 环境（与当前测试一致）：
+
+```bash
+python3 -m venv .venv_local
+.venv_local/bin/pip install -r requirements-dev.txt
+```
+
+## 测试
 
 ```bash
 docker compose --env-file .env run --rm test
 ```
 
-## 后端怎么启动
+或本地：
 
-### 1) 实时异动扫描后端（可用于 Cron）
+```bash
+.venv_local/bin/python -m pytest -q
+```
+
+## 后端启动
+
+### 1) 实时异动扫描（可用于 Cron）
 
 单次执行（推荐给 cron 调度）：
 
@@ -56,20 +80,22 @@ docker compose --env-file .env run --rm dev bash -lc "export PYTHONPATH=/workspa
 常驻循环（默认每小时一次）：
 
 ```bash
-docker compose --env-file .env run --rm dev bash -lc "export PYTHONPATH=/workspace && python scripts/hourly_watchlist_scan.py --market cn --cn-top100 --granularity day"
+docker compose --env-file .env run --rm dev bash -lc "export PYTHONPATH=/workspace && python scripts/hourly_watchlist_scan.py --market cn --top100 --granularity day"
 ```
 
-### 2) 真实 LLM 连通性后端测试
+可选市场：`us | hk | cn | auto`
+
+### 2) 真实 LLM 连通性测试
 
 ```bash
 docker compose --env-file .env run --rm dev bash -lc "export PYTHONPATH=/workspace && python scripts/real_llm_smoke_test.py"
 ```
 
-## 前端怎么启动
+## 前端启动
 
-当前有两个前端页面，都是 Streamlit，支持并行启动（不同端口）：
+当前有两个 Streamlit 页面，可并行启动：
 
-### A. 实时驾驶舱（Run 状态 + Watchlist + Pipeline）
+### A. 实时驾驶舱（8501）
 
 ```bash
 docker compose --env-file .env run --rm -d --name alpha-insight-ui-cockpit -p 8501:8501 dev bash -lc "export PYTHONPATH=/workspace && streamlit run ui/streamlit_dashboard.py --server.address 0.0.0.0 --server.port 8501"
@@ -77,13 +103,30 @@ docker compose --env-file .env run --rm -d --name alpha-insight-ui-cockpit -p 85
 
 打开：`http://localhost:8501`
 
-### B. Planner 控制台（中美市场请求模板）
+能力说明：
+
+- 启动即展示 Top100 成分（代码 + 公司名）
+- 三市场切换、粒度切换（日/时/分）
+- 信号图与信号表显示 `代码(公司名)`
+- Telegram 预览与发送
+- Runtime Log 中英双语
+
+### B. Planner 控制台 + Full Analysis（8502）
 
 ```bash
 docker compose --env-file .env run --rm -d --name alpha-insight-ui-llm -p 8502:8501 dev bash -lc "scripts/run_llm_frontend.sh"
 ```
 
 打开：`http://localhost:8502`
+
+能力说明：
+
+- `Run Planner`：仅做规划（steps/data_source/reason）
+- `Run Full Analysis`：执行 Week2 全流程并显示完整产物
+  - sandbox code
+  - sandbox stdout / stderr
+  - traceback
+  - retry count / success
 
 查看运行状态：
 
@@ -112,7 +155,16 @@ docker stop alpha-insight-ui-cockpit alpha-insight-ui-llm
 ## 常见问题
 
 1. `ModuleNotFoundError: agents`
-需要在容器内设置：`export PYTHONPATH=/workspace`。
+需要在容器内设置：`export PYTHONPATH=/workspace`，或确保从项目根目录启动。
 
 2. 真实 LLM 报错且 `ENABLE_LOCAL_FALLBACK=false`
 表示远程调用失败时不会回退本地策略。可先排查 key、base URL、model，或临时改为 `true`。
+
+3. Planner 显示 `provider=fallback`
+说明远程模型调用失败或环境变量未生效。优先检查：
+- `OPENAI_API_KEY`
+- `OPENAI_API_BASE`
+- `OPENAI_MODEL_NAME`
+
+4. Full Analysis 报 Docker 权限错误
+当前版本已支持自动回退到本地进程执行。若需强隔离执行，需修复 Docker 权限或镜像环境。
