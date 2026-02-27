@@ -34,7 +34,19 @@ class TelegramGateway:
         self._actions = actions
         self._limits = limits or RuntimeLimits()
         self._allowed_chat_ids = allowed_chat_ids or set()
-        self._allowed_commands = allowed_commands or {"help", "analyze", "monitor", "list", "stop", "report", "digest"}
+        self._allowed_commands = allowed_commands or {
+            "help",
+            "analyze",
+            "monitor",
+            "list",
+            "stop",
+            "report",
+            "digest",
+            "alerts",
+            "bulk",
+            "webhook",
+            "pref",
+        }
         self._gray_release_enabled = gray_release_enabled
         self._offset = max(0, self._store.get_latest_update_id() + 1)
 
@@ -206,10 +218,12 @@ class TelegramGateway:
                     result = await self._actions.handle_monitor(
                         chat_id=chat_id,
                         symbol=parsed.args["symbol"],
+                        symbols=[item for item in str(parsed.args.get("symbols_csv", parsed.args["symbol"])).split(",") if item],
                         interval_sec=int(parsed.args["interval_sec"]),
                         mode=str(parsed.args.get("mode", "anomaly")),
                         threshold=float(parsed.args.get("threshold", "0.03")),
                         template=str(parsed.args.get("template", "volatility")),
+                        route_strategy=str(parsed.args.get("route_strategy", "dual_channel")),
                     )
             elif parsed.name == "list":
                 result = await self._actions.handle_list(chat_id=chat_id)
@@ -220,9 +234,40 @@ class TelegramGateway:
                     target_type=parsed.args["target_type"],
                 )
             elif parsed.name == "report":
-                result = await self._actions.handle_report(chat_id=chat_id, target_id=parsed.args["target_id"])
+                result = await self._actions.handle_report(
+                    chat_id=chat_id,
+                    target_id=parsed.args["target_id"],
+                    detail=str(parsed.args.get("detail", "short")),
+                )
             elif parsed.name == "digest":
                 result = await self._actions.handle_digest(chat_id=chat_id, period=parsed.args["period"])
+            elif parsed.name == "alerts":
+                result = await self._actions.handle_alerts(
+                    chat_id=chat_id,
+                    view=str(parsed.args["view"]),
+                    limit=int(parsed.args["limit"]),
+                )
+            elif parsed.name == "bulk":
+                result = await self._actions.handle_bulk(
+                    chat_id=chat_id,
+                    action=str(parsed.args["action"]),
+                    target=str(parsed.args["target"]),
+                    value=str(parsed.args.get("value", "")),
+                )
+            elif parsed.name == "webhook":
+                result = await self._actions.handle_webhook(
+                    chat_id=chat_id,
+                    action=str(parsed.args["action"]),
+                    url=str(parsed.args.get("url", "")),
+                    secret=str(parsed.args.get("secret", "")),
+                    webhook_id=str(parsed.args.get("webhook_id", "")),
+                )
+            elif parsed.name == "pref":
+                result = await self._actions.handle_pref(
+                    chat_id=chat_id,
+                    setting=str(parsed.args["setting"]),
+                    value=str(parsed.args["value"]),
+                )
             else:
                 raise ValueError(f"Unsupported route: {parsed.name}")
 

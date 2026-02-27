@@ -138,3 +138,22 @@
   - 将 `notifications.state='retry_pending'` 且 `next_retry_at<=now`，由 worker 自动重试。
 - 报告查询修复：
   - 如 `analysis_requests.status='completed'` 但 `analysis_reports` 缺失，可依据 `request_id/run_id` 回填摘要。
+
+### 9.5 D4~D6 运维要点
+
+- Alert Hub 视图：
+  - `/alerts triggered 20`
+  - `/alerts failed 20`
+  - `/alerts suppressed 20`
+- 批量任务操作（watch_jobs）：
+  - `/bulk disable all`
+  - `/bulk interval all 30m`
+  - `/bulk threshold all 0.05`
+- Watchlist 级规则与 webhook：
+  - `/monitor AAPL,MSFT,TSLA 1h price dual_channel`
+  - `/webhook set https://example.com/hook <secret>`
+  - `/webhook list`
+- 移动优先策略（用户偏好）：
+  - `/pref summary short|long`
+  - `/pref quiet 22-07`（或 `off`）
+  - `/pref priority critical|high|all`

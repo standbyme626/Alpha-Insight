@@ -56,6 +56,10 @@ class WatchJobRecord:
     interval_sec: int
     threshold: float
     mode: str
+    scope: str
+    group_id: str | None
+    route_strategy: str
+    template_id: str | None
     enabled: bool
     next_run_at: str
     created_at: str
@@ -74,6 +78,9 @@ class DueWatchJob:
     interval_sec: int
     threshold: float
     mode: str
+    scope: str
+    group_id: str | None
+    route_strategy: str
     next_run_at: str
 
 
@@ -123,6 +130,51 @@ class NotificationRoute:
     target: str
     enabled: bool
     created_at: str
+    updated_at: str
+
+
+@dataclass
+class AlertHubRecord:
+    event_id: str
+    chat_id: str
+    symbol: str
+    priority: str
+    channel: str
+    status: str
+    suppressed_reason: str | None
+    last_error: str | None
+    trigger_ts: str
+    updated_at: str
+
+
+@dataclass
+class WatchlistGroupRecord:
+    group_id: str
+    chat_id: str
+    name: str
+    created_at: str
+    symbols: list[str]
+
+
+@dataclass
+class OutboundWebhookRecord:
+    webhook_id: str
+    chat_id: str
+    url: str
+    secret: str
+    enabled: bool
+    timeout_ms: int
+    created_at: str
+    updated_at: str
+
+
+@dataclass
+class ChatPreferenceRecord:
+    chat_id: str
+    min_priority: str
+    quiet_hours: str | None
+    summary_mode: str
+    digest_schedule: str | None
     updated_at: str
 
 
@@ -208,6 +260,10 @@ class TelegramTaskStore:
                     interval_sec INTEGER NOT NULL,
                     threshold REAL NOT NULL,
                     mode TEXT NOT NULL,
+                    scope TEXT NOT NULL DEFAULT 'single',
+                    group_id TEXT,
+                    route_strategy TEXT NOT NULL DEFAULT 'dual_channel',
+                    template_id TEXT,
                     enabled INTEGER NOT NULL,
                     next_run_at TEXT NOT NULL,
                     created_at TEXT NOT NULL,
@@ -229,6 +285,7 @@ class TelegramTaskStore:
                     pct_change REAL NOT NULL,
                     reason TEXT NOT NULL,
                     rule TEXT NOT NULL,
+                    priority TEXT NOT NULL DEFAULT 'medium',
                     bucket_ts TEXT NOT NULL,
                     dedupe_key TEXT NOT NULL UNIQUE,
                     pushed INTEGER NOT NULL,
@@ -245,6 +302,7 @@ class TelegramTaskStore:
                     event_id TEXT NOT NULL,
                     channel TEXT NOT NULL,
                     state TEXT NOT NULL,
+                    suppressed_reason TEXT,
                     retry_count INTEGER NOT NULL,
                     next_retry_at TEXT,
                     last_error TEXT,
@@ -253,6 +311,52 @@ class TelegramTaskStore:
                     updated_at TEXT NOT NULL,
                     UNIQUE(event_id, channel),
                     FOREIGN KEY(event_id) REFERENCES watch_events(event_id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS watchlist_groups (
+                    group_id TEXT PRIMARY KEY,
+                    chat_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS watchlist_group_symbols (
+                    group_id TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    PRIMARY KEY(group_id, symbol),
+                    FOREIGN KEY(group_id) REFERENCES watchlist_groups(group_id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS outbound_webhooks (
+                    webhook_id TEXT PRIMARY KEY,
+                    chat_id TEXT NOT NULL,
+                    url TEXT NOT NULL,
+                    secret TEXT NOT NULL,
+                    enabled INTEGER NOT NULL,
+                    timeout_ms INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_preferences (
+                    chat_id TEXT PRIMARY KEY,
+                    min_priority TEXT NOT NULL,
+                    quiet_hours TEXT,
+                    summary_mode TEXT NOT NULL,
+                    digest_schedule TEXT,
+                    updated_at TEXT NOT NULL
                 )
                 """
             )
@@ -374,10 +478,25 @@ class TelegramTaskStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_watch_jobs_chat_enabled ON watch_jobs(chat_id, enabled)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_watch_jobs_next_run_at ON watch_jobs(next_run_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_notifications_state_next_retry ON notifications(state, next_retry_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_watch_events_created ON watch_events(created_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_outbound_webhooks_chat_enabled ON outbound_webhooks(chat_id, enabled)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_metric_events_name_ts ON metric_events(metric_name, created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_ts ON audit_events(created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_analysis_reports_chat_created ON analysis_reports(chat_id, created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_notification_routes_chat_enabled ON notification_routes(chat_id, enabled)")
+            self._ensure_column(conn, "watch_jobs", "scope", "TEXT NOT NULL DEFAULT 'single'")
+            self._ensure_column(conn, "watch_jobs", "group_id", "TEXT")
+            self._ensure_column(conn, "watch_jobs", "route_strategy", "TEXT NOT NULL DEFAULT 'dual_channel'")
+            self._ensure_column(conn, "watch_jobs", "template_id", "TEXT")
+            self._ensure_column(conn, "watch_events", "priority", "TEXT NOT NULL DEFAULT 'medium'")
+            self._ensure_column(conn, "notifications", "suppressed_reason", "TEXT")
+
+    @staticmethod
+    def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl_type: str) -> None:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        if any(str(row["name"]) == column for row in rows):
+            return
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}")
 
     def insert_bot_update_if_new(self, *, update_id: int, chat_id: str, payload: dict[str, Any]) -> bool:
         now = _utc_now()
@@ -784,6 +903,347 @@ class TelegramTaskStore:
             return None
         return str(row["target"])
 
+    def upsert_outbound_webhook(
+        self,
+        *,
+        chat_id: str,
+        url: str,
+        secret: str = "",
+        timeout_ms: int = 3000,
+        enabled: bool = True,
+    ) -> OutboundWebhookRecord:
+        now = _utc_now()
+        webhook_id = f"wh-{uuid4().hex[:8]}"
+        with self._connect() as conn:
+            existing = conn.execute(
+                """
+                SELECT webhook_id
+                FROM outbound_webhooks
+                WHERE chat_id = ? AND url = ?
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (str(chat_id), url),
+            ).fetchone()
+            if existing is not None:
+                webhook_id = str(existing["webhook_id"])
+            conn.execute(
+                """
+                INSERT INTO outbound_webhooks(webhook_id, chat_id, url, secret, enabled, timeout_ms, created_at, updated_at)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(webhook_id) DO UPDATE SET
+                    secret = excluded.secret,
+                    enabled = excluded.enabled,
+                    timeout_ms = excluded.timeout_ms,
+                    updated_at = excluded.updated_at
+                """,
+                (webhook_id, str(chat_id), url, secret, 1 if enabled else 0, int(timeout_ms), now, now),
+            )
+        return self.list_outbound_webhooks(chat_id=chat_id, enabled_only=False, webhook_id=webhook_id)[0]
+
+    def disable_outbound_webhook(self, *, chat_id: str, webhook_id: str) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE outbound_webhooks
+                SET enabled = 0, updated_at = ?
+                WHERE chat_id = ? AND webhook_id = ?
+                """,
+                (_utc_now(), str(chat_id), webhook_id),
+            )
+        return cursor.rowcount > 0
+
+    def list_outbound_webhooks(
+        self,
+        *,
+        chat_id: str,
+        enabled_only: bool = True,
+        webhook_id: str | None = None,
+    ) -> list[OutboundWebhookRecord]:
+        where = ["chat_id = ?"]
+        params: list[Any] = [str(chat_id)]
+        if enabled_only:
+            where.append("enabled = 1")
+        if webhook_id:
+            where.append("webhook_id = ?")
+            params.append(webhook_id)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT webhook_id, chat_id, url, secret, enabled, timeout_ms, created_at, updated_at
+                FROM outbound_webhooks
+                WHERE {' AND '.join(where)}
+                ORDER BY updated_at DESC
+                """,
+                tuple(params),
+            ).fetchall()
+        return [
+            OutboundWebhookRecord(
+                webhook_id=str(row["webhook_id"]),
+                chat_id=str(row["chat_id"]),
+                url=str(row["url"]),
+                secret=str(row["secret"]),
+                enabled=bool(int(row["enabled"])),
+                timeout_ms=int(row["timeout_ms"]),
+                created_at=str(row["created_at"]),
+                updated_at=str(row["updated_at"]),
+            )
+            for row in rows
+        ]
+
+    def get_outbound_webhook(self, *, webhook_id: str) -> OutboundWebhookRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT webhook_id, chat_id, url, secret, enabled, timeout_ms, created_at, updated_at
+                FROM outbound_webhooks
+                WHERE webhook_id = ?
+                LIMIT 1
+                """,
+                (webhook_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return OutboundWebhookRecord(
+            webhook_id=str(row["webhook_id"]),
+            chat_id=str(row["chat_id"]),
+            url=str(row["url"]),
+            secret=str(row["secret"]),
+            enabled=bool(int(row["enabled"])),
+            timeout_ms=int(row["timeout_ms"]),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+
+    def create_or_replace_watchlist_group(self, *, chat_id: str, name: str, symbols: list[str]) -> WatchlistGroupRecord:
+        normalized = [item.strip().upper() for item in symbols if item.strip()]
+        normalized = list(dict.fromkeys(normalized))
+        if not normalized:
+            raise ValueError("watchlist group requires at least one symbol")
+        now = _utc_now()
+        group_id = f"grp-{uuid4().hex[:8]}"
+        with self._connect() as conn:
+            existing = conn.execute(
+                """
+                SELECT group_id
+                FROM watchlist_groups
+                WHERE chat_id = ? AND name = ?
+                LIMIT 1
+                """,
+                (str(chat_id), name.strip()),
+            ).fetchone()
+            if existing is not None:
+                group_id = str(existing["group_id"])
+                conn.execute("DELETE FROM watchlist_group_symbols WHERE group_id = ?", (group_id,))
+            conn.execute(
+                """
+                INSERT INTO watchlist_groups(group_id, chat_id, name, created_at)
+                VALUES(?, ?, ?, ?)
+                ON CONFLICT(group_id) DO UPDATE SET
+                    name = excluded.name
+                """,
+                (group_id, str(chat_id), name.strip(), now),
+            )
+            for symbol in normalized:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO watchlist_group_symbols(group_id, symbol)
+                    VALUES(?, ?)
+                    """,
+                    (group_id, symbol),
+                )
+        return self.get_watchlist_group(group_id=group_id)
+
+    def get_watchlist_group(self, *, group_id: str) -> WatchlistGroupRecord:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT group_id, chat_id, name, created_at
+                FROM watchlist_groups
+                WHERE group_id = ?
+                """,
+                (group_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"watchlist group not found: {group_id}")
+            symbol_rows = conn.execute(
+                """
+                SELECT symbol
+                FROM watchlist_group_symbols
+                WHERE group_id = ?
+                ORDER BY symbol ASC
+                """,
+                (group_id,),
+            ).fetchall()
+        return WatchlistGroupRecord(
+            group_id=str(row["group_id"]),
+            chat_id=str(row["chat_id"]),
+            name=str(row["name"]),
+            created_at=str(row["created_at"]),
+            symbols=[str(item["symbol"]) for item in symbol_rows],
+        )
+
+    def get_watchlist_group_symbols(self, *, group_id: str) -> list[str]:
+        return self.get_watchlist_group(group_id=group_id).symbols
+
+    def get_chat_preferences(self, *, chat_id: str) -> ChatPreferenceRecord:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT chat_id, min_priority, quiet_hours, summary_mode, digest_schedule, updated_at
+                FROM chat_preferences
+                WHERE chat_id = ?
+                """,
+                (str(chat_id),),
+            ).fetchone()
+        if row is None:
+            return ChatPreferenceRecord(
+                chat_id=str(chat_id),
+                min_priority="high",
+                quiet_hours=None,
+                summary_mode="short",
+                digest_schedule=None,
+                updated_at=_utc_now(),
+            )
+        return ChatPreferenceRecord(
+            chat_id=str(row["chat_id"]),
+            min_priority=str(row["min_priority"]),
+            quiet_hours=str(row["quiet_hours"]) if row["quiet_hours"] else None,
+            summary_mode=str(row["summary_mode"]),
+            digest_schedule=str(row["digest_schedule"]) if row["digest_schedule"] else None,
+            updated_at=str(row["updated_at"]),
+        )
+
+    def upsert_chat_preferences(
+        self,
+        *,
+        chat_id: str,
+        min_priority: str | None = None,
+        quiet_hours: str | None = None,
+        summary_mode: str | None = None,
+        digest_schedule: str | None = None,
+    ) -> ChatPreferenceRecord:
+        current = self.get_chat_preferences(chat_id=chat_id)
+        next_min_priority = min_priority or current.min_priority
+        next_quiet_hours = quiet_hours if quiet_hours is not None else current.quiet_hours
+        next_summary_mode = summary_mode or current.summary_mode
+        next_digest_schedule = digest_schedule if digest_schedule is not None else current.digest_schedule
+        now = _utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO chat_preferences(chat_id, min_priority, quiet_hours, summary_mode, digest_schedule, updated_at)
+                VALUES(?, ?, ?, ?, ?, ?)
+                ON CONFLICT(chat_id) DO UPDATE SET
+                    min_priority = excluded.min_priority,
+                    quiet_hours = excluded.quiet_hours,
+                    summary_mode = excluded.summary_mode,
+                    digest_schedule = excluded.digest_schedule,
+                    updated_at = excluded.updated_at
+                """,
+                (str(chat_id), next_min_priority, next_quiet_hours, next_summary_mode, next_digest_schedule, now),
+            )
+        return self.get_chat_preferences(chat_id=chat_id)
+
+    def bulk_update_watch_jobs(
+        self,
+        *,
+        chat_id: str,
+        action: str,
+        target: str,
+        value: str = "",
+    ) -> int:
+        selector = target.strip().lower()
+        clauses = ["chat_id = ?"]
+        params: list[Any] = [str(chat_id)]
+        if selector != "all":
+            items = [item.strip() for item in target.split(",") if item.strip()]
+            if not items:
+                return 0
+            job_ids = [item.lower() for item in items if item.lower().startswith("job-")]
+            symbols = [item.upper() for item in items if not item.lower().startswith("job-")]
+            local_clause: list[str] = []
+            if job_ids:
+                local_clause.append(f"job_id IN ({','.join('?' for _ in job_ids)})")
+                params.extend(job_ids)
+            if symbols:
+                local_clause.append(f"symbol IN ({','.join('?' for _ in symbols)})")
+                params.extend(symbols)
+            if not local_clause:
+                return 0
+            clauses.append("(" + " OR ".join(local_clause) + ")")
+
+        now = _utc_now()
+        with self._connect() as conn:
+            if action == "enable":
+                sql = f"UPDATE watch_jobs SET enabled = 1, updated_at = ? WHERE {' AND '.join(clauses)}"
+                cursor = conn.execute(sql, (now, *params))
+            elif action == "disable":
+                sql = f"UPDATE watch_jobs SET enabled = 0, updated_at = ? WHERE {' AND '.join(clauses)}"
+                cursor = conn.execute(sql, (now, *params))
+            elif action == "interval":
+                sql = f"UPDATE watch_jobs SET interval_sec = ?, updated_at = ? WHERE {' AND '.join(clauses)}"
+                cursor = conn.execute(sql, (int(value), now, *params))
+            elif action == "threshold":
+                sql = f"UPDATE watch_jobs SET threshold = ?, updated_at = ? WHERE {' AND '.join(clauses)}"
+                cursor = conn.execute(sql, (float(value), now, *params))
+            else:
+                raise ValueError(f"unsupported bulk action: {action}")
+        return int(cursor.rowcount)
+
+    def list_alert_hub(
+        self,
+        *,
+        chat_id: str,
+        view: str = "triggered",
+        limit: int = 10,
+        symbol: str | None = None,
+        channel: str | None = None,
+    ) -> list[AlertHubRecord]:
+        filters = ["wj.chat_id = ?"]
+        params: list[Any] = [str(chat_id)]
+        if symbol:
+            filters.append("wj.symbol = ?")
+            params.append(symbol.upper())
+        if channel:
+            filters.append("n.channel = ?")
+            params.append(channel)
+        if view == "failed":
+            filters.append("n.state IN ('retry_pending', 'retrying', 'dlq')")
+        elif view == "suppressed":
+            filters.append("n.state = 'suppressed'")
+        else:
+            filters.append("n.state = 'delivered'")
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT we.event_id, wj.chat_id, wj.symbol, we.priority, n.channel, n.state, n.suppressed_reason, n.last_error,
+                       we.trigger_ts, n.updated_at
+                FROM notifications n
+                JOIN watch_events we ON we.event_id = n.event_id
+                JOIN watch_jobs wj ON wj.job_id = we.job_id
+                WHERE {' AND '.join(filters)}
+                ORDER BY n.updated_at DESC
+                LIMIT ?
+                """,
+                (*params, max(1, int(limit))),
+            ).fetchall()
+        return [
+            AlertHubRecord(
+                event_id=str(row["event_id"]),
+                chat_id=str(row["chat_id"]),
+                symbol=str(row["symbol"]),
+                priority=str(row["priority"]),
+                channel=str(row["channel"]),
+                status=str(row["state"]),
+                suppressed_reason=str(row["suppressed_reason"]) if row["suppressed_reason"] else None,
+                last_error=str(row["last_error"]) if row["last_error"] else None,
+                trigger_ts=str(row["trigger_ts"]),
+                updated_at=str(row["updated_at"]),
+            )
+            for row in rows
+        ]
+
     def check_and_increment_command_rate_limit(
         self,
         *,
@@ -839,6 +1299,10 @@ class TelegramTaskStore:
         chat_id: str,
         symbol: str,
         interval_sec: int,
+        scope: str = "single",
+        group_id: str | None = None,
+        route_strategy: str = "dual_channel",
+        template_id: str | None = None,
         market: str = "auto",
         threshold: float = 0.03,
         mode: str = "anomaly",
@@ -848,7 +1312,15 @@ class TelegramTaskStore:
         now_iso = _isoformat(ts)
         next_run_at = _isoformat(ts + timedelta(seconds=interval_sec))
         existing = self.find_enabled_watch_job(chat_id=chat_id, symbol=symbol)
-        if existing is not None and existing.interval_sec == interval_sec and existing.mode == mode and existing.market == market:
+        if (
+            existing is not None
+            and existing.interval_sec == interval_sec
+            and existing.mode == mode
+            and existing.market == market
+            and existing.scope == scope
+            and existing.route_strategy == route_strategy
+            and existing.group_id == group_id
+        ):
             return existing
 
         job_id = f"job-{uuid4().hex[:8]}"
@@ -856,10 +1328,11 @@ class TelegramTaskStore:
             conn.execute(
                 """
                 INSERT INTO watch_jobs(
-                    job_id, chat_id, symbol, market, interval_sec, threshold, mode, enabled, next_run_at,
+                    job_id, chat_id, symbol, market, interval_sec, threshold, mode, scope, group_id, route_strategy, template_id,
+                    enabled, next_run_at,
                     created_at, updated_at, last_run_at, last_triggered_at, last_error
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, NULL, NULL, NULL)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, NULL, NULL, NULL)
                 """,
                 (
                     job_id,
@@ -869,6 +1342,10 @@ class TelegramTaskStore:
                     int(interval_sec),
                     float(threshold),
                     mode,
+                    scope,
+                    group_id,
+                    route_strategy,
+                    template_id,
                     next_run_at,
                     now_iso,
                     now_iso,
@@ -880,7 +1357,7 @@ class TelegramTaskStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT job_id, chat_id, symbol, market, interval_sec, threshold, mode, enabled,
+                SELECT job_id, chat_id, symbol, market, interval_sec, threshold, mode, scope, group_id, route_strategy, template_id, enabled,
                        next_run_at, created_at, updated_at, last_run_at, last_triggered_at, last_error
                 FROM watch_jobs
                 WHERE job_id = ?
@@ -897,6 +1374,10 @@ class TelegramTaskStore:
             interval_sec=int(row["interval_sec"]),
             threshold=float(row["threshold"]),
             mode=str(row["mode"]),
+            scope=str(row["scope"]) if row["scope"] else "single",
+            group_id=str(row["group_id"]) if row["group_id"] else None,
+            route_strategy=str(row["route_strategy"]) if row["route_strategy"] else "dual_channel",
+            template_id=str(row["template_id"]) if row["template_id"] else None,
             enabled=bool(int(row["enabled"])),
             next_run_at=str(row["next_run_at"]),
             created_at=str(row["created_at"]),
@@ -910,7 +1391,7 @@ class TelegramTaskStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT job_id, chat_id, symbol, market, interval_sec, threshold, mode, enabled,
+                SELECT job_id, chat_id, symbol, market, interval_sec, threshold, mode, scope, group_id, route_strategy, template_id, enabled,
                        next_run_at, created_at, updated_at, last_run_at, last_triggered_at, last_error
                 FROM watch_jobs
                 WHERE chat_id = ? AND symbol = ? AND enabled = 1
@@ -929,6 +1410,10 @@ class TelegramTaskStore:
             interval_sec=int(row["interval_sec"]),
             threshold=float(row["threshold"]),
             mode=str(row["mode"]),
+            scope=str(row["scope"]) if row["scope"] else "single",
+            group_id=str(row["group_id"]) if row["group_id"] else None,
+            route_strategy=str(row["route_strategy"]) if row["route_strategy"] else "dual_channel",
+            template_id=str(row["template_id"]) if row["template_id"] else None,
             enabled=bool(int(row["enabled"])),
             next_run_at=str(row["next_run_at"]),
             created_at=str(row["created_at"]),
@@ -943,7 +1428,7 @@ class TelegramTaskStore:
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT job_id, chat_id, symbol, market, interval_sec, threshold, mode, enabled,
+                SELECT job_id, chat_id, symbol, market, interval_sec, threshold, mode, scope, group_id, route_strategy, template_id, enabled,
                        next_run_at, created_at, updated_at, last_run_at, last_triggered_at, last_error
                 FROM watch_jobs
                 WHERE {where_clause}
@@ -960,6 +1445,10 @@ class TelegramTaskStore:
                 interval_sec=int(row["interval_sec"]),
                 threshold=float(row["threshold"]),
                 mode=str(row["mode"]),
+                scope=str(row["scope"]) if row["scope"] else "single",
+                group_id=str(row["group_id"]) if row["group_id"] else None,
+                route_strategy=str(row["route_strategy"]) if row["route_strategy"] else "dual_channel",
+                template_id=str(row["template_id"]) if row["template_id"] else None,
                 enabled=bool(int(row["enabled"])),
                 next_run_at=str(row["next_run_at"]),
                 created_at=str(row["created_at"]),
@@ -1003,7 +1492,7 @@ class TelegramTaskStore:
             conn.execute("BEGIN IMMEDIATE")
             rows = conn.execute(
                 """
-                SELECT job_id, chat_id, symbol, market, interval_sec, threshold, mode, next_run_at
+                SELECT job_id, chat_id, symbol, market, interval_sec, threshold, mode, scope, group_id, route_strategy, next_run_at
                 FROM watch_jobs
                 WHERE enabled = 1 AND next_run_at <= ?
                 ORDER BY next_run_at ASC
@@ -1035,6 +1524,9 @@ class TelegramTaskStore:
                         interval_sec=interval_sec,
                         threshold=float(row["threshold"]),
                         mode=str(row["mode"]),
+                        scope=str(row["scope"]) if row["scope"] else "single",
+                        group_id=str(row["group_id"]) if row["group_id"] else None,
+                        route_strategy=str(row["route_strategy"]) if row["route_strategy"] else "dual_channel",
                         next_run_at=previous_next_run_at,
                     )
                 )
@@ -1085,8 +1577,8 @@ class TelegramTaskStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT we.event_id, we.job_id, we.trigger_ts, we.price, we.pct_change, we.reason, we.rule, we.run_id,
-                       wj.chat_id, wj.symbol
+                SELECT we.event_id, we.job_id, we.trigger_ts, we.price, we.pct_change, we.reason, we.rule, we.run_id, we.priority, we.dedupe_key,
+                       wj.chat_id, wj.symbol, wj.route_strategy
                 FROM watch_events we
                 JOIN watch_jobs wj ON wj.job_id = we.job_id
                 WHERE we.event_id = ?
@@ -1104,8 +1596,11 @@ class TelegramTaskStore:
             "reason": str(row["reason"]),
             "rule": str(row["rule"]),
             "run_id": str(row["run_id"]) if row["run_id"] else None,
+            "priority": str(row["priority"]) if row["priority"] else "medium",
+            "dedupe_key": str(row["dedupe_key"]),
             "chat_id": str(row["chat_id"]),
             "symbol": str(row["symbol"]),
+            "route_strategy": str(row["route_strategy"]) if row["route_strategy"] else "dual_channel",
         }
 
     def record_watch_event_if_new(
@@ -1118,6 +1613,7 @@ class TelegramTaskStore:
         pct_change: float,
         reason: str,
         rule: str,
+        priority: str,
         run_id: str | None,
         bucket_minutes: int = 15,
     ) -> tuple[str, bool]:
@@ -1134,10 +1630,10 @@ class TelegramTaskStore:
             cursor = conn.execute(
                 """
                 INSERT OR IGNORE INTO watch_events(
-                    event_id, job_id, trigger_ts, price, pct_change, reason, rule, bucket_ts,
+                    event_id, job_id, trigger_ts, price, pct_change, reason, rule, priority, bucket_ts,
                     dedupe_key, pushed, run_id, created_at
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
                 """,
                 (
                     event_id,
@@ -1147,6 +1643,7 @@ class TelegramTaskStore:
                     float(pct_change),
                     reason,
                     rule,
+                    priority,
                     bucket_ts,
                     dedupe_key,
                     run_id,
@@ -1180,6 +1677,7 @@ class TelegramTaskStore:
         next_retry_at: str | None = None,
         last_error: str | None = None,
         delivered_at: str | None = None,
+        suppressed_reason: str | None = None,
         reason: str | None = None,
     ) -> None:
         now = _utc_now()
@@ -1196,15 +1694,16 @@ class TelegramTaskStore:
                 """
                 INSERT INTO notifications(
                     notification_id, event_id, channel, state, retry_count, next_retry_at,
-                    last_error, delivered_at, created_at, updated_at
+                    last_error, delivered_at, suppressed_reason, created_at, updated_at
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(event_id, channel) DO UPDATE SET
                     state = excluded.state,
                     retry_count = excluded.retry_count,
                     next_retry_at = excluded.next_retry_at,
                     last_error = excluded.last_error,
                     delivered_at = excluded.delivered_at,
+                    suppressed_reason = excluded.suppressed_reason,
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -1216,6 +1715,7 @@ class TelegramTaskStore:
                     next_retry_at,
                     last_error,
                     delivered_at,
+                    suppressed_reason,
                     now,
                     now,
                 ),
@@ -1437,6 +1937,11 @@ class TelegramTaskStore:
             row = conn.execute("SELECT COUNT(*) AS c FROM notifications WHERE state = 'dlq'").fetchone()
         return int(row["c"])
 
+    def count_suppressed_notifications(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS c FROM notifications WHERE state = 'suppressed'").fetchone()
+        return int(row["c"])
+
     def count_notification_state_transitions(self) -> int:
         with self._connect() as conn:
             row = conn.execute("SELECT COUNT(*) AS c FROM notification_state_transitions").fetchone()
@@ -1626,6 +2131,10 @@ class TelegramTaskStore:
         )
         report["gray_release_denied_total"] = gray_denied
         report["enabled_notification_routes"] = self._count_enabled_notification_routes()
+        report["delivered_notifications_total"] = self.count_delivered_notifications()
+        report["suppressed_notifications_total"] = self.count_suppressed_notifications()
+        report["enabled_outbound_webhooks"] = self._count_enabled_outbound_webhooks()
+        report["watchlist_groups_total"] = self._count_watchlist_groups()
         return report
 
     def _count_enabled_notification_routes(self) -> int:
@@ -1633,4 +2142,14 @@ class TelegramTaskStore:
             row = conn.execute(
                 "SELECT COUNT(*) AS c FROM notification_routes WHERE enabled = 1"
             ).fetchone()
+        return int(row["c"])
+
+    def _count_enabled_outbound_webhooks(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS c FROM outbound_webhooks WHERE enabled = 1").fetchone()
+        return int(row["c"])
+
+    def _count_watchlist_groups(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS c FROM watchlist_groups").fetchone()
         return int(row["c"])

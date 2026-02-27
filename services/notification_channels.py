@@ -24,6 +24,7 @@ class MultiChannelNotifier:
         telegram: TargetedSender | None = None,
         email: TargetedSender | None = None,
         wecom: TargetedSender | None = None,
+        webhook: TargetedSender | None = None,
     ) -> None:
         self._senders: dict[str, TargetedSender] = {}
         if telegram is not None:
@@ -32,6 +33,8 @@ class MultiChannelNotifier:
             self._senders["email"] = email
         if wecom is not None:
             self._senders["wecom"] = wecom
+        if webhook is not None:
+            self._senders["webhook"] = webhook
 
     async def dispatch(self, *, channel: str, target: str, text: str) -> DispatchResult:
         sender = self._senders.get(channel)
@@ -42,4 +45,3 @@ class MultiChannelNotifier:
             return DispatchResult(channel=channel, target=target, delivered=True, error=None)
         except Exception as exc:  # pragma: no cover
             return DispatchResult(channel=channel, target=target, delivered=False, error=str(exc))
-

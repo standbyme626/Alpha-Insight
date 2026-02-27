@@ -13,5 +13,9 @@
   "digest_generated_total": 0,
   "channel_dispatch_success_rate": 1.0,
   "gray_release_denied_total": 0,
-  "enabled_notification_routes": 0
+  "enabled_notification_routes": 0,
+  "delivered_notifications_total": 0,
+  "suppressed_notifications_total": 0,
+  "enabled_outbound_webhooks": 0,
+  "watchlist_groups_total": 0
 }

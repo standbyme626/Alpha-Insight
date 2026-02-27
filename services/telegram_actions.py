@@ -48,11 +48,16 @@ class TelegramActions:
             chat_id,
             "Available commands:\n"
             "/analyze <symbol> - run unified research and return run_id\n"
-            "/monitor <symbol> <interval> [volatility|price|rsi] - create monitor job (e.g. 1h rsi)\n"
+            "/monitor <symbol> <interval> [volatility|price|rsi] - create monitor job (legacy format)\n"
+            "/monitor <symbol|sym1,sym2> <interval> [volatility|price|rsi] [telegram_only|webhook_only|dual_channel]\n"
             "/list - list monitor jobs\n"
             "/stop <job_id|symbol> - disable monitor job\n"
-            "/report <run_id|request_id> - query historical report summary\n"
+            "/report <run_id|request_id> [short|full] - query report summary\n"
             "/digest daily - get last-24h summary\n"
+            "/alerts [triggered|failed|suppressed] [limit] - alert hub views\n"
+            "/bulk <enable|disable|interval|threshold> <target|all> [value] - bulk job operations\n"
+            "/webhook <set|disable|list> ... - manage webhook route\n"
+            "/pref <summary|quiet|priority> <value> - notification preferences\n"
             "Compliance: for research and alerts only, no auto-trading.\n"
             "/help - show this help",
         )
@@ -95,10 +100,12 @@ class TelegramActions:
         *,
         chat_id: str,
         symbol: str,
+        symbols: list[str] | None = None,
         interval_sec: int,
         mode: str = "anomaly",
         threshold: float = 0.03,
         template: str = "volatility",
+        route_strategy: str = "dual_channel",
     ) -> ActionResult:
         if not self._store.can_chat_monitor(chat_id=chat_id):
             await self._notifier.send_text(
@@ -123,9 +130,22 @@ class TelegramActions:
             )
             return ActionResult(command="monitor")
 
+        symbol_list = symbols or [symbol]
+        scope = "group" if len(symbol_list) > 1 else "single"
+        group_id: str | None = None
+        job_symbol = symbol
+        if scope == "group":
+            group_name = f"watch-{symbol_list[0]}-{len(symbol_list)}"
+            group = self._store.create_or_replace_watchlist_group(chat_id=chat_id, name=group_name, symbols=symbol_list)
+            group_id = group.group_id
+            job_symbol = symbol_list[0]
         job = self._store.create_watch_job(
             chat_id=chat_id,
-            symbol=symbol,
+            symbol=job_symbol,
+            scope=scope,
+            group_id=group_id,
+            route_strategy=route_strategy,
+            template_id=template,
             interval_sec=interval_sec,
             market="auto",
             threshold=threshold,
@@ -133,12 +153,13 @@ class TelegramActions:
         )
         await self._notifier.send_text(
             chat_id,
-            f"Monitor created: {job.symbol} every {job.interval_sec}s template={template} "
-            f"mode={job.mode} threshold={job.threshold} job_id={job.job_id} next_run_at={job.next_run_at}",
+            f"Monitor created: scope={scope} symbols={','.join(symbol_list)} every {job.interval_sec}s template={template} "
+            f"mode={job.mode} threshold={job.threshold} route={route_strategy} "
+            f"job_id={job.job_id} next_run_at={job.next_run_at}",
         )
         return ActionResult(command="monitor")
 
-    async def handle_report(self, *, chat_id: str, target_id: str) -> ActionResult:
+    async def handle_report(self, *, chat_id: str, target_id: str, detail: str = "short") -> ActionResult:
         self._store.record_metric(metric_name="report_lookup_total", metric_value=1.0)
         report = self._store.get_analysis_report(report_id=target_id, chat_id=chat_id)
         if report is None:
@@ -153,10 +174,12 @@ class TelegramActions:
         if rsi is not None:
             metrics_text.append(f"rsi14={round(float(rsi), 2)}")
         metrics_suffix = f"\nKey metrics: {' '.join(metrics_text)}" if metrics_text else ""
+        summary = report.summary[:220] if detail == "short" else report.summary[:1200]
+        help_suffix = "" if detail == "full" else f"\nUse `/report {target_id} full` for full summary."
         await self._notifier.send_text(
             chat_id,
             f"Report summary\nrun_id={report.run_id}\nrequest_id={report.request_id}\n"
-            f"symbol={report.symbol}\nsummary={report.summary[:500]}{metrics_suffix}",
+            f"symbol={report.symbol}\nsummary={summary}{metrics_suffix}{help_suffix}",
         )
         self._store.record_metric(metric_name="report_lookup_success", metric_value=1.0)
         return ActionResult(command="report")
@@ -201,6 +224,70 @@ class TelegramActions:
             )
         await self._notifier.send_text(chat_id, "\n".join(lines))
         return ActionResult(command="list")
+
+    async def handle_alerts(self, *, chat_id: str, view: str, limit: int) -> ActionResult:
+        rows = self._store.list_alert_hub(chat_id=chat_id, view=view, limit=limit)
+        if not rows:
+            await self._notifier.send_text(chat_id, f"No alert records for view={view}.")
+            return ActionResult(command="alerts")
+        lines = [f"Alert Hub view={view} (latest {limit})"]
+        for row in rows:
+            extra = ""
+            if row.suppressed_reason:
+                extra = f" suppressed={row.suppressed_reason}"
+            elif row.last_error:
+                extra = f" error={row.last_error[:80]}"
+            lines.append(f"- {row.event_id} {row.symbol} {row.priority} {row.channel}:{row.status}{extra}")
+        await self._notifier.send_text(chat_id, "\n".join(lines))
+        return ActionResult(command="alerts")
+
+    async def handle_bulk(self, *, chat_id: str, action: str, target: str, value: str = "") -> ActionResult:
+        changed = self._store.bulk_update_watch_jobs(chat_id=chat_id, action=action, target=target, value=value)
+        await self._notifier.send_text(chat_id, f"Bulk update done: action={action} target={target} changed={changed}")
+        return ActionResult(command="bulk")
+
+    async def handle_webhook(
+        self,
+        *,
+        chat_id: str,
+        action: str,
+        url: str = "",
+        secret: str = "",
+        webhook_id: str = "",
+    ) -> ActionResult:
+        if action == "set":
+            hook = self._store.upsert_outbound_webhook(chat_id=chat_id, url=url, secret=secret)
+            await self._notifier.send_text(chat_id, f"Webhook enabled: {hook.webhook_id} -> {hook.url}")
+            return ActionResult(command="webhook")
+        if action == "disable":
+            ok = self._store.disable_outbound_webhook(chat_id=chat_id, webhook_id=webhook_id)
+            await self._notifier.send_text(chat_id, "Webhook disabled." if ok else "Webhook not found.")
+            return ActionResult(command="webhook")
+        hooks = self._store.list_outbound_webhooks(chat_id=chat_id, enabled_only=False)
+        if not hooks:
+            await self._notifier.send_text(chat_id, "No webhook configured.")
+            return ActionResult(command="webhook")
+        lines = ["Webhook routes:"]
+        for hook in hooks:
+            lines.append(f"- {hook.webhook_id} enabled={hook.enabled} timeout_ms={hook.timeout_ms} url={hook.url}")
+        await self._notifier.send_text(chat_id, "\n".join(lines))
+        return ActionResult(command="webhook")
+
+    async def handle_pref(self, *, chat_id: str, setting: str, value: str) -> ActionResult:
+        if setting == "summary":
+            pref = self._store.upsert_chat_preferences(chat_id=chat_id, summary_mode=value)
+        elif setting == "priority":
+            pref = self._store.upsert_chat_preferences(chat_id=chat_id, min_priority=value)
+        elif setting == "quiet":
+            pref = self._store.upsert_chat_preferences(chat_id=chat_id, quiet_hours=None if value == "off" else value)
+        else:
+            await self._notifier.send_text(chat_id, "Unsupported preference setting.")
+            return ActionResult(command="pref")
+        await self._notifier.send_text(
+            chat_id,
+            f"Preference updated: summary={pref.summary_mode} priority={pref.min_priority} quiet={pref.quiet_hours or 'off'}",
+        )
+        return ActionResult(command="pref")
 
     async def handle_stop(self, *, chat_id: str, target: str, target_type: str) -> ActionResult:
         if not self._store.can_chat_monitor(chat_id=chat_id):

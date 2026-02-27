@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Protocol
+
+import aiohttp
 
 from agents.scanner_engine import ScanConfig, WatchlistRunResult, build_scan_trigger, format_signal_message, run_watchlist_cycle
 from services.notification_channels import MultiChannelNotifier
@@ -46,7 +51,13 @@ class WatchExecutor:
         self._enable_triggered_research = enable_triggered_research
         self._limits = limits or RuntimeLimits()
         self._global_gate = global_gate or GlobalConcurrencyGate(self._limits.global_concurrency)
-        self._multi_channel = multi_channel_notifier or MultiChannelNotifier(telegram=_TelegramTargetedSender(notifier))
+        if multi_channel_notifier is None:
+            self._multi_channel = MultiChannelNotifier(
+                telegram=_TelegramTargetedSender(notifier),
+                webhook=_WebhookTargetedSender(store=store),
+            )
+        else:
+            self._multi_channel = multi_channel_notifier
 
     async def execute_job(self, job: DueWatchJob) -> WatchExecutionResult:
         self._store.record_metric(metric_name="monitor_executed", metric_value=1.0, tags={"job_id": job.job_id})
@@ -65,7 +76,7 @@ class WatchExecutor:
             )
 
         config = ScanConfig(
-            watchlist=[job.symbol],
+            watchlist=self._job_watchlist(job),
             market=job.market,
             interval=self._interval_for_job(job.interval_sec),
             pct_alert_threshold=job.threshold,
@@ -96,6 +107,7 @@ class WatchExecutor:
                 pct_change=signal.pct_change,
                 reason=signal.reason,
                 rule=signal.reason,
+                priority=str(signal.priority),
                 run_id=run_id,
                 bucket_minutes=self._dedupe_bucket_minutes,
             )
@@ -142,7 +154,9 @@ class WatchExecutor:
         chat_id = str(payload["chat_id"])
         job_id = str(payload["job_id"])
         symbol = str(payload["symbol"])
-        routes = self._resolve_routes(chat_id=chat_id, channel_filter=channel_filter)
+        routes = self._resolve_routes(chat_id=chat_id, payload=payload, channel_filter=channel_filter)
+        prefs = self._store.get_chat_preferences(chat_id=chat_id)
+        priority = str(payload.get("priority", "medium")).lower()
 
         if self._store.is_degradation_active(state_key="no_monitor_push"):
             for channel, _target in routes:
@@ -151,6 +165,7 @@ class WatchExecutor:
                     channel=channel,
                     state="suppressed",
                     retry_count=retry_count,
+                    suppressed_reason="no_monitor_push",
                     reason="no_monitor_push",
                 )
             self._store.add_audit_event(
@@ -164,6 +179,30 @@ class WatchExecutor:
             return False
 
         summary_mode = self._store.is_degradation_active(state_key="summary_mode")
+        summary_mode = summary_mode or prefs.summary_mode == "short"
+        if self._in_quiet_hours(prefs.quiet_hours) and priority != "critical":
+            for channel, _target in routes:
+                self._store.upsert_notification_state(
+                    event_id=event_id,
+                    channel=channel,
+                    state="suppressed",
+                    retry_count=retry_count,
+                    suppressed_reason="quiet_hours",
+                    reason="quiet_hours",
+                )
+            return False
+        if not self._priority_allowed(min_priority=prefs.min_priority, event_priority=priority):
+            for channel, _target in routes:
+                self._store.upsert_notification_state(
+                    event_id=event_id,
+                    channel=channel,
+                    state="suppressed",
+                    retry_count=retry_count,
+                    suppressed_reason="preference_priority",
+                    reason="preference_priority",
+                )
+            return False
+
         if summary_mode and self._is_throttled(job_id=job_id, interval_sec=900):
             for channel, _target in routes:
                 self._store.upsert_notification_state(
@@ -171,6 +210,7 @@ class WatchExecutor:
                     channel=channel,
                     state="suppressed",
                     retry_count=retry_count,
+                    suppressed_reason="summary_mode_throttle",
                     reason="summary_mode_throttle",
                 )
             self._store.add_audit_event(
@@ -184,12 +224,14 @@ class WatchExecutor:
             return False
 
         text = self._build_message(payload, summary_mode=summary_mode)
+        webhook_body = self._build_webhook_payload(payload)
         delivered_any = False
         for channel, target in routes:
             self._store.record_metric(metric_name="push_attempt", metric_value=1.0, tags={"job_id": job_id, "channel": channel})
             self._store.record_metric(metric_name="channel_dispatch_attempt", metric_value=1.0, tags={"job_id": job_id, "channel": channel})
 
-            result = await self._multi_channel.dispatch(channel=channel, target=target, text=text)
+            dispatch_text = webhook_body if channel == "webhook" else text
+            result = await self._multi_channel.dispatch(channel=channel, target=target, text=dispatch_text)
             if result.delivered:
                 self._store.upsert_notification_state(
                     event_id=event_id,
@@ -215,11 +257,21 @@ class WatchExecutor:
             self._store.mark_watch_event_pushed(event_id=event_id)
         return delivered_any
 
-    def _resolve_routes(self, *, chat_id: str, channel_filter: str | None) -> list[tuple[str, str]]:
-        routes = self._store.list_notification_routes(chat_id=chat_id, enabled_only=True)
-        selected = [(item.channel, item.target) for item in routes]
-        if not selected:
-            selected = [("telegram", chat_id)]
+    def _resolve_routes(self, *, chat_id: str, payload: dict[str, Any], channel_filter: str | None) -> list[tuple[str, str]]:
+        route_strategy = str(payload.get("route_strategy", "dual_channel"))
+        telegram_routes = self._store.list_notification_routes(chat_id=chat_id, enabled_only=True)
+        selected: list[tuple[str, str]] = []
+        if route_strategy == "telegram_only":
+            selected.extend((item.channel, item.target) for item in telegram_routes if item.channel == "telegram")
+            if not any(channel == "telegram" for channel, _ in selected):
+                selected.append(("telegram", chat_id))
+        elif route_strategy == "dual_channel":
+            selected.extend((item.channel, item.target) for item in telegram_routes if item.channel != "webhook")
+            if not selected:
+                selected.append(("telegram", chat_id))
+        if route_strategy in {"webhook_only", "dual_channel"}:
+            hooks = self._store.list_outbound_webhooks(chat_id=chat_id, enabled_only=True)
+            selected.extend(("webhook", hook.webhook_id) for hook in hooks)
         if channel_filter:
             selected = [item for item in selected if item[0] == channel_filter]
             if not selected:
@@ -303,6 +355,55 @@ class WatchExecutor:
         return text
 
     @staticmethod
+    def _build_webhook_payload(payload: dict[str, Any]) -> str:
+        event = {
+            "event_id": payload["event_id"],
+            "dedupe_key": payload.get("dedupe_key"),
+            "run_id": payload.get("run_id"),
+            "priority": payload.get("priority", "medium"),
+            "symbol": payload["symbol"],
+            "job_id": payload["job_id"],
+            "trigger_ts": payload["trigger_ts"],
+            "metrics": {
+                "price": payload["price"],
+                "pct_change": payload["pct_change"],
+                "reason": payload["reason"],
+                "rule": payload["rule"],
+            },
+        }
+        return json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+
+    @staticmethod
+    def _priority_allowed(*, min_priority: str, event_priority: str) -> bool:
+        ranking = {"all": 0, "high": 1, "critical": 2}
+        event_rank = {"low": 0, "medium": 1, "high": 1, "critical": 2}
+        return event_rank.get(event_priority, 1) >= ranking.get(min_priority, 1)
+
+    @staticmethod
+    def _in_quiet_hours(quiet_hours: str | None) -> bool:
+        if not quiet_hours:
+            return False
+        try:
+            start_raw, end_raw = quiet_hours.split("-")
+            start = int(start_raw)
+            end = int(end_raw)
+        except ValueError:
+            return False
+        now_hour = datetime.now(timezone.utc).hour
+        if start == end:
+            return True
+        if start < end:
+            return start <= now_hour < end
+        return now_hour >= start or now_hour < end
+
+    def _job_watchlist(self, job: DueWatchJob) -> list[str]:
+        if job.scope == "group" and job.group_id:
+            symbols = self._store.get_watchlist_group_symbols(group_id=job.group_id)
+            if symbols:
+                return symbols
+        return [job.symbol]
+
+    @staticmethod
     def _interval_for_job(interval_sec: int) -> str:
         if interval_sec <= 300:
             return "5m"
@@ -318,3 +419,21 @@ class _TelegramTargetedSender:
     async def send_text(self, target: str, text: str) -> dict[str, Any]:
         return await self._sender.send_text(target, text)
 
+
+class _WebhookTargetedSender:
+    def __init__(self, *, store: TelegramTaskStore) -> None:
+        self._store = store
+
+    async def send_text(self, target: str, text: str) -> dict[str, Any]:
+        hook = self._store.get_outbound_webhook(webhook_id=target)
+        if hook is None or not hook.enabled:
+            raise RuntimeError(f"webhook not found: {target}")
+        signature = hmac.new(hook.secret.encode("utf-8"), text.encode("utf-8"), hashlib.sha256).hexdigest()
+        headers = {"content-type": "application/json", "x-alpha-insight-signature": signature}
+        timeout = aiohttp.ClientTimeout(total=max(0.5, hook.timeout_ms / 1000))
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(hook.url, data=text.encode("utf-8"), headers=headers) as response:
+                if response.status >= 400:
+                    body = await response.text()
+                    raise RuntimeError(f"webhook_http_{response.status}:{body[:120]}")
+        return {"ok": True}

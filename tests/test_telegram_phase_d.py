@@ -188,3 +188,193 @@ async def test_gray_release_blocks_non_allowlist_chat(tmp_path) -> None:  # noqa
     assert "gray release active" in sender.messages[-1][1]
     assert store.count_audit_events(event_type="gray_release_denied") == 1
 
+
+def test_parse_d456_commands() -> None:
+    parsed_alerts = parse_telegram_command("/alerts failed 20")
+    assert not isinstance(parsed_alerts, CommandError)
+    assert parsed_alerts.name == "alerts"
+    assert parsed_alerts.args["view"] == "failed"
+
+    parsed_bulk = parse_telegram_command("/bulk interval all 30m")
+    assert not isinstance(parsed_bulk, CommandError)
+    assert parsed_bulk.name == "bulk"
+    assert parsed_bulk.args["action"] == "interval"
+    assert parsed_bulk.args["value"] == "1800"
+
+    parsed_pref = parse_telegram_command("/pref priority critical")
+    assert not isinstance(parsed_pref, CommandError)
+    assert parsed_pref.name == "pref"
+    assert parsed_pref.args["value"] == "critical"
+
+
+@pytest.mark.asyncio
+async def test_alert_hub_and_bulk_operations(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": "run-d4", **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 13001, "message": {"chat": {"id": "chat-d6"}, "text": "/monitor TSLA 1h"}})
+    assert await gateway.process_update({"update_id": 13002, "message": {"chat": {"id": "chat-d6"}, "text": "/bulk interval all 30m"}})
+    assert await gateway.process_update({"update_id": 13003, "message": {"chat": {"id": "chat-d6"}, "text": "/bulk threshold all 0.07"}})
+
+    jobs = store.list_watch_jobs(chat_id="chat-d6")
+    assert len(jobs) == 1
+    assert jobs[0].interval_sec == 1800
+    assert jobs[0].threshold == 0.07
+
+    store.record_watch_event_if_new(
+        job_id=jobs[0].job_id,
+        symbol="TSLA",
+        trigger_ts=datetime(2026, 2, 27, 1, 0, tzinfo=timezone.utc),
+        price=101.0,
+        pct_change=0.04,
+        reason="price_or_rsi",
+        rule="price_or_rsi",
+        priority="high",
+        run_id=None,
+    )
+    event = store.list_alert_hub(chat_id="chat-d6", view="triggered", limit=5)
+    # No delivery state yet -> empty alert hub rows
+    assert not event
+
+
+@pytest.mark.asyncio
+async def test_watchlist_group_webhook_only_routing(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    store.upsert_telegram_chat(chat_id="chat-d7", user_id="7", username="u7")
+    hook = store.upsert_outbound_webhook(chat_id="chat-d7", url="https://example.com/hook", secret="abc")
+
+    base_time = datetime(2026, 2, 27, 0, 0, tzinfo=timezone.utc)
+    group = store.create_or_replace_watchlist_group(chat_id="chat-d7", name="grp", symbols=["AAPL", "MSFT"])
+    store.create_watch_job(
+        chat_id="chat-d7",
+        symbol="AAPL",
+        scope="group",
+        group_id=group.group_id,
+        route_strategy="webhook_only",
+        interval_sec=300,
+        now=base_time,
+    )
+    due_job = store.claim_due_watch_jobs(now=base_time + timedelta(minutes=10), limit=1)[0]
+
+    async def fake_scan_runner(config, **kwargs):  # noqa: ANN001, ANN003
+        signal_ts = base_time + timedelta(minutes=10)
+        signal = WatchSignal(
+            symbol=config.watchlist[1],
+            timestamp=signal_ts,
+            price=120.0,
+            pct_change=0.06,
+            rsi=72.0,
+            priority="critical",
+            reason="price_or_rsi",
+            company_name="MSFT",
+        )
+        snapshot = AlertSnapshot(
+            snapshot_id="snap-d5",
+            trigger_type="scheduled",
+            trigger_id="t-d5",
+            trigger_time=signal_ts,
+            mode="anomaly",
+            signal=AlertSignalSnapshot(
+                symbol=signal.symbol,
+                company_name=signal.company_name,
+                timestamp=signal.timestamp,
+                price=signal.price,
+                pct_change=signal.pct_change,
+                rsi=signal.rsi,
+                priority=signal.priority,
+                reason=signal.reason,
+            ),
+            notification_channels=[],
+            notification_dispatched=False,
+            research_status="skipped",
+        )
+        return type("RunOut", (), {
+            "trigger": build_scan_trigger(trigger_time=signal_ts),
+            "signals": [signal],
+            "selected_alerts": [signal],
+            "snapshots": [snapshot],
+            "notifications": [],
+            "runtime_metrics": {},
+            "failure_events": [],
+            "failure_clusters": {},
+            "alarms": [],
+        })()
+
+    telegram_sender = FakeTargetSender()
+    webhook_sender = FakeTargetSender()
+    multi = MultiChannelNotifier(telegram=telegram_sender, webhook=webhook_sender)
+    executor = WatchExecutor(store=store, notifier=FakeChatSender(), scan_runner=fake_scan_runner, multi_channel_notifier=multi)
+
+    out = await executor.execute_job(due_job)
+    assert out.pushed_count == 1
+    assert len(telegram_sender.messages) == 0
+    assert len(webhook_sender.messages) == 1
+    assert webhook_sender.messages[0][0] == hook.webhook_id
+
+
+@pytest.mark.asyncio
+async def test_quiet_hours_and_priority_preference_suppresses_non_critical(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    store.upsert_telegram_chat(chat_id="chat-d8", user_id="8", username="u8")
+    store.upsert_chat_preferences(chat_id="chat-d8", quiet_hours="00-00", min_priority="critical")
+
+    base_time = datetime(2026, 2, 27, 0, 0, tzinfo=timezone.utc)
+    store.create_watch_job(chat_id="chat-d8", symbol="AAPL", interval_sec=300, now=base_time)
+    due_job = store.claim_due_watch_jobs(now=base_time + timedelta(minutes=10), limit=1)[0]
+
+    async def fake_scan_runner(config, **kwargs):  # noqa: ANN001, ANN003
+        signal_ts = base_time + timedelta(minutes=10)
+        signal = WatchSignal(
+            symbol=config.watchlist[0],
+            timestamp=signal_ts,
+            price=99.0,
+            pct_change=0.03,
+            rsi=61.0,
+            priority="high",
+            reason="price_or_rsi",
+            company_name="Apple",
+        )
+        snapshot = AlertSnapshot(
+            snapshot_id="snap-d6",
+            trigger_type="scheduled",
+            trigger_id="t-d6",
+            trigger_time=signal_ts,
+            mode="anomaly",
+            signal=AlertSignalSnapshot(
+                symbol=signal.symbol,
+                company_name=signal.company_name,
+                timestamp=signal.timestamp,
+                price=signal.price,
+                pct_change=signal.pct_change,
+                rsi=signal.rsi,
+                priority=signal.priority,
+                reason=signal.reason,
+            ),
+            notification_channels=[],
+            notification_dispatched=False,
+            research_status="skipped",
+        )
+        return type("RunOut", (), {
+            "trigger": build_scan_trigger(trigger_time=signal_ts),
+            "signals": [signal],
+            "selected_alerts": [signal],
+            "snapshots": [snapshot],
+            "notifications": [],
+            "runtime_metrics": {},
+            "failure_events": [],
+            "failure_clusters": {},
+            "alarms": [],
+        })()
+
+    executor = WatchExecutor(store=store, notifier=FakeChatSender(), scan_runner=fake_scan_runner)
+    out = await executor.execute_job(due_job)
+    assert out.pushed_count == 0
+    suppressed = store.list_alert_hub(chat_id="chat-d8", view="suppressed", limit=5)
+    assert suppressed
+    assert suppressed[0].suppressed_reason in {"quiet_hours", "preference_priority"}
