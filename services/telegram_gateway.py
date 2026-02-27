@@ -1770,17 +1770,20 @@ class TelegramGateway:
                     "offset": self._offset,
                     "allowed_updates": ["message", "callback_query"],
                 }
-                async with session.post(url, json=payload, timeout=poll_timeout_seconds + 5) as response:
-                    data = await response.json(content_type=None)
-                    if response.status >= 400 or not data.get("ok"):
+                try:
+                    async with session.post(url, json=payload, timeout=poll_timeout_seconds + 5) as response:
+                        data = await response.json(content_type=None)
+                        if response.status >= 400 or not data.get("ok"):
+                            await self.process_pending_updates(limit=100)
+                            await asyncio.sleep(idle_sleep_seconds)
+                            continue
+                        updates = data.get("result", [])
+                        if not isinstance(updates, list):
+                            await self.process_pending_updates(limit=100)
+                            await asyncio.sleep(idle_sleep_seconds)
+                            continue
+                        await self.process_updates([item for item in updates if isinstance(item, dict)])
                         await self.process_pending_updates(limit=100)
-                        await asyncio.sleep(idle_sleep_seconds)
-                        continue
-                    updates = data.get("result", [])
-                    if not isinstance(updates, list):
-                        await self.process_pending_updates(limit=100)
-                        await asyncio.sleep(idle_sleep_seconds)
-                        continue
-                    await self.process_updates([item for item in updates if isinstance(item, dict)])
+                except (asyncio.TimeoutError, aiohttp.ClientError):
                     await self.process_pending_updates(limit=100)
                 await asyncio.sleep(idle_sleep_seconds)
