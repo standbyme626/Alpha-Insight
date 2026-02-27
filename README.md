@@ -21,6 +21,168 @@ Alpha-Insight 是一个基于 LangGraph 的多 Agent 量化投研系统，支持
 - Full Analysis 模式：可展示沙箱代码、stdout/stderr、traceback、重试次数
 - 沙箱容灾：Docker 沙箱不可用（如 `docker.sock permission denied`）时，自动回退本地进程执行（仍受 guardrails）
 
+## Telegram 体验升级（Upgrade5 规划）
+
+当前仓库已完成升级4（clarify follow-up、可解释降级、evidence），升级5聚焦“股民友好”交互：
+
+- 上下文记忆：`last_symbol + last_period`（默认 TTL 30min）
+- 显式换标的优先：如“不是腾讯，是阿里”立即切换
+- 候选点选：多候选代码（如 `0700.HK/TCEHY`）用按钮选择，且绑定 `request_id`
+- 点选超时策略：5 分钟后自动取消（或默认主市场代码并回显）
+- `/reset`：清空 symbol/period/候选点选/待确认上下文
+- 证据优先：无证据不输出技术结论评分
+- 图表策略：先自动重试一次，再降级文本并给下一步按钮
+- 每条回复带 `request_id(short)`（有 run 则附 `run_id`）
+
+详细设计见：
+
+- [升级5.md](升级5.md)
+
+### 当前业务流程图（Telegram / 双语）
+
+```mermaid
+flowchart TD
+  U[User 用户输入] --> G[Telegram Gateway 网关]
+  G --> R{Command or NL? 命令还是自然语言}
+
+  R -->|/command| C[Command Router 命令路由]
+  R -->|NL text| N[NLU Planner 意图与槽位解析]
+
+  N --> CP{clarify_pending exists? 是否有待澄清上下文}
+  CP -->|yes| FM[Follow-up Merge 承接补槽合并]
+  CP -->|no| VP[Validate Plan 校验计划]
+  FM --> VP
+
+  VP --> OK{Valid + Confidence? 校验与置信度通过}
+  OK -->|no| RJ[Reject with template 拒绝并返回模板]
+  OK -->|yes| HR{High risk? 高风险操作}
+
+  HR -->|yes| PC[pending_confirm 待确认]
+  PC --> CB{yes/no + request_id 绑定确认}
+  CB -->|no| CX[Cancel 取消]
+  CB -->|yes| EX
+  HR -->|no| EX[Execute 执行]
+  C --> EX
+
+  EX --> AI{Intent 意图}
+  AI -->|analyze_snapshot| AN[Run unified research 执行统一分析]
+  AI -->|create/list/stop/report/digest| AC[Actions 动作处理]
+
+  AN --> CH{need_chart? 需要图表}
+  CH -->|yes| RT[Chart retry once 图表自动重试一次]
+  RT --> CS{Chart available? 图表可用}
+  CS -->|yes| PH[sendPhoto 发图]
+  CS -->|no| FB[Fallback text 降级文本+按钮]
+  CH -->|no| TX[Text response 文本响应]
+
+  PH --> EV[Evidence+Metrics 审计证据与指标]
+  FB --> EV
+  TX --> EV
+  AC --> EV
+  RJ --> EV
+  CX --> EV
+```
+
+### 流程说明（详细双语）
+
+1. 入口分流（Ingress Routing）  
+   用户消息先进入 `TelegramGateway`，按是否以 `/` 开头分流到命令路由或自然语言解析。
+
+2. 命令链路（Command Path）  
+   命令走既有稳定链路（`/analyze /monitor /list /stop /report /digest`），保持向后兼容，不受 NL 变更影响。
+
+3. 自然语言解析（NL Understanding）  
+   NL 文本由 Planner 产出 `intent + slots + confidence`；如果存在 `clarify_pending`，优先做 follow-up 补槽承接。
+
+4. 校验与拒绝（Validation & Rejection）  
+   执行前做 deterministic 校验（symbol/period/interval/template 等）；不通过则返回用户友好模板，不执行危险动作。
+
+5. 高风险确认（High-risk Confirmation）  
+   高风险意图必须进入 `pending_confirm`，通过 `yes/no + request_id` 绑定确认，避免串单与误执行。
+
+6. 执行动作（Action Execution）  
+   分析意图调用统一研究流程，管理意图走 Telegram actions（监控、列表、停止、报告、日报）。
+
+7. 图表策略（Chart Strategy）  
+   请求图表时先尝试生成/提取，失败自动重试一次；仍失败时降级文本并给下一步按钮，不静默失败。
+
+8. 结果与证据（Response & Evidence）  
+   对用户输出结构化响应（含 `request_id`，可选 `run_id`）；同时写入 metrics/audit/evidence，支持追溯和运营统计。
+
+### 升级5目标态流程图（Target Flow / 双语）
+
+```mermaid
+flowchart TD
+  U[User Input 用户输入] --> I{Private or Group? 私聊还是群聊}
+  I -->|Private| S1[Context Scope=chat 上下文按chat]
+  I -->|Group| S2[Context Scope=user 上下文按用户]
+  S1 --> G
+  S2 --> G
+
+  G[Gateway 网关] --> K{Reset? 是否/reset}
+  K -->|yes| RS[Clear Context 清空上下文<br/>symbol/period/pending selection/confirm]
+  K -->|no| R{Command or NL 命令或自然语言}
+
+  R -->|Command| C[Command Router 命令路由]
+  R -->|NL| N[NLU + Slot Parse 意图与槽位]
+
+  N --> SYM{Symbol present? 有标的吗}
+  SYM -->|yes| SW{Explicit switch? 显式换标的}
+  SW -->|yes| NS[Override symbol 覆盖标的]
+  SW -->|no| PS[Keep symbol 保持当前标的]
+
+  SYM -->|no| CO{Carry-over hit? 命中上下文}
+  CO -->|yes| PS
+  CO -->|no| AM[Alias Map 候选映射<br/>中文名/代码/别名]
+  AM --> M{Single or Multi 单候选还是多候选}
+  M -->|single| PS
+  M -->|multi| SEL[Inline buttons 点选候选]
+  SEL --> TMO{Timeout 5m? 超时5分钟}
+  TMO -->|yes| DFT[Default/Cancel 默认或取消策略]
+  TMO -->|no| BIND[Bind request_id+symbol 绑定请求与标的]
+  DFT --> VP
+  BIND --> VP
+  NS --> VP
+  PS --> VP
+
+  VP[Validate + Risk 校验与风控] --> HR{High risk? 高风险}
+  HR -->|yes| PC[pending_confirm 待确认]
+  HR -->|no| EX[Execute 执行]
+  PC --> CF{yes/no + request_id 绑定确认}
+  CF -->|yes| EX
+  CF -->|no| CX[Cancelled 已取消]
+
+  EX --> PR[Resolve period 周期解析<br/>用户>输入>上下文>默认30天]
+  PR --> AN[Analyze/Actions 执行分析或动作]
+  C --> AN
+
+  AN --> CH{need_chart? 需要图表}
+  CH -->|yes| RT[Retry once 自动重试一次]
+  RT --> CE{chart ready? 图就绪}
+  CE -->|yes| PH[Photo + Summary 发图+摘要]
+  CE -->|no| FB[Fallback 降级文本+按钮]
+  CH -->|no| TX[Text Summary 文本摘要]
+
+  FB --> EV{Evidence visible? 证据可见}
+  TX --> EV
+  PH --> EV
+  EV -->|no| DG[Degrade with options 信息不足+可选操作]
+  EV -->|yes| OUT[Structured response 结构化输出]
+  DG --> OUT
+
+  OUT --> W[Write metrics/evidence 写入指标与证据]
+  CX --> W
+  RS --> W
+```
+
+### 升级后预期问答（示例）
+
+1. `看看K线图` -> 机器人询问标的或候选按钮
+2. `腾讯的` -> 承接执行，返回 `Snapshot + 数据时间 + 数据来源 + request_id/run_id`
+3. `看看新闻怎么说` -> 默认沿用当前标的与周期，回显 `news_count + 时间窗 + 来源`
+4. `不是腾讯，是阿里` -> 立即切换标的，不再追问
+5. 图表失败 -> 自动重试一次；仍失败则给“原因（用户语言）+ 按钮菜单（重试/扩窗/报告）”
+
 ## 目录结构
 
 - `agents/`：工作流与 Agent 逻辑（`planner_engine.py`, `workflow_engine.py`, `report_workflow.py`, `scanner_engine.py`）
@@ -48,6 +210,9 @@ cp .env.example .env
 - `ENABLE_LOCAL_FALLBACK`
 - `TELEGRAM_BOT_TOKEN`（可选）
 - `TELEGRAM_CHAT_ID`（可选）
+- `TELEGRAM_ACCESS_MODE`（`blacklist`/`allowlist`，默认 `blacklist`）
+- `TELEGRAM_ALLOWED_CHAT_IDS`（allowlist 模式下生效）
+- `TELEGRAM_BLOCKED_CHAT_IDS`（blacklist 模式下生效）
 
 3. 推荐本地 Python 环境（与当前测试一致）：
 
@@ -93,6 +258,19 @@ PYTHONPATH=/home/kkk/Project/Alpha-Insight pytest -q | tee docs/evidence/pytest_
 字段覆盖：`success/fallback/retry/latency/backend/failure_type`，用于硬口径复盘与回归对比。
 
 ## 后端启动
+
+### Telegram 一键启停（Gateway + Scheduler）
+
+```bash
+chmod +x scripts/telegram_stack.sh
+scripts/telegram_stack.sh start
+scripts/telegram_stack.sh status
+scripts/telegram_stack.sh restart
+scripts/telegram_stack.sh stop
+```
+
+默认读取 `.env`，并使用 `storage/telegram_gateway_live.db`。可通过环境变量覆盖：
+`ENV_FILE`、`TELEGRAM_GATEWAY_DB`、`TELEGRAM_POLL_TIMEOUT_SECONDS`、`TELEGRAM_IDLE_SLEEP_SECONDS`。
 
 ### 1) 实时异动扫描（可用于 Cron）
 
