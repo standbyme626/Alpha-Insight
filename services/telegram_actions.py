@@ -41,7 +41,10 @@ class TelegramActions:
             chat_id,
             "Available commands:\n"
             "/analyze <symbol> - run unified research and return run_id\n"
-            "/help - show this help"
+            "/monitor <symbol> <interval> - create monitor job (e.g. 1h)\n"
+            "/list - list monitor jobs\n"
+            "/stop <job_id|symbol> - disable monitor job\n"
+            "/help - show this help",
         )
         return ActionResult(command="help")
 
@@ -74,6 +77,63 @@ class TelegramActions:
             chat_id=chat_id,
         )
         return ActionResult(command="analyze", request_id=rid)
+
+    async def handle_monitor(self, *, chat_id: str, symbol: str, interval_sec: int) -> ActionResult:
+        if not self._store.can_chat_monitor(chat_id=chat_id):
+            await self._notifier.send_text(
+                chat_id,
+                "Permission denied: this chat is not allowed to create monitor jobs.",
+            )
+            return ActionResult(command="monitor")
+
+        job = self._store.create_watch_job(
+            chat_id=chat_id,
+            symbol=symbol,
+            interval_sec=interval_sec,
+            market="auto",
+            threshold=0.03,
+            mode="anomaly",
+        )
+        await self._notifier.send_text(
+            chat_id,
+            f"Monitor created: {job.symbol} every {job.interval_sec}s, job_id={job.job_id}, next_run_at={job.next_run_at}",
+        )
+        return ActionResult(command="monitor")
+
+    async def handle_list(self, *, chat_id: str) -> ActionResult:
+        jobs = self._store.list_watch_jobs(chat_id=chat_id, include_disabled=False)
+        if not jobs:
+            await self._notifier.send_text(chat_id, "No active monitor jobs. Use /monitor <symbol> <interval>.")
+            return ActionResult(command="list")
+
+        lines = ["Active monitor jobs:"]
+        for job in jobs:
+            last_triggered_at, last_pct_change = self._store.get_recent_watch_event_summary(job_id=job.job_id)
+            recent = "none"
+            if last_triggered_at is not None and last_pct_change is not None:
+                recent = f"{last_triggered_at} ({round(last_pct_change * 100, 2)}%)"
+            lines.append(
+                f"- {job.job_id} {job.symbol} every {job.interval_sec}s "
+                f"next={job.next_run_at} last_triggered={recent}"
+            )
+        await self._notifier.send_text(chat_id, "\n".join(lines))
+        return ActionResult(command="list")
+
+    async def handle_stop(self, *, chat_id: str, target: str, target_type: str) -> ActionResult:
+        if not self._store.can_chat_monitor(chat_id=chat_id):
+            await self._notifier.send_text(
+                chat_id,
+                "Permission denied: this chat is not allowed to stop monitor jobs.",
+            )
+            return ActionResult(command="stop")
+
+        disabled = self._store.disable_watch_job(chat_id=chat_id, target=target, target_type=target_type)
+        if disabled <= 0:
+            await self._notifier.send_text(chat_id, f"No active monitor job matched: {target}")
+            return ActionResult(command="stop")
+
+        await self._notifier.send_text(chat_id, f"Stopped {disabled} monitor job(s) for target={target}")
+        return ActionResult(command="stop")
 
     async def _run_analysis_request(
         self,

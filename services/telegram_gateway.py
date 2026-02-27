@@ -29,6 +29,9 @@ class TelegramGateway:
         message = update.get("message") or {}
         chat = message.get("chat") or {}
         chat_id = str(chat.get("id", ""))
+        from_user = message.get("from") or {}
+        user_id = str(from_user.get("id", "")) if from_user.get("id") is not None else None
+        username = str(from_user.get("username", "")).strip() or None
         text = str(message.get("text", "")).strip()
 
         inserted = self._store.insert_bot_update_if_new(
@@ -40,6 +43,7 @@ class TelegramGateway:
             return False
 
         try:
+            self._store.upsert_telegram_chat(chat_id=chat_id, user_id=user_id, username=username)
             parsed = parse_telegram_command(text)
             if isinstance(parsed, CommandError):
                 await self._actions.send_error_message(chat_id=chat_id, text=parsed.message)
@@ -58,6 +62,20 @@ class TelegramGateway:
                     update_id=update_id,
                     chat_id=chat_id,
                     symbol=parsed.args["symbol"],
+                )
+            elif parsed.name == "monitor":
+                result = await self._actions.handle_monitor(
+                    chat_id=chat_id,
+                    symbol=parsed.args["symbol"],
+                    interval_sec=int(parsed.args["interval_sec"]),
+                )
+            elif parsed.name == "list":
+                result = await self._actions.handle_list(chat_id=chat_id)
+            elif parsed.name == "stop":
+                result = await self._actions.handle_stop(
+                    chat_id=chat_id,
+                    target=parsed.args["target"],
+                    target_type=parsed.args["target_type"],
                 )
             else:
                 raise ValueError(f"Unsupported route: {parsed.name}")
