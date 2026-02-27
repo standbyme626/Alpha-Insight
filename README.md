@@ -21,9 +21,9 @@ Alpha-Insight 是一个基于 LangGraph 的多 Agent 量化投研系统，支持
 - Full Analysis 模式：可展示沙箱代码、stdout/stderr、traceback、重试次数
 - 沙箱容灾：Docker 沙箱不可用（如 `docker.sock permission denied`）时，自动回退本地进程执行（仍受 guardrails）
 
-## Telegram 体验升级（Upgrade5 规划）
+## Telegram 体验升级（Upgrade5/Upgrade6）
 
-当前仓库已完成升级4（clarify follow-up、可解释降级、evidence），升级5聚焦“股民友好”交互：
+当前仓库已完成升级5“股民友好”交互能力：
 
 - 上下文记忆：`last_symbol + last_period`（默认 TTL 30min）
 - 显式换标的优先：如“不是腾讯，是阿里”立即切换
@@ -34,9 +34,21 @@ Alpha-Insight 是一个基于 LangGraph 的多 Agent 量化投研系统，支持
 - 图表策略：先自动重试一次，再降级文本并给下一步按钮
 - 每条回复带 `request_id(short)`（有 run 则附 `run_id`）
 
+在升级5基础上，升级6已落地以下能力（流畅对话 + 24/7 体验）：
+
+- 通用对话兜底：`你好/你会什么/怎么用` 返回能力卡与快捷按钮，不再走拒绝模板
+- 渐进式回包：分析类请求先回受理，再回阶段进度，再回最终结果
+- typing 心跳：长任务期间周期发送 typing，结束后自动停止
+- 会话单飞（Single-Flight）：同会话同类分析短窗口复用，避免重复重算
+- 多级超时治理：NLU、分析、发图分别治理，避免互相污染
+- ChannelAdapter 抽象：统一 `send_text/send_photo/send_progress`
+- 会话能力增强：`/stop` 取消、会话历史压缩归档
+- 优先级车道（P2 加分项）：`critical` 信号进入 fast lane（含立即重试与优先分发）
+
 详细设计见：
 
 - [升级5.md](升级5.md)
+- [升级6.md](升级6.md)
 
 ### 当前业务流程图（Telegram / 双语）
 
@@ -109,7 +121,7 @@ flowchart TD
 8. 结果与证据（Response & Evidence）  
    对用户输出结构化响应（含 `request_id`，可选 `run_id`）；同时写入 metrics/audit/evidence，支持追溯和运营统计。
 
-### 升级5目标态流程图（Target Flow / 双语）
+### 升级6目标态流程图（Target Flow / 双语）
 
 ```mermaid
 flowchart TD
@@ -232,6 +244,8 @@ docker compose --env-file .env run --rm test
 ```bash
 .venv_local/bin/python -m pytest -q
 ```
+
+最近一次全量基线（2026-02-27）：`133 passed`。
 
 ## 硬口径验收证据（Run Report + 离线20次）
 
