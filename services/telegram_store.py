@@ -3099,6 +3099,15 @@ class TelegramTaskStore:
             tag_key="reason",
             limit=3,
         )
+        carry_hit = self.count_metric_events(metric_name="symbol_carry_over_hit_rate")
+        clarify_asked = self.count_metric_events(metric_name="nl_clarify_asked_total")
+        report["clarify_avoid_rate"] = round((carry_hit / (carry_hit + clarify_asked)) if (carry_hit + clarify_asked) else 1.0, 4)
+        retry_attempted = self.count_metric_events(metric_name="chart_retry_attempted")
+        retry_success = self.count_metric_events(metric_name="chart_retry_success")
+        report["chart_success_rate_after_retry"] = round((retry_success / retry_attempted) if retry_attempted else 1.0, 4)
+        evidence_visible_total = int(sum(self.metric_values(metric_name="evidence_visible_total")))
+        analysis_total = self.count_metric_events(metric_name="analysis_response_total")
+        report["evidence_visible_rate"] = round((evidence_visible_total / analysis_total) if analysis_total else 1.0, 4)
         return report
 
     def _count_enabled_notification_routes(self) -> int:

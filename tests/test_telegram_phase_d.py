@@ -1082,3 +1082,130 @@ async def test_phase_p1_dedupe_echoes_ready_state_and_run_id(tmp_path) -> None: 
     assert calls["n"] == 1
     assert "30秒内重复请求已合并：已生成。" in sender.messages[-1][1]
     assert "run_id=run-p1-dedupe-1" in sender.messages[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_phase_p2_user_copy_forbidden_words_guard(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {
+            "run_id": "run-p2-guard",
+            "fused_insights": {"summary": "metrics unavailable traceback chart_missing"},
+            "metrics": {"data_close": 123.0, "technical_rsi_14": 51.0},
+            **kwargs,
+        }
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 30301, "message": {"chat": {"id": "chat-p2a"}, "text": "分析 TSLA 一个月走势"}})
+    merged = "\n".join(text for _, text in sender.messages).lower()
+    assert "metrics unavailable" not in merged
+    assert "chart_missing" not in merged
+    assert "traceback" not in merged
+
+
+@pytest.mark.asyncio
+async def test_phase_p2_snapshot_output_order_and_evidence_visible(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {
+            "run_id": "run-p2-order",
+            "fused_insights": {"summary": "fixed order"},
+            "metrics": {
+                "data_close": 200.0,
+                "technical_rsi_14": 56.0,
+                "window_low": 180.0,
+                "window_high": 220.0,
+                "data_window": "2026-01-28 ~ 2026-02-27",
+            },
+            "news": [{"title": "news", "source": "wire"}],
+            **kwargs,
+        }
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 30311, "message": {"chat": {"id": "chat-p2b"}, "text": "分析 TSLA 一个月走势"}})
+    msg = sender.messages[-1][1]
+    idx_symbol = msg.find("标的区间:")
+    idx_price = msg.find("价格摘要:")
+    idx_tech = msg.find("技术一句话:")
+    idx_news = msg.find("新闻一句话:")
+    idx_risk = msg.find("风险:")
+    idx_menu = msg.find("菜单:")
+    assert -1 not in {idx_symbol, idx_price, idx_tech, idx_news, idx_risk, idx_menu}
+    assert idx_symbol < idx_price < idx_tech < idx_news < idx_risk < idx_menu
+    assert "证据:" in msg
+
+
+@pytest.mark.asyncio
+async def test_phase_p2_buttons_include_followup_and_explanations(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": "run-p2-btn", "metrics": {"data_close": 88.0}, **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 30321, "message": {"chat": {"id": "chat-p2c"}, "text": "分析 TSLA 一个月走势"}})
+    inline = sender.keyboards[-1][1].get("inline_keyboard")
+    assert isinstance(inline, list)
+    callbacks = [str(button["callback_data"]) for row in inline for button in row]
+    assert any(item.endswith("|period3mo") for item in callbacks)
+    assert any(item.endswith("|news_only") for item in callbacks)
+    assert any(item.endswith("|set_monitor") for item in callbacks)
+    assert any(item.endswith("|why_no_chart") for item in callbacks)
+    assert any(item.endswith("|why_no_rsi") for item in callbacks)
+
+
+@pytest.mark.asyncio
+async def test_phase_p2_explain_buttons_callback_reply(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": "run-p2-explain", "metrics": {"data_close": 70.0}, **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 30331, "message": {"chat": {"id": "chat-p2d"}, "text": "分析 TSLA 一个月走势"}})
+    with store._connect() as conn:  # noqa: SLF001
+        row = conn.execute("SELECT request_id FROM bot_updates WHERE update_id = 30331").fetchone()
+    assert row is not None
+    req_id = str(row["request_id"])
+
+    assert await gateway.process_update(
+        {"update_id": 30332, "callback_query": {"id": "cb-p2-explain1", "data": f"act|{req_id[-6:]}|why_no_chart", "message": {"chat": {"id": "chat-p2d"}}}}
+    )
+    assert "为什么不给K线" in sender.messages[-1][1]
+    assert "证据:" in sender.messages[-1][1]
+
+    assert await gateway.process_update(
+        {"update_id": 30333, "callback_query": {"id": "cb-p2-explain2", "data": f"act|{req_id[-6:]}|why_no_rsi", "message": {"chat": {"id": "chat-p2d"}}}}
+    )
+    assert "为什么不给RSI" in sender.messages[-1][1]
+    assert "证据:" in sender.messages[-1][1]
+
+
+def test_phase_p2_run_report_contains_operational_metrics(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    store.record_metric(metric_name="symbol_carry_over_hit_rate", metric_value=1.0)
+    store.record_metric(metric_name="nl_clarify_asked_total", metric_value=1.0)
+    store.record_metric(metric_name="chart_retry_attempted", metric_value=1.0)
+    store.record_metric(metric_name="chart_retry_success", metric_value=1.0)
+    store.record_metric(metric_name="analysis_response_total", metric_value=1.0)
+    store.record_metric(metric_name="evidence_visible_total", metric_value=1.0)
+
+    report = store.build_phase_d_run_report()
+    assert "clarify_avoid_rate" in report
+    assert "chart_success_rate_after_retry" in report
+    assert "evidence_visible_rate" in report
+    assert report["chart_success_rate_after_retry"] == 1.0

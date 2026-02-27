@@ -32,6 +32,14 @@ class ActionResult:
 
 
 class TelegramActions:
+    _FORBIDDEN_USER_COPY = (
+        "metrics unavailable",
+        "chart_missing",
+        "traceback",
+        "_plan_steps",
+        "_schema_version",
+    )
+
     def __init__(
         self,
         *,
@@ -58,8 +66,24 @@ class TelegramActions:
         text: str,
         buttons: list[list[tuple[str, str]]] | None = None,
     ) -> None:
+        safe_text = self._sanitize_user_copy(text)
+        blocked = safe_text != text
+        if blocked:
+            self._store.record_metric(metric_name="user_copy_guard_hit_total", metric_value=1.0)
         reply_markup = self._build_inline_keyboard(buttons) if buttons else None
-        await self._notifier.send_text(chat_id, text, reply_markup=reply_markup)
+        await self._notifier.send_text(chat_id, safe_text, reply_markup=reply_markup)
+
+    @classmethod
+    def _sanitize_user_copy(cls, text: str) -> str:
+        sanitized = str(text or "")
+        lowered = sanitized.lower()
+        for token in cls._FORBIDDEN_USER_COPY:
+            if token in lowered:
+                sanitized = sanitized.replace(token, "内部细节")
+                sanitized = sanitized.replace(token.upper(), "内部细节")
+                sanitized = sanitized.replace(token.title(), "内部细节")
+                lowered = sanitized.lower()
+        return sanitized
 
     @staticmethod
     def _build_inline_keyboard(buttons: list[list[tuple[str, str]]] | None) -> dict[str, Any] | None:
@@ -156,6 +180,15 @@ class TelegramActions:
                 ("🔁重试", f"act|{ref}|retry"),
                 ("📄报告", f"act|{ref}|report"),
             ],
+            [
+                ("🗓️近3个月", f"act|{ref}|period3mo"),
+                ("📰只看新闻", f"act|{ref}|news_only"),
+                ("🔔设置监控", f"act|{ref}|set_monitor"),
+            ],
+            [
+                ("❓为什么不给K线", f"act|{ref}|why_no_chart"),
+                ("❓为什么不给RSI", f"act|{ref}|why_no_rsi"),
+            ],
         ]
 
     def build_snapshot_buttons(
@@ -229,7 +262,7 @@ class TelegramActions:
             status="queued",
         )
 
-        await self._notifier.send_text(chat_id, f"请求已受理 (Request accepted). request_id={rid}")
+        await self._send_text(chat_id=chat_id, text=f"请求已受理 (Request accepted). request_id={rid}")
         await self._run_analysis_request(
             request_id=rid,
             symbol=symbol,
@@ -282,7 +315,6 @@ class TelegramActions:
         has_technical = latest_close is not None and bool(data_window) and (rsi is not None or ma is not None)
         has_range = (high is not None and low is not None) or (ret30 is not None)
         has_news = news_count >= 1
-        safe_summary = summary if has_technical else "这次缺少价格证据，先不给趋势/情绪结论。"
         if run_id:
             self._store.upsert_analysis_report(
                 run_id=run_id,
@@ -317,16 +349,33 @@ class TelegramActions:
             evidence_lines.append(f"近30天Low/High={round(low,4)}/{round(high,4)} {level_hint}")
         if not evidence_lines:
             evidence_lines.append("图表状态=未生成")
+        evidence_visible = bool(evidence_lines)
+        self._store.record_metric(metric_name="evidence_visible_total", metric_value=1.0 if evidence_visible else 0.0)
+
+        price_summary = metric_line if metric_line and not missing_reason else "缺价格数据"
+        technical_line = "技术一句话: 证据不足，暂不输出技术结论。"
+        if has_technical:
+            if rsi is not None:
+                technical_line = f"技术一句话: RSI14={round(rsi, 2)}，结合价格看中性偏观察。"
+            elif ma is not None:
+                technical_line = f"技术一句话: MA20={round(ma, 4)}，价格围绕均线附近波动。"
+        news_line = f"新闻一句话: 近{news_window_days}天抓取 {news_count} 条，来源={news_source}。"
+        if not has_news:
+            news_line = f"新闻一句话: 近{news_window_days}天暂无可用新闻，建议扩窗或重试。"
+        risk_line = "风险: 仅供研究参考，不构成投资建议。"
+
         menu_buttons = self._snapshot_buttons(request_id=target_request_id, chart_state=chart_state)
         report_text = (
-            f"快照分析 (Snapshot Analysis): {symbol}\n"
-            f"分析区间={data_window}\n"
-            f"关键指标 (Key metrics): {metric_line}\n"
-            f"结论 (Conclusion): {safe_summary[:300]}\n"
-            f"证据 (Evidence): {' | '.join(evidence_lines[:3])}\n"
+            f"标的区间: {symbol} | {data_window}\n"
+            f"价格摘要: {price_summary}\n"
+            f"{technical_line}\n"
+            f"{news_line}\n"
+            f"{risk_line}\n"
+            f"证据: {' | '.join(evidence_lines[:3])}\n"
+            "类型: Snapshot Analysis\n"
             f"request_id(short)={(target_request_id or 'n/a')[-6:]}\n"
             f"run_id={run_id or 'N/A'}\n"
-            f"下一步: {self._chart_state_label(chart_state)} / 📰新闻(7天|30天) / 🔁重试 / 📄报告"
+            f"菜单: {self._chart_state_label(chart_state)} / 📰新闻(7天|30天) / 🔁重试 / 📄报告 / 🗓️近3个月 / 📰只看新闻 / 🔔设置监控"
         )
 
         await self._send_text(chat_id=chat_id, text=report_text, buttons=menu_buttons)
@@ -342,7 +391,10 @@ class TelegramActions:
                 self._store.upsert_request_chart_state(request_id=target_request_id, chart_state=chart_state)
             await self._send_text(
                 chat_id=chat_id,
-                text=f"图表生成中，请稍候。request_id(short)={(target_request_id or 'n/a')[-6:]}",
+                text=(
+                    f"图表生成中，请稍候。request_id(short)={(target_request_id or 'n/a')[-6:]}\n"
+                    "证据: 图表状态=生成中"
+                ),
                 buttons=self._snapshot_buttons(request_id=target_request_id, chart_state=chart_state),
             )
             chart_candidate = self._chart_service.extract_chart_path(result)
@@ -352,7 +404,7 @@ class TelegramActions:
             chart_reason = "data_empty" if latest_close is None else ("artifact_missing" if chart_error else "")
             if chart_path is None and chart_reason == "artifact_missing":
                 self._store.record_metric(metric_name="chart_retry_attempted", metric_value=1.0)
-                await self._send_text(chat_id=chat_id, text="首次未取到图表产物，已自动重试一次。")
+                await self._send_text(chat_id=chat_id, text="首次未取到图表产物，已自动重试一次。\n证据: 图表状态=重试中")
                 async with self._global_gate.acquire():
                     retry_result = await asyncio.wait_for(
                         self._research_runner(
@@ -388,6 +440,7 @@ class TelegramActions:
                     text=(
                         "这次没能生成价格图表，我可以重试图表或只做新闻解读。\n"
                         f"原因: {self._chart_reason_text(reason)}\n"
+                        f"证据: 图表状态=失败 | 时间窗={data_window}\n"
                         f"可选: {self._chart_state_label(chart_state)} 📰新闻(7天|30天) 🔁重试 📄报告"
                     ),
                     buttons=self._snapshot_buttons(request_id=target_request_id, chart_state=chart_state),
@@ -402,7 +455,10 @@ class TelegramActions:
                             self._store.upsert_request_chart_state(request_id=target_request_id, chart_state=chart_state)
                         await self._send_text(
                             chat_id=chat_id,
-                            text=f"图表已生成，可继续查看新闻或报告。request_id(short)={(target_request_id or 'n/a')[-6:]}",
+                            text=(
+                                "图表已生成，可继续查看新闻或报告。\n"
+                                f"证据: 图表状态=已生成 | request_id(short)={(target_request_id or 'n/a')[-6:]}"
+                            ),
                             buttons=self._snapshot_buttons(request_id=target_request_id, chart_state=chart_state),
                         )
                     except Exception:  # noqa: BLE001
@@ -416,7 +472,7 @@ class TelegramActions:
                             text=(
                                 "图表发送失败，已降级为文本说明。\n"
                                 f"原因: {self._chart_reason_text(reason)}\n"
-                                f"request_id(short)={(target_request_id or 'n/a')[-6:]}"
+                                f"证据: 图表状态=失败 | request_id(short)={(target_request_id or 'n/a')[-6:]}"
                             ),
                             buttons=self._snapshot_buttons(request_id=target_request_id, chart_state=chart_state),
                         )
@@ -430,7 +486,8 @@ class TelegramActions:
                         chat_id=chat_id,
                         text=(
                             "图表发送能力不可用，已降级为文本说明。\n"
-                            f"原因: {self._chart_reason_text(reason)}"
+                            f"原因: {self._chart_reason_text(reason)}\n"
+                            "证据: 图表状态=失败"
                         ),
                         buttons=self._snapshot_buttons(request_id=target_request_id, chart_state=chart_state),
                     )
@@ -459,18 +516,12 @@ class TelegramActions:
         route_strategy: str = "dual_channel",
     ) -> ActionResult:
         if not self._store.can_chat_monitor(chat_id=chat_id):
-            await self._notifier.send_text(
-                chat_id,
-                "无权限 (Permission denied): 当前 chat 不允许创建监控任务。",
-            )
+            await self._send_text(chat_id=chat_id, text="无权限 (Permission denied): 当前 chat 不允许创建监控任务。")
             return ActionResult(command="monitor")
 
         active_jobs = self._store.count_active_watch_jobs(chat_id=chat_id)
         if active_jobs >= self._limits.max_watch_jobs_per_chat:
-            await self._notifier.send_text(
-                chat_id,
-                f"配额超限 (Quota exceeded): 单 chat 最大监控任务数为 {self._limits.max_watch_jobs_per_chat}。",
-            )
+            await self._send_text(chat_id=chat_id, text=f"配额超限 (Quota exceeded): 单 chat 最大监控任务数为 {self._limits.max_watch_jobs_per_chat}。")
             self._store.add_audit_event(
                 event_type="quota_exceeded",
                 chat_id=chat_id,
@@ -516,7 +567,7 @@ class TelegramActions:
         self._store.record_metric(metric_name="report_lookup_total", metric_value=1.0)
         report = self._store.get_analysis_report(report_id=target_id, chat_id=chat_id)
         if report is None:
-            await self._notifier.send_text(chat_id, f"未找到报告 (No report found) `{target_id}`。")
+            await self._send_text(chat_id=chat_id, text=f"未找到报告 (No report found) `{target_id}`。")
             return ActionResult(command="report")
 
         metrics_line, _ = self._render_key_metrics(report.key_metrics)
@@ -611,7 +662,7 @@ class TelegramActions:
 
     async def handle_bulk(self, *, chat_id: str, action: str, target: str, value: str = "") -> ActionResult:
         changed = self._store.bulk_update_watch_jobs(chat_id=chat_id, action=action, target=target, value=value)
-        await self._notifier.send_text(chat_id, f"批量更新完成 (Bulk update done): action={action} target={target} changed={changed}")
+        await self._send_text(chat_id=chat_id, text=f"批量更新完成 (Bulk update done): action={action} target={target} changed={changed}")
         return ActionResult(command="bulk")
 
     async def handle_webhook(
@@ -625,20 +676,20 @@ class TelegramActions:
     ) -> ActionResult:
         if action == "set":
             hook = self._store.upsert_outbound_webhook(chat_id=chat_id, url=url, secret=secret)
-            await self._notifier.send_text(chat_id, f"Webhook 已启用 (Webhook enabled): {hook.webhook_id} -> {hook.url}")
+            await self._send_text(chat_id=chat_id, text=f"Webhook 已启用 (Webhook enabled): {hook.webhook_id} -> {hook.url}")
             return ActionResult(command="webhook")
         if action == "disable":
             ok = self._store.disable_outbound_webhook(chat_id=chat_id, webhook_id=webhook_id)
-            await self._notifier.send_text(chat_id, "Webhook 已禁用 (Webhook disabled)." if ok else "未找到 Webhook (Webhook not found).")
+            await self._send_text(chat_id=chat_id, text="Webhook 已禁用 (Webhook disabled)." if ok else "未找到 Webhook (Webhook not found).")
             return ActionResult(command="webhook")
         hooks = self._store.list_outbound_webhooks(chat_id=chat_id, enabled_only=False)
         if not hooks:
-            await self._notifier.send_text(chat_id, "未配置 Webhook (No webhook configured).")
+            await self._send_text(chat_id=chat_id, text="未配置 Webhook (No webhook configured).")
             return ActionResult(command="webhook")
         lines = ["Webhook 路由 (Webhook routes):"]
         for hook in hooks:
             lines.append(f"- {hook.webhook_id} enabled={hook.enabled} timeout_ms={hook.timeout_ms} url={hook.url}")
-        await self._notifier.send_text(chat_id, "\n".join(lines))
+        await self._send_text(chat_id=chat_id, text="\n".join(lines))
         return ActionResult(command="webhook")
 
     async def handle_pref(self, *, chat_id: str, setting: str, value: str) -> ActionResult:
@@ -649,28 +700,22 @@ class TelegramActions:
         elif setting == "quiet":
             pref = self._store.upsert_chat_preferences(chat_id=chat_id, quiet_hours=None if value == "off" else value)
         else:
-            await self._notifier.send_text(chat_id, "不支持的偏好设置 (Unsupported preference setting).")
+            await self._send_text(chat_id=chat_id, text="不支持的偏好设置 (Unsupported preference setting).")
             return ActionResult(command="pref")
-        await self._notifier.send_text(
-            chat_id,
-            f"偏好已更新 (Preference updated): summary={pref.summary_mode} priority={pref.min_priority} quiet={pref.quiet_hours or 'off'}",
-        )
+        await self._send_text(chat_id=chat_id, text=f"偏好已更新 (Preference updated): summary={pref.summary_mode} priority={pref.min_priority} quiet={pref.quiet_hours or 'off'}")
         return ActionResult(command="pref")
 
     async def handle_stop(self, *, chat_id: str, target: str, target_type: str) -> ActionResult:
         if not self._store.can_chat_monitor(chat_id=chat_id):
-            await self._notifier.send_text(
-                chat_id,
-                "无权限 (Permission denied): 当前 chat 不允许停止监控任务。",
-            )
+            await self._send_text(chat_id=chat_id, text="无权限 (Permission denied): 当前 chat 不允许停止监控任务。")
             return ActionResult(command="stop")
 
         disabled = self._store.disable_watch_job(chat_id=chat_id, target=target, target_type=target_type)
         if disabled <= 0:
-            await self._notifier.send_text(chat_id, f"未匹配到活跃监控任务 (No active monitor job matched): {target}")
+            await self._send_text(chat_id=chat_id, text=f"未匹配到活跃监控任务 (No active monitor job matched): {target}")
             return ActionResult(command="stop")
 
-        await self._notifier.send_text(chat_id, f"已停止监控任务 (Stopped) {disabled} 个，target={target}")
+        await self._send_text(chat_id=chat_id, text=f"已停止监控任务 (Stopped) {disabled} 个，target={target}")
         return ActionResult(command="stop")
 
     async def process_due_analysis_recovery(self, *, limit: int = 10) -> int:
@@ -731,7 +776,7 @@ class TelegramActions:
                     summary=summary or "No summary",
                     key_metrics=key_metrics,
                 )
-            await self._notifier.send_text(chat_id, f"分析完成 (Analysis completed). request_id={request_id}, run_id={run_id}")
+            await self._send_text(chat_id=chat_id, text=f"分析完成 (Analysis completed). request_id={request_id}, run_id={run_id}")
         except TimeoutError:
             self._store.transition_analysis_request_status(
                 request_id=request_id,
@@ -750,10 +795,7 @@ class TelegramActions:
                 next_retry_at=datetime.now(timezone.utc) + timedelta(seconds=backoff_seconds),
                 last_error="analysis timeout",
             )
-            await self._notifier.send_text(
-                chat_id,
-                f"分析超时 (Analysis timeout). request_id={request_id}. 结果将后台重试 (retried in background).",
-            )
+            await self._send_text(chat_id=chat_id, text=f"分析超时 (Analysis timeout). request_id={request_id}. 结果将后台重试 (retried in background).")
         except Exception as exc:
             self._store.transition_analysis_request_status(
                 request_id=request_id,
@@ -762,7 +804,7 @@ class TelegramActions:
                 run_id=None,
                 last_error=str(exc),
             )
-            await self._notifier.send_text(chat_id, f"分析失败 (Analysis failed). request_id={request_id}, error={exc}")
+            await self._send_text(chat_id=chat_id, text=f"分析失败 (Analysis failed). request_id={request_id}, error={exc}")
         finally:
             latency_ms = (time.perf_counter() - start) * 1000
             self._store.record_metric(metric_name="analysis_latency_ms", metric_value=latency_ms, tags={"chat_id": chat_id})

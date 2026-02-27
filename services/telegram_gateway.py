@@ -316,15 +316,15 @@ class TelegramGateway:
     async def _parse_nlu_plan(self, *, text: str) -> tuple[NLUPlan | None, str | None]:
         attempts = max(1, int(self._limits.nl_parse_max_retries) + 1)
         last_error: str | None = None
+        timeout_seconds = float(self._limits.nl_parse_timeout_seconds)
         for _ in range(attempts):
             started = time.perf_counter()
             self._store.record_metric(metric_name="llm_parse_total", metric_value=1.0)
             try:
-                plan = await asyncio.wait_for(
-                    asyncio.to_thread(self._nlu_parser, text),
-                    timeout=float(self._limits.nl_parse_timeout_seconds),
-                )
+                plan = self._nlu_parser(text)
                 latency_ms = (time.perf_counter() - started) * 1000
+                if timeout_seconds > 0 and (latency_ms / 1000.0) > timeout_seconds:
+                    raise TimeoutError(f"nlu_parse_timeout>{timeout_seconds}s")
                 self._store.record_metric(metric_name="llm_parse_latency_ms", metric_value=latency_ms)
                 self._evaluate_llm_degradation()
                 return plan, None
@@ -721,7 +721,18 @@ class TelegramGateway:
             return None
         request_ref = parts[1].strip()
         action = parts[2].strip().lower()
-        if not request_ref or action not in {"chart", "news7", "news30", "retry", "report"}:
+        if not request_ref or action not in {
+            "chart",
+            "news7",
+            "news30",
+            "retry",
+            "report",
+            "period3mo",
+            "news_only",
+            "set_monitor",
+            "why_no_chart",
+            "why_no_rsi",
+        }:
             return None
         return request_ref, action
 
@@ -914,14 +925,65 @@ class TelegramGateway:
                 error=None,
             )
             return True
+        if action == "set_monitor":
+            slots = dict(record.slots)
+            await self._actions.handle_monitor(
+                chat_id=chat_id,
+                symbol=str(slots.get("symbol", "")).upper(),
+                symbols=[str(slots.get("symbol", "")).upper()],
+                interval_sec=3600,
+                mode="anomaly",
+                threshold=0.03,
+                template="volatility",
+                route_strategy="dual_channel",
+            )
+            self._store.update_bot_update_status(
+                update_id=update_id,
+                status="processed",
+                command="request_action_set_monitor",
+                request_id=record.request_id,
+                error=None,
+            )
+            return True
+        if action in {"why_no_chart", "why_no_rsi"}:
+            chart_state_rec = self._store.get_request_chart_state(request_id=record.request_id)
+            chart_state = chart_state_rec.chart_state if chart_state_rec else "none"
+            metrics = record.slots if isinstance(record.slots, dict) else {}
+            if action == "why_no_chart":
+                reason = "当前未触发图表生成，你可以点击“📈K线”或“🔁重试”。"
+                if chart_state == "failed":
+                    reason = "最近一次图表生成失败，系统已保留文本分析与重试入口。"
+                elif chart_state == "rendering":
+                    reason = "图表仍在生成中，请稍候刷新。"
+                await self._actions.send_error_message(
+                    chat_id=chat_id,
+                    text=f"为什么不给K线：{reason}\n证据: 图表状态={chart_state}",
+                )
+            else:
+                reason = "本次缺少 RSI 所需价格序列，因此未展示 RSI 结论。"
+                if str(metrics.get("need_chart", "")).strip().lower() in {"true", "1"}:
+                    reason = "当前回复走了轻量模板，RSI 只在有完整指标时展示。"
+                await self._actions.send_error_message(
+                    chat_id=chat_id,
+                    text=f"为什么不给RSI：{reason}\n证据: 图表状态={chart_state}",
+                )
+            self._store.update_bot_update_status(
+                update_id=update_id,
+                status="processed",
+                command=f"request_action_{action}",
+                request_id=record.request_id,
+                error=None,
+            )
+            return True
         slots = dict(record.slots)
         need_chart = action in {"chart", "retry"}
-        need_news = action in {"news7", "news30", "retry"} or bool(slots.get("need_news", False))
+        need_news = action in {"news7", "news30", "retry", "news_only"} or bool(slots.get("need_news", False))
         news_window_days = 30 if action == "news30" else 7
+        period = "3mo" if action == "period3mo" else str(slots.get("period", "1mo")).lower()
         await self._actions.handle_analyze_snapshot(
             chat_id=chat_id,
             symbol=str(slots.get("symbol", "")).upper(),
-            period=str(slots.get("period", "1mo")).lower(),
+            period=period,
             interval=str(slots.get("interval", "1d")).lower(),
             need_chart=need_chart,
             need_news=need_news,
