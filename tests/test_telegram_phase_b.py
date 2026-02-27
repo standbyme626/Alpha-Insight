@@ -26,6 +26,18 @@ class FakeSender:
         return {"ok": True}
 
 
+class FlakySender(FakeSender):
+    def __init__(self, *, fail_times: int = 1) -> None:
+        super().__init__()
+        self._fail_times = fail_times
+
+    async def send_text(self, chat_id: str, text: str, reply_markup: dict[str, object] | None = None) -> dict[str, object]:
+        if self._fail_times > 0:
+            self._fail_times -= 1
+            raise RuntimeError("simulated_send_failure")
+        return await super().send_text(chat_id, text, reply_markup)
+
+
 @pytest.mark.parametrize(
     ("raw", "expected_name"),
     [
@@ -230,6 +242,56 @@ async def test_long_polling_backlog_replay_consumes_without_duplicate_execution(
     stats = store.verification_counts()
     assert stats["processed_updates"] == 3
     assert stats["distinct_updates"] == 3
+
+
+@pytest.mark.asyncio
+async def test_process_updates_isolates_single_update_failure(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FlakySender(fail_times=1)
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": "run-failure-isolation", **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    updates = [
+        {"update_id": 4201, "message": {"chat": {"id": "chat-b6"}, "from": {"id": 12}, "text": "/help"}},
+        {"update_id": 4202, "message": {"chat": {"id": "chat-b6"}, "from": {"id": 12}, "text": "/help"}},
+    ]
+    handled = await gateway.process_updates(updates)
+
+    assert handled == 1
+    with store._connect() as conn:  # noqa: SLF001
+        first = conn.execute("SELECT status FROM bot_updates WHERE update_id = 4201").fetchone()
+        second = conn.execute("SELECT status FROM bot_updates WHERE update_id = 4202").fetchone()
+    assert first is not None and first["status"] == "failed"
+    assert second is not None and second["status"] == "processed"
+    assert gateway._offset == 4203  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_process_pending_updates_isolates_single_failure(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FlakySender(fail_times=1)
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": "run-pending-failure-isolation", **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    await gateway.enqueue_update({"update_id": 4301, "message": {"chat": {"id": "chat-b7"}, "from": {"id": 13}, "text": "/help"}})
+    await gateway.enqueue_update({"update_id": 4302, "message": {"chat": {"id": "chat-b7"}, "from": {"id": 13}, "text": "/help"}})
+
+    handled = await gateway.process_pending_updates(limit=10)
+    assert handled == 1
+
+    with store._connect() as conn:  # noqa: SLF001
+        first = conn.execute("SELECT status FROM bot_updates WHERE update_id = 4301").fetchone()
+        second = conn.execute("SELECT status FROM bot_updates WHERE update_id = 4302").fetchone()
+    assert first is not None and first["status"] == "failed"
+    assert second is not None and second["status"] == "processed"
 
 
 @pytest.mark.asyncio

@@ -1708,30 +1708,69 @@ class TelegramTaskStore:
         key_metrics: dict[str, Any] | None = None,
     ) -> None:
         now = _utc_now()
+        payload = (
+            run_id,
+            request_id,
+            str(chat_id),
+            symbol.upper(),
+            summary.strip(),
+            _json_dumps(key_metrics or {}),
+            now,
+            now,
+        )
         with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO analysis_reports(run_id, request_id, chat_id, symbol, summary, key_metrics, created_at, updated_at)
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(run_id) DO UPDATE SET
-                    request_id = excluded.request_id,
-                    chat_id = excluded.chat_id,
-                    symbol = excluded.symbol,
-                    summary = excluded.summary,
-                    key_metrics = excluded.key_metrics,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    run_id,
-                    request_id,
-                    str(chat_id),
-                    symbol.upper(),
-                    summary.strip(),
-                    _json_dumps(key_metrics or {}),
-                    now,
-                    now,
-                ),
-            )
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO analysis_reports(run_id, request_id, chat_id, symbol, summary, key_metrics, created_at, updated_at)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(run_id) DO UPDATE SET
+                        request_id = excluded.request_id,
+                        chat_id = excluded.chat_id,
+                        symbol = excluded.symbol,
+                        summary = excluded.summary,
+                        key_metrics = excluded.key_metrics,
+                        updated_at = excluded.updated_at
+                    """,
+                    payload,
+                )
+            except sqlite3.IntegrityError as exc:
+                # Same request can be retried and produce a new run_id; keep this path idempotent.
+                if "analysis_reports.request_id" not in str(exc):
+                    raise
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO analysis_reports(run_id, request_id, chat_id, symbol, summary, key_metrics, created_at, updated_at)
+                        VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(request_id) DO UPDATE SET
+                            run_id = excluded.run_id,
+                            chat_id = excluded.chat_id,
+                            symbol = excluded.symbol,
+                            summary = excluded.summary,
+                            key_metrics = excluded.key_metrics,
+                            updated_at = excluded.updated_at
+                        """,
+                        payload,
+                    )
+                except sqlite3.IntegrityError as run_conflict:
+                    if "analysis_reports.run_id" not in str(run_conflict):
+                        raise
+                    conn.execute(
+                        """
+                        UPDATE analysis_reports
+                        SET chat_id = ?, symbol = ?, summary = ?, key_metrics = ?, updated_at = ?
+                        WHERE request_id = ?
+                        """,
+                        (
+                            str(chat_id),
+                            symbol.upper(),
+                            summary.strip(),
+                            _json_dumps(key_metrics or {}),
+                            now,
+                            request_id,
+                        ),
+                    )
 
     def get_analysis_report(self, *, report_id: str, chat_id: str | None = None) -> AnalysisReportRecord | None:
         report_id_str = report_id.strip()

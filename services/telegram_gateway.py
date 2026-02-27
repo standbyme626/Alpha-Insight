@@ -2009,19 +2009,41 @@ class TelegramGateway:
         pending_update_ids = self._store.list_pending_bot_update_ids(limit=limit)
         handled = 0
         for update_id in pending_update_ids:
-            if await self.process_enqueued_update(update_id=update_id):
-                handled += 1
-        handled += await self._actions.process_due_analysis_recovery(limit=limit)
+            try:
+                if await self.process_enqueued_update(update_id=update_id):
+                    handled += 1
+            except Exception as exc:  # noqa: BLE001
+                self._store.record_metric(
+                    metric_name="gateway_update_exception_total",
+                    metric_value=1.0,
+                    tags={"path": "pending", "error": type(exc).__name__[:48]},
+                )
+        try:
+            handled += await self._actions.process_due_analysis_recovery(limit=limit)
+        except Exception as exc:  # noqa: BLE001
+            self._store.record_metric(
+                metric_name="gateway_update_exception_total",
+                metric_value=1.0,
+                tags={"path": "analysis_recovery", "error": type(exc).__name__[:48]},
+            )
         return handled
 
     async def process_updates(self, updates: list[dict[str, Any]]) -> int:
         handled = 0
         for update in updates:
-            if await self.process_update(update):
-                handled += 1
             update_id = int(update.get("update_id", 0))
-            if update_id > 0:
-                self._offset = max(self._offset, update_id + 1)
+            try:
+                if await self.process_update(update):
+                    handled += 1
+            except Exception as exc:  # noqa: BLE001
+                self._store.record_metric(
+                    metric_name="gateway_update_exception_total",
+                    metric_value=1.0,
+                    tags={"path": "updates", "error": type(exc).__name__[:48]},
+                )
+            finally:
+                if update_id > 0:
+                    self._offset = max(self._offset, update_id + 1)
         return handled
 
     async def run_long_polling(

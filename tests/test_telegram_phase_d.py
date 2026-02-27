@@ -1231,6 +1231,37 @@ async def test_phase_d_singleflight_reuses_completed_snapshot_request(tmp_path) 
     assert row["request_id"] == existing_request_id
 
 
+def test_phase_d_upsert_analysis_report_is_idempotent_on_request_id(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+
+    store.upsert_analysis_report(
+        run_id="run-first",
+        request_id="req-same",
+        chat_id="chat-upsert",
+        symbol="TSLA",
+        summary="first summary",
+        key_metrics={"data_close": 10.0},
+    )
+    store.upsert_analysis_report(
+        run_id="run-second",
+        request_id="req-same",
+        chat_id="chat-upsert",
+        symbol="TSLA",
+        summary="second summary",
+        key_metrics={"data_close": 20.0},
+    )
+
+    report = store.get_analysis_report(report_id="req-same", chat_id="chat-upsert")
+    assert report is not None
+    assert report.run_id == "run-second"
+    assert report.summary == "second summary"
+    assert report.key_metrics.get("data_close") == 20.0
+
+    with store._connect() as conn:  # noqa: SLF001
+        row = conn.execute("SELECT COUNT(*) AS c FROM analysis_reports WHERE request_id = 'req-same'").fetchone()
+    assert row is not None and int(row["c"]) == 1
+
+
 @pytest.mark.asyncio
 async def test_phase_d_send_progress_updates_can_be_disabled(tmp_path) -> None:  # noqa: ANN001
     store = TelegramTaskStore(tmp_path / "telegram.db")
