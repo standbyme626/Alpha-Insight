@@ -1,0 +1,21 @@
+{
+  "command_success_rate": 0.3333,
+  "monitor_trigger_rate": 0.0,
+  "push_success_rate": 1.0,
+  "p95_command_latency": 34.053,
+  "p95_analysis_latency": 0.0,
+  "duplicate_update_dropped": 0,
+  "dedupe_suppressed_count": 0,
+  "retry_queue_depth": 0,
+  "dlq_count": 0,
+  "notification_state_transition_total": 1,
+  "report_lookup_success_rate": 1.0,
+  "digest_generated_total": 0,
+  "channel_dispatch_success_rate": 1.0,
+  "gray_release_denied_total": 0,
+  "enabled_notification_routes": 1,
+  "delivered_notifications_total": 1,
+  "suppressed_notifications_total": 0,
+  "enabled_outbound_webhooks": 0,
+  "watchlist_groups_total": 0
+}

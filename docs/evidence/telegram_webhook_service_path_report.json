@@ -1,0 +1,96 @@
+{
+  "generated_at": "2026-02-27T05:36:06.562564+00:00",
+  "db_path": "storage/telegram_gateway_service_path.db",
+  "job_id": "job-735b59ed",
+  "symbol": "TSLA",
+  "failing_webhook_url": "http://127.0.0.1:9/hook",
+  "first_execution": {
+    "job_id": "job-735b59ed",
+    "triggered_count": 1,
+    "pushed_count": 0,
+    "dedupe_suppressed_count": 0
+  },
+  "retry_rounds": [
+    {
+      "round": 1,
+      "event_id": "evt-440ef5e94b",
+      "channel": "webhook",
+      "retry_count_before_dispatch": 1
+    },
+    {
+      "round": 2,
+      "event_id": "evt-440ef5e94b",
+      "channel": "webhook",
+      "retry_count_before_dispatch": 2
+    }
+  ],
+  "retry_queue_depth": 0,
+  "dlq_count": 1,
+  "notification_state_transition_total": 5,
+  "transition_chain": [
+    "null->retry_pending",
+    "retry_pending->retrying",
+    "retrying->retry_pending",
+    "retry_pending->retrying",
+    "retrying->dlq"
+  ],
+  "notifications": [
+    {
+      "notification_id": "ntf-84df33d350",
+      "event_id": "evt-440ef5e94b",
+      "channel": "webhook",
+      "state": "dlq",
+      "retry_count": 3,
+      "next_retry_at": null,
+      "last_error": "Cannot connect to host 127.0.0.1:9 ssl:default [Connect call failed ('127.0.0.1', 9)]",
+      "delivered_at": null
+    }
+  ],
+  "transitions": [
+    {
+      "event_id": "evt-440ef5e94b",
+      "channel": "webhook",
+      "from_state": null,
+      "to_state": "retry_pending",
+      "reason": "delivery_failed",
+      "created_at": "2026-02-27T05:36:06.525669+00:00"
+    },
+    {
+      "event_id": "evt-440ef5e94b",
+      "channel": "webhook",
+      "from_state": "retry_pending",
+      "to_state": "retrying",
+      "reason": "retry dispatch",
+      "created_at": "2026-02-27T06:36:06+00:00"
+    },
+    {
+      "event_id": "evt-440ef5e94b",
+      "channel": "webhook",
+      "from_state": "retrying",
+      "to_state": "retry_pending",
+      "reason": "delivery_failed",
+      "created_at": "2026-02-27T05:36:06.542305+00:00"
+    },
+    {
+      "event_id": "evt-440ef5e94b",
+      "channel": "webhook",
+      "from_state": "retry_pending",
+      "to_state": "retrying",
+      "reason": "retry dispatch",
+      "created_at": "2026-02-27T07:36:06+00:00"
+    },
+    {
+      "event_id": "evt-440ef5e94b",
+      "channel": "webhook",
+      "from_state": "retrying",
+      "to_state": "dlq",
+      "reason": "max_retry_exceeded",
+      "created_at": "2026-02-27T05:36:06.555629+00:00"
+    }
+  ],
+  "acceptance": {
+    "has_retry_pending": true,
+    "has_retrying": true,
+    "has_dlq": true
+  }
+}

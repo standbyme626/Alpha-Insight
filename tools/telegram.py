@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -28,7 +29,8 @@ class NotificationChannel(Protocol):
 
 async def send_text(bot_token: str, chat_id: str, text: str) -> dict:
     print("[DEBUG] QuantNode send_text Start")
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    base_url = os.getenv("TELEGRAM_API_BASE_URL", "https://api.telegram.org").rstrip("/")
+    url = f"{base_url}/bot{bot_token}/sendMessage"
     payload = {"chat_id": chat_id, "text": text}
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, timeout=30) as response:
@@ -44,7 +46,8 @@ async def send_photo(bot_token: str, chat_id: str, image_path: str, caption: str
     if not file_path.exists():
         raise TelegramError(f"Image not found: {image_path}")
 
-    url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
+    base_url = os.getenv("TELEGRAM_API_BASE_URL", "https://api.telegram.org").rstrip("/")
+    url = f"{base_url}/bot{bot_token}/sendPhoto"
     form = aiohttp.FormData()
     form.add_field("chat_id", chat_id)
     if caption:

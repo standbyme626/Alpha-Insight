@@ -1,0 +1,66 @@
+{
+  "generated_at": "2026-02-27T05:36:33.269642+00:00",
+  "scenario": "Real service-path cold-start E2E acceptance via docker-compose + webhook gateway + worker + db",
+  "start_at": "2026-02-27T05:34:14.654815+00:00",
+  "end_at": "2026-02-27T05:35:21.040899+00:00",
+  "duration_minutes": 1.1064,
+  "satisfy_under_30_minutes": true,
+  "compose_stack": {
+    "compose_file": "docker-compose.telegram.yml",
+    "override_file": "/tmp/docker-compose.telegram.e2e.override.yml",
+    "env_source": "/tmp/alpha_telegram_e2e.env (non-secret placeholders; no real Telegram token)",
+    "start_command": "docker compose --env-file /tmp/alpha_telegram_e2e.env -f docker-compose.telegram.yml -f /tmp/docker-compose.telegram.e2e.override.yml up -d --force-recreate",
+    "services": [
+      "telegram-api-mock",
+      "telegram-gateway",
+      "telegram-worker",
+      "telegram-db"
+    ],
+    "key_log_summary": [
+      "telegram-api-mock listening on 0.0.0.0:18081",
+      "telegram-gateway listening on 0.0.0.0:8081",
+      "gateway handled updates 200021/200022/200023 without error",
+      "watch_executor dispatched one telegram notification with delivered state"
+    ]
+  },
+  "minimal_loop": {
+    "commands": [
+      {
+        "command": "/help",
+        "update_id": 200021,
+        "result": "processed"
+      },
+      {
+        "command": "/monitor TSLA 1h",
+        "update_id": 200022,
+        "result": "processed"
+      },
+      {
+        "command": "/list",
+        "update_id": 200023,
+        "result": "processed"
+      }
+    ],
+    "command_results_source": "/workspace/storage/telegram_gateway_e2e.db -> bot_updates",
+    "notification_state_change": {
+      "event_id": "evt-dd54ba334b",
+      "channel": "telegram",
+      "state": "delivered",
+      "transition": "null->delivered",
+      "delivered_at": "2026-02-27T05:35:21.040899+00:00"
+    }
+  },
+  "artifacts": {
+    "mock_api_log": "storage/telegram_api_mock.log",
+    "phase_d_run_report_e2e": "docs/evidence/telegram_phase_d_run_report_e2e.json"
+  },
+  "real_telegram_integration_completed": false,
+  "blocking_reasons": [
+    "TELEGRAM_BOT_TOKEN missing in .env",
+    "TELEGRAM_WEBHOOK_SECRET_TOKEN missing in .env"
+  ],
+  "notes": [
+    "This acceptance used production service path (docker compose + webhook + worker) with a local Telegram Bot API mock.",
+    "Tokens were not printed or persisted in evidence output."
+  ]
+}
