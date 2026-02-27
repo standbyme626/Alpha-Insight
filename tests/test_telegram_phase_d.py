@@ -777,3 +777,55 @@ async def test_phase_d_clarify_once_returns_command_template(tmp_path) -> None: 
     assert req.status == "rejected"
     assert req.reject_reason == "clarify_failed"
     assert store.count_metric_events(metric_name="nl_clarify_asked_total") == 1
+
+
+@pytest.mark.asyncio
+async def test_phase_d_blacklist_mode_allows_non_blocked_chat(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": "run-blacklist-1", **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions, access_mode="blacklist", blocked_chat_ids={"chat-blocked"})
+
+    assert await gateway.process_update({"update_id": 30051, "message": {"chat": {"id": "chat-open"}, "text": "/help"}})
+    assert "Available commands" in sender.messages[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_phase_d_blacklist_mode_denies_blocked_chat(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": "run-blacklist-2", **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions, access_mode="blacklist", blocked_chat_ids={"chat-blocked"})
+
+    assert await gateway.process_update({"update_id": 30052, "message": {"chat": {"id": "chat-blocked"}, "text": "/help"}})
+    assert "Permission denied" in sender.messages[-1][1]
+    with store._connect() as conn:  # noqa: SLF001
+        row = conn.execute("SELECT status,command,error FROM bot_updates WHERE update_id = 30052").fetchone()
+    assert row is not None
+    assert row["status"] == "failed"
+    assert row["command"] == "source_denied"
+    assert "blocklisted" in str(row["error"])
+
+
+@pytest.mark.asyncio
+async def test_phase_d_chart_like_text_without_symbol_returns_clarify_template(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": "run-chart-clarify", **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 30053, "message": {"chat": {"id": "chat-chart"}, "text": "看看k线图"}})
+    assert "single clarify" in sender.messages[-1][1]
+    assert "/analyze <symbol>" in sender.messages[-1][1]

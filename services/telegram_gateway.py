@@ -37,6 +37,8 @@ class TelegramGateway:
         actions: TelegramActions,
         limits: RuntimeLimits | None = None,
         allowed_chat_ids: set[str] | None = None,
+        blocked_chat_ids: set[str] | None = None,
+        access_mode: str = "blacklist",
         allowed_commands: set[str] | None = None,
         gray_release_enabled: bool = False,
         nlu_parser: Callable[[str], NLUPlan] = plan_from_text,
@@ -45,6 +47,9 @@ class TelegramGateway:
         self._actions = actions
         self._limits = limits or RuntimeLimits()
         self._allowed_chat_ids = allowed_chat_ids or set()
+        self._blocked_chat_ids = blocked_chat_ids or set()
+        mode = (access_mode or "blacklist").strip().lower()
+        self._access_mode = mode if mode in {"allowlist", "blacklist"} else "blacklist"
         self._allowed_commands = allowed_commands or {
             "help",
             "analyze",
@@ -61,6 +66,11 @@ class TelegramGateway:
         self._gray_release_enabled = gray_release_enabled
         self._nlu_parser = nlu_parser
         self._offset = max(0, self._store.get_latest_update_id() + 1)
+
+    def _is_chat_denied(self, *, chat_id: str) -> bool:
+        if self._access_mode == "allowlist":
+            return bool(self._allowed_chat_ids) and chat_id not in self._allowed_chat_ids
+        return chat_id in self._blocked_chat_ids
 
     @staticmethod
     def _audit_payload(update: dict[str, Any]) -> dict[str, Any]:
@@ -605,8 +615,8 @@ class TelegramGateway:
         self._store.record_metric(metric_name="command_total", metric_value=1.0, tags={"chat_id": chat_id})
 
         try:
-            if self._allowed_chat_ids and chat_id not in self._allowed_chat_ids:
-                denied = "chat is not allowlisted"
+            if self._is_chat_denied(chat_id=chat_id):
+                denied = "chat is not allowlisted" if self._access_mode == "allowlist" else "chat is blocklisted"
                 await self._actions.send_error_message(chat_id=chat_id, text=f"无权限 (Permission denied): {denied}")
                 self._store.update_bot_update_status(
                     update_id=update_id,

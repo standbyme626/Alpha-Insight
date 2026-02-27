@@ -105,6 +105,9 @@ def _extract_symbol(text: str) -> str | None:
     for token in tokens:
         if token.isdigit():
             continue
+        # Avoid treating chart keywords like "k线" as ticker K.
+        if token.lower() in {"k"}:
+            continue
         normalized = normalize_market_symbol(token, market="auto")
         if normalized and _SYMBOL_PATTERN.fullmatch(normalized):
             return normalized

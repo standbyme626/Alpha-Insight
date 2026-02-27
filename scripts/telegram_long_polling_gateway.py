@@ -56,7 +56,9 @@ async def _main() -> int:
         store=store,
         actions=actions,
         limits=limits,
+        access_mode=os.getenv("TELEGRAM_ACCESS_MODE", "blacklist"),
         allowed_chat_ids=_parse_csv_set(os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "")),
+        blocked_chat_ids=_parse_csv_set(os.getenv("TELEGRAM_BLOCKED_CHAT_IDS", "")),
         allowed_commands=_parse_csv_set(
             os.getenv(
                 "TELEGRAM_ALLOWED_COMMANDS",
