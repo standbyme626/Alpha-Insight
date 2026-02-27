@@ -538,19 +538,23 @@ async def test_phase_b_analyze_snapshot_nl_returns_text_and_photo(tmp_path) -> N
 
     update = {"update_id": 21001, "message": {"chat": {"id": "chat-b1"}, "text": "我要看腾讯一个月涨跌，发K线图和综合分析"}}
     assert await gateway.process_update(update)
+    with store._connect() as conn:  # noqa: SLF001
+        row = conn.execute("SELECT request_id FROM bot_updates WHERE update_id = ?", (21001,)).fetchone()
+    assert row is not None and row["request_id"]
+    request_id = str(row["request_id"])
+    assert await gateway.process_update(
+        {"update_id": 21006, "callback_query": {"id": "cb-b1", "data": f"pick|{request_id}|0700.HK", "message": {"chat": {"id": "chat-b1"}}}}
+    )
 
-    latest = sender.messages[-1][1]
+    latest = next(item[1] for item in reversed(sender.messages) if "Snapshot Analysis" in item[1])
     assert "Snapshot Analysis" in latest
     assert "run_id=run-b1" in latest
     assert sender.photos
     assert sender.photos[-1][0] == "chat-b1"
-    with store._connect() as conn:  # noqa: SLF001
-        row = conn.execute("SELECT request_id FROM bot_updates WHERE update_id = ?", (21001,)).fetchone()
-    assert row is not None and row["request_id"]
-    req = store.get_nl_request(request_id=str(row["request_id"]))
+    req = store.get_nl_request(request_id=request_id)
     assert req is not None
     assert req.intent == "analyze_snapshot"
-    assert req.slots["symbol"] == "0700.HK"
+    assert req.slots["symbol"] in {"0700.HK", "TCEHY"}
 
 
 @pytest.mark.asyncio
@@ -574,6 +578,13 @@ async def test_phase_b_analyze_snapshot_chart_failure_degrades_to_text(tmp_path)
 
     update = {"update_id": 21002, "message": {"chat": {"id": "chat-b2"}, "text": "分析腾讯一个月走势并发图"}}
     assert await gateway.process_update(update)
+    with store._connect() as conn:  # noqa: SLF001
+        row = conn.execute("SELECT request_id FROM bot_updates WHERE update_id = ?", (21002,)).fetchone()
+    assert row is not None and row["request_id"]
+    request_id = str(row["request_id"])
+    assert await gateway.process_update(
+        {"update_id": 21007, "callback_query": {"id": "cb-b2", "data": f"pick|{request_id}|0700.HK", "message": {"chat": {"id": "chat-b2"}}}}
+    )
     assert sender.messages
     assert sender.photos == []
     fail_metrics = store.metric_values(metric_name="chart_render_fail_rate")
@@ -599,9 +610,9 @@ async def test_phase_b_analyze_snapshot_dedupe_requires_double_key_hit(tmp_path)
     actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
     gateway = TelegramGateway(store=store, actions=actions)
 
-    first = {"update_id": 21003, "message": {"chat": {"id": "chat-b3"}, "text": "腾讯一个月涨跌"}}
-    second = {"update_id": 21004, "message": {"chat": {"id": "chat-b3"}, "text": "分析腾讯一个月走势"}}
-    third = {"update_id": 21005, "message": {"chat": {"id": "chat-b3"}, "text": "腾讯一个月涨跌"}}
+    first = {"update_id": 21003, "message": {"chat": {"id": "chat-b3"}, "text": "TSLA 一个月涨跌"}}
+    second = {"update_id": 21004, "message": {"chat": {"id": "chat-b3"}, "text": "分析 TSLA 一个月走势"}}
+    third = {"update_id": 21005, "message": {"chat": {"id": "chat-b3"}, "text": "TSLA 一个月涨跌"}}
 
     assert await gateway.process_update(first)
     assert await gateway.process_update(second)
@@ -685,7 +696,7 @@ async def test_phase_d_plan_steps_and_evidence_trace_versions(tmp_path) -> None:
     actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
     gateway = TelegramGateway(store=store, actions=actions)
 
-    assert await gateway.process_update({"update_id": 30021, "message": {"chat": {"id": "chat-dn3"}, "text": "分析腾讯一个月走势"}})
+    assert await gateway.process_update({"update_id": 30021, "message": {"chat": {"id": "chat-dn3"}, "text": "分析 TSLA 一个月走势"}})
     with store._connect() as conn:  # noqa: SLF001
         row = conn.execute("SELECT request_id FROM bot_updates WHERE update_id = 30021").fetchone()
     assert row is not None
@@ -851,7 +862,7 @@ async def test_phase_s_clarify_followup_success_executes_analysis(tmp_path) -> N
     gateway = TelegramGateway(store=store, actions=actions)
 
     assert await gateway.process_update({"update_id": 30101, "message": {"chat": {"id": "chat-s1"}, "text": "看看k线图"}})
-    assert await gateway.process_update({"update_id": 30102, "message": {"chat": {"id": "chat-s1"}, "text": "腾讯的"}})
+    assert await gateway.process_update({"update_id": 30102, "message": {"chat": {"id": "chat-s1"}, "text": "TSLA"}})
     assert any("Snapshot Analysis" in item[1] for item in sender.messages)
     assert store.count_metric_events(metric_name="nl_clarify_resolved_total") == 1
     assert store.get_clarify_pending(chat_id="chat-s1") is None
@@ -874,7 +885,7 @@ async def test_phase_s_clarify_timeout_returns_template(tmp_path) -> None:  # no
             "UPDATE clarify_pending SET expires_at = ? WHERE chat_id = ?",
             ("2000-01-01T00:00:00+00:00", "chat-s2"),
         )
-    assert await gateway.process_update({"update_id": 30112, "message": {"chat": {"id": "chat-s2"}, "text": "腾讯的"}})
+    assert await gateway.process_update({"update_id": 30112, "message": {"chat": {"id": "chat-s2"}, "text": "TSLA"}})
     assert "Clarify timeout" in sender.messages[-1][1]
     assert "/analyze <symbol>" in sender.messages[-1][1]
 
@@ -898,8 +909,8 @@ async def test_phase_s_chart_failure_reason_is_explainable(tmp_path) -> None:  #
     actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
     gateway = TelegramGateway(store=store, actions=actions)
 
-    assert await gateway.process_update({"update_id": 30121, "message": {"chat": {"id": "chat-s3"}, "text": "分析腾讯一个月走势并发图"}})
-    assert any("chart_oversize" in item[1] for item in sender.messages)
+    assert await gateway.process_update({"update_id": 30121, "message": {"chat": {"id": "chat-s3"}, "text": "分析 TSLA 一个月走势并发图"}})
+    assert any("没能生成价格图表" in item[1] for item in sender.messages)
     assert sender.photos == []
 
 
@@ -919,7 +930,75 @@ async def test_phase_s_report_full_contains_evidence_block(tmp_path) -> None:  #
     actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
     gateway = TelegramGateway(store=store, actions=actions)
 
-    assert await gateway.process_update({"update_id": 30131, "message": {"chat": {"id": "chat-s4"}, "text": "分析腾讯一个月走势"}})
+    assert await gateway.process_update({"update_id": 30131, "message": {"chat": {"id": "chat-s4"}, "text": "分析 TSLA 一个月走势"}})
     assert await gateway.process_update({"update_id": 30132, "message": {"chat": {"id": "chat-s4"}, "text": "/report run-s-report full"}})
     assert "证据块 (Evidence)" in sender.messages[-1][1]
     assert "schema_version=" in sender.messages[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_phase_t_candidate_selection_timeout_returns_examples(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": "run-t-timeout", "metrics": {"data_close": 1.0}, **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 30201, "message": {"chat": {"id": "chat-t1"}, "text": "分析腾讯走势"}})
+    with store._connect() as conn:  # noqa: SLF001
+        row = conn.execute("SELECT request_id FROM bot_updates WHERE update_id = 30201").fetchone()
+        assert row is not None
+        conn.execute(
+            "UPDATE pending_candidate_selection SET expires_at = ? WHERE request_id = ?",
+            ("2000-01-01T00:00:00+00:00", str(row["request_id"])),
+        )
+    assert await gateway.process_update(
+        {"update_id": 30202, "callback_query": {"id": "cb-t1", "data": f"pick|{row['request_id']}|0700.HK", "message": {"chat": {"id": "chat-t1"}}}}
+    )
+    assert "候选点选已过期" in sender.messages[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_phase_t_reset_clears_context_and_pending(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": "run-t-reset", "metrics": {"data_close": 10.0, "technical_rsi_14": 50.0}, **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 30211, "message": {"chat": {"id": "chat-t2"}, "text": "分析 TSLA 一个月走势"}})
+    assert await gateway.process_update({"update_id": 30212, "message": {"chat": {"id": "chat-t2"}, "text": "/reset"}})
+    assert "已清空上下文" in sender.messages[-1][1]
+    assert store.get_conversation_context(scope_key="chat:chat-t2") is None
+
+
+@pytest.mark.asyncio
+async def test_phase_t_group_context_isolation_by_user(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": "run-t-group", "metrics": {"data_close": 20.0, "technical_rsi_14": 52.0}, **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update(
+        {
+            "update_id": 30221,
+            "message": {"chat": {"id": "chat-group", "type": "group"}, "from": {"id": 1001}, "text": "分析 TSLA 一个月走势"},
+        }
+    )
+    assert await gateway.process_update(
+        {
+            "update_id": 30222,
+            "message": {"chat": {"id": "chat-group", "type": "group"}, "from": {"id": 2002}, "text": "看看新闻怎么说"},
+        }
+    )
+    assert "one follow-up within 5 minutes" in sender.messages[-1][1]

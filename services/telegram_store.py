@@ -164,6 +164,28 @@ class ClarifyPendingRecord:
 
 
 @dataclass
+class ConversationContextRecord:
+    scope_key: str
+    last_symbol_context: str | None
+    last_period_context: str | None
+    expires_at: str
+    updated_at: str
+
+
+@dataclass
+class PendingCandidateSelectionRecord:
+    request_id: str
+    chat_id: str
+    scope_key: str
+    candidates: list[str]
+    command_template: str
+    status: str
+    expires_at: str
+    created_at: str
+    updated_at: str
+
+
+@dataclass
 class NotificationRoute:
     chat_id: str
     channel: str
@@ -541,6 +563,32 @@ class TelegramTaskStore:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS conversation_contexts (
+                    scope_key TEXT PRIMARY KEY,
+                    last_symbol_context TEXT,
+                    last_period_context TEXT,
+                    expires_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pending_candidate_selection (
+                    request_id TEXT PRIMARY KEY,
+                    chat_id TEXT NOT NULL,
+                    scope_key TEXT NOT NULL,
+                    candidates TEXT NOT NULL,
+                    command_template TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS allowlist_chats (
                     chat_id TEXT PRIMARY KEY,
                     can_monitor INTEGER NOT NULL
@@ -573,6 +621,8 @@ class TelegramTaskStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_nl_requests_chat_status ON nl_requests(chat_id, status)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_nl_requests_text_dedupe ON nl_requests(chat_id, text_dedupe_key)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_nl_requests_intent_dedupe ON nl_requests(chat_id, intent_dedupe_key)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_candidate_chat_status ON pending_candidate_selection(chat_id, status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_candidate_expires ON pending_candidate_selection(expires_at)")
             self._ensure_column(conn, "watch_jobs", "scope", "TEXT NOT NULL DEFAULT 'single'")
             self._ensure_column(conn, "watch_jobs", "group_id", "TEXT")
             self._ensure_column(conn, "watch_jobs", "route_strategy", "TEXT NOT NULL DEFAULT 'dual_channel'")
@@ -1098,6 +1148,194 @@ class TelegramTaskStore:
         with self._connect() as conn:
             cursor = conn.execute("DELETE FROM clarify_pending WHERE chat_id = ?", (str(chat_id),))
         return cursor.rowcount > 0
+
+    def upsert_conversation_context(
+        self,
+        *,
+        scope_key: str,
+        last_symbol_context: str | None,
+        last_period_context: str | None,
+        ttl_seconds: int = 1800,
+    ) -> None:
+        now = _utc_now_dt()
+        now_iso = _isoformat(now)
+        expires_at = _isoformat(now + timedelta(seconds=max(1, int(ttl_seconds))))
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO conversation_contexts(scope_key, last_symbol_context, last_period_context, expires_at, updated_at)
+                VALUES(?, ?, ?, ?, ?)
+                ON CONFLICT(scope_key) DO UPDATE SET
+                    last_symbol_context = excluded.last_symbol_context,
+                    last_period_context = excluded.last_period_context,
+                    expires_at = excluded.expires_at,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    scope_key,
+                    last_symbol_context.upper() if last_symbol_context else None,
+                    last_period_context.lower() if last_period_context else None,
+                    expires_at,
+                    now_iso,
+                ),
+            )
+
+    def get_conversation_context(self, *, scope_key: str) -> ConversationContextRecord | None:
+        now_iso = _isoformat(_utc_now_dt())
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT scope_key, last_symbol_context, last_period_context, expires_at, updated_at
+                FROM conversation_contexts
+                WHERE scope_key = ?
+                LIMIT 1
+                """,
+                (scope_key,),
+            ).fetchone()
+        if row is None:
+            return None
+        record = ConversationContextRecord(
+            scope_key=str(row["scope_key"]),
+            last_symbol_context=str(row["last_symbol_context"]) if row["last_symbol_context"] else None,
+            last_period_context=str(row["last_period_context"]) if row["last_period_context"] else None,
+            expires_at=str(row["expires_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+        if str(record.expires_at) <= now_iso:
+            self.clear_conversation_context(scope_key=scope_key)
+            return None
+        return record
+
+    def clear_conversation_context(self, *, scope_key: str) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute("DELETE FROM conversation_contexts WHERE scope_key = ?", (scope_key,))
+        return cursor.rowcount > 0
+
+    def update_nl_request_slots(self, *, request_id: str, slots: dict[str, Any]) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE nl_requests
+                SET slots = ?, updated_at = ?
+                WHERE request_id = ?
+                """,
+                (_json_dumps(slots), _utc_now(), request_id),
+            )
+        return cursor.rowcount > 0
+
+    def upsert_pending_candidate_selection(
+        self,
+        *,
+        request_id: str,
+        chat_id: str,
+        scope_key: str,
+        candidates: list[str],
+        command_template: str,
+        ttl_seconds: int = 300,
+    ) -> None:
+        now = _utc_now_dt()
+        now_iso = _isoformat(now)
+        expires_at = _isoformat(now + timedelta(seconds=max(1, int(ttl_seconds))))
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO pending_candidate_selection(
+                    request_id, chat_id, scope_key, candidates, command_template, status, expires_at, created_at, updated_at
+                )
+                VALUES(?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+                ON CONFLICT(request_id) DO UPDATE SET
+                    chat_id = excluded.chat_id,
+                    scope_key = excluded.scope_key,
+                    candidates = excluded.candidates,
+                    command_template = excluded.command_template,
+                    status = excluded.status,
+                    expires_at = excluded.expires_at,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    request_id,
+                    str(chat_id),
+                    scope_key,
+                    _json_dumps({"candidates": [str(item).upper() for item in candidates]}),
+                    command_template,
+                    expires_at,
+                    now_iso,
+                    now_iso,
+                ),
+            )
+
+    def get_pending_candidate_by_ref(self, *, chat_id: str, request_ref: str) -> PendingCandidateSelectionRecord | None:
+        ref = (request_ref or "").strip()
+        if not ref:
+            return None
+        now_iso = _isoformat(_utc_now_dt())
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT request_id, chat_id, scope_key, candidates, command_template, status, expires_at, created_at, updated_at
+                FROM pending_candidate_selection
+                WHERE chat_id = ?
+                  AND status = 'pending'
+                  AND (request_id = ? OR substr(request_id, -6) = ?)
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (str(chat_id), ref, ref[-6:]),
+            ).fetchone()
+        if row is None:
+            return None
+        payload = json.loads(str(row["candidates"]))
+        candidates = payload.get("candidates") if isinstance(payload, dict) else []
+        record = PendingCandidateSelectionRecord(
+            request_id=str(row["request_id"]),
+            chat_id=str(row["chat_id"]),
+            scope_key=str(row["scope_key"]),
+            candidates=[str(item).upper() for item in candidates if isinstance(item, str)],
+            command_template=str(row["command_template"]),
+            status=str(row["status"]),
+            expires_at=str(row["expires_at"]),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+        if str(record.expires_at) <= now_iso:
+            self.mark_pending_candidate_selection(request_id=record.request_id, status="expired")
+            return None
+        return record
+
+    def mark_pending_candidate_selection(self, *, request_id: str, status: str) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE pending_candidate_selection
+                SET status = ?, updated_at = ?
+                WHERE request_id = ?
+                """,
+                (status, _utc_now(), request_id),
+            )
+        return cursor.rowcount > 0
+
+    def clear_pending_candidate_selection(self, *, chat_id: str) -> int:
+        with self._connect() as conn:
+            cursor = conn.execute("DELETE FROM pending_candidate_selection WHERE chat_id = ?", (str(chat_id),))
+        return int(cursor.rowcount)
+
+    def reset_conversation_runtime_state(self, *, chat_id: str, scope_key: str) -> None:
+        self.clear_conversation_context(scope_key=scope_key)
+        self.clear_pending_candidate_selection(chat_id=chat_id)
+        self.clear_clarify_pending(chat_id=chat_id)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE nl_requests
+                SET status = 'rejected',
+                    reject_reason = 'reset',
+                    confirm_deadline_at = NULL,
+                    updated_at = ?
+                WHERE chat_id = ?
+                  AND status = 'pending_confirm'
+                """,
+                (_utc_now(), str(chat_id)),
+            )
 
     def find_recent_nl_duplicates(
         self,

@@ -30,9 +30,9 @@ class TelegramChartService:
 
     def ensure_chart_within_limit(self, chart_path: Path | None) -> tuple[Path | None, int | None, str | None]:
         if chart_path is None:
-            return None, None, "chart_missing"
+            return None, None, "artifact_missing"
         if not chart_path.exists() or not chart_path.is_file():
-            return None, None, "chart_render_error"
+            return None, None, "artifact_missing"
 
         size = int(chart_path.stat().st_size)
         if size > self._max_payload_bytes:

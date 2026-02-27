@@ -48,8 +48,8 @@ class TelegramActions:
 
     @staticmethod
     def _render_key_metrics(metrics: dict[str, Any]) -> tuple[str, str]:
-        close_price = metrics.get("data_close")
-        rsi = metrics.get("technical_rsi_14")
+        close_price = metrics.get("data_close", metrics.get("latest_close"))
+        rsi = metrics.get("technical_rsi_14", metrics.get("rsi14"))
         metric_parts: list[str] = []
         missing: list[str] = []
         if close_price is not None:
@@ -62,18 +62,48 @@ class TelegramActions:
             missing.append("rsi14")
         if metric_parts:
             return " ".join(metric_parts), ""
-        reason = f"缺失原因 (Missing): metrics unavailable ({','.join(missing)})"
+        reason = f"缺失原因: {','.join(missing)}"
         return reason, reason
 
     @staticmethod
     def _chart_reason_text(reason: str) -> str:
         mapping = {
-            "chart_missing": "chart artifact missing",
-            "chart_oversize": "chart payload too large",
-            "chart_render_error": "chart file invalid or render failed",
-            "send_photo_error": "telegram sendPhoto failed",
+            "artifact_missing": "未生成图表产物",
+            "data_empty": "缺少可绘图的数据区间",
+            "chart_oversize": "图表文件过大",
+            "send_photo_error": "图表发送失败",
         }
-        return mapping.get(reason, reason or "unknown")
+        return mapping.get(reason, "图表生成失败")
+
+    @staticmethod
+    def _metric_float(metrics: dict[str, Any], *keys: str) -> float | None:
+        for key in keys:
+            value = metrics.get(key)
+            if value is None:
+                continue
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    @staticmethod
+    def _period_window(period: str) -> str:
+        now = datetime.now(timezone.utc).date()
+        days = {"5d": 5, "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365}.get(str(period).lower(), 30)
+        start = now - timedelta(days=days)
+        return f"{start.isoformat()} ~ {now.isoformat()}"
+
+    @staticmethod
+    def _extract_news(result: dict[str, Any], *, default_days: int = 7) -> tuple[int, str, str]:
+        news = result.get("news")
+        count = 0
+        source = "aggregated_news"
+        if isinstance(news, list):
+            count = len(news)
+            if news and isinstance(news[0], dict):
+                source = str(news[0].get("source") or source)
+        return count, f"近{default_days}天", source
 
     async def handle_help(self, *, chat_id: str) -> ActionResult:
         await self._notifier.send_text(
@@ -155,8 +185,20 @@ class TelegramActions:
             )
 
         run_id = str(result.get("run_id", "")).strip()
-        summary = str(((result.get("fused_insights") or {}).get("summary") or "")).strip() or "No summary."
+        summary = str(((result.get("fused_insights") or {}).get("summary") or "")).strip() or "暂无摘要。"
         metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+        latest_close = self._metric_float(metrics, "latest_close", "data_close")
+        data_window = str(metrics.get("data_window") or self._period_window(period))
+        rsi = self._metric_float(metrics, "technical_rsi_14", "rsi14")
+        ma = self._metric_float(metrics, "technical_ma_20", "ma20")
+        high = self._metric_float(metrics, "window_high", "period_high")
+        low = self._metric_float(metrics, "window_low", "period_low")
+        ret30 = self._metric_float(metrics, "return_30d", "change_30d")
+        news_count, news_window, news_source = self._extract_news(result)
+        has_technical = latest_close is not None and bool(data_window) and (rsi is not None or ma is not None)
+        has_range = (high is not None and low is not None) or (ret30 is not None)
+        has_news = news_count >= 1
+        safe_summary = summary if has_technical else "这次缺少价格证据，先不给趋势/情绪结论。"
         if run_id:
             self._store.upsert_analysis_report(
                 run_id=run_id,
@@ -167,12 +209,25 @@ class TelegramActions:
                 key_metrics=metrics,
             )
         metric_line, missing_reason = self._render_key_metrics(metrics)
+        evidence_lines: list[str] = []
+        if latest_close is not None:
+            evidence_lines.append(f"当前价={round(latest_close, 4)}")
+        if has_range and high is not None and low is not None:
+            evidence_lines.append(f"区间高低={round(low, 4)}~{round(high, 4)}")
+        elif has_range and ret30 is not None:
+            evidence_lines.append(f"近30天涨跌={round(ret30 * 100, 2)}%")
+        evidence_lines.append(f"news_count={news_count} 时间窗={news_window} 来源={news_source}")
+        if not evidence_lines:
+            evidence_lines.append("图表状态=未生成")
         report_text = (
             f"快照分析 (Snapshot Analysis): {symbol}\n"
+            f"分析区间={data_window}\n"
             f"关键指标 (Key metrics): {metric_line}\n"
-            f"结论 (Conclusion): {summary[:300]}\n"
+            f"结论 (Conclusion): {safe_summary[:300]}\n"
+            f"证据 (Evidence): {' | '.join(evidence_lines[:3])}\n"
+            f"request_id(short)={(request_id or run_id or 'n/a')[-6:]}\n"
             f"run_id={run_id or 'N/A'}\n"
-            f"下一步 (Next): /report {run_id or '<run_id>'} full"
+            f"下一步: 📈K线 📰新闻 🗓️1个月 🔁重试 📄报告"
         )
 
         await self._notifier.send_text(chat_id, report_text)
@@ -187,14 +242,40 @@ class TelegramActions:
             chart_path, chart_size, chart_error = self._chart_service.ensure_chart_within_limit(chart_candidate)
             if chart_size is not None:
                 self._store.record_metric(metric_name="chart_payload_bytes", metric_value=float(chart_size))
+            chart_reason = "data_empty" if latest_close is None else ("artifact_missing" if chart_error else "")
+            if chart_path is None and chart_reason == "artifact_missing":
+                self._store.record_metric(metric_name="chart_retry_attempted", metric_value=1.0)
+                await self._notifier.send_text(chat_id, "首次未取到图表产物，已自动重试一次。")
+                async with self._global_gate.acquire():
+                    retry_result = await asyncio.wait_for(
+                        self._research_runner(
+                            request=request_text,
+                            symbol=symbol,
+                            period=period,
+                            interval=interval,
+                            news_limit=8 if need_news else 0,
+                        ),
+                        timeout=self._analysis_timeout_seconds,
+                    )
+                retry_candidate = self._chart_service.extract_chart_path(retry_result)
+                retry_path, retry_size, retry_error = self._chart_service.ensure_chart_within_limit(retry_candidate)
+                if retry_size is not None:
+                    self._store.record_metric(metric_name="chart_payload_bytes", metric_value=float(retry_size))
+                if retry_path is not None:
+                    chart_path = retry_path
+                    chart_error = None
+                    self._store.record_metric(metric_name="chart_retry_success", metric_value=1.0)
+                else:
+                    chart_error = retry_error
             if chart_path is None:
-                reason = chart_error or "chart_render_error"
+                reason = "data_empty" if latest_close is None else "artifact_missing"
                 self._store.record_metric(metric_name="chart_render_fail_rate", metric_value=1.0, tags={"reason": reason})
                 await self._notifier.send_text(
                     chat_id,
                     (
-                        "图表降级为文本 (Chart downgraded to text): "
-                        f"{reason} ({self._chart_reason_text(reason)})."
+                        "这次没能生成价格图表，我可以重试图表或只做新闻解读。\n"
+                        f"原因: {self._chart_reason_text(reason)}\n"
+                        "可选: 📈K线 📰新闻 🗓️1个月 🔁重试 📄报告"
                     ),
                 )
             else:
@@ -202,14 +283,15 @@ class TelegramActions:
                 if hasattr(sender, "send_photo"):
                     try:
                         await sender.send_photo(chat_id, str(chart_path), caption=f"{symbol} {period}/{interval} chart")  # type: ignore[attr-defined]
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception:  # noqa: BLE001
                         reason = "send_photo_error"
                         self._store.record_metric(metric_name="chart_render_fail_rate", metric_value=1.0, tags={"reason": reason})
                         await self._notifier.send_text(
                             chat_id,
                             (
-                                "图表降级为文本 (Chart downgraded to text): "
-                                f"{reason} ({self._chart_reason_text(reason)}). error={str(exc)[:80]}"
+                                "图表发送失败，已降级为文本说明。\n"
+                                f"原因: {self._chart_reason_text(reason)}\n"
+                                f"request_id(short)={(request_id or run_id or 'n/a')[-6:]}"
                             ),
                         )
                 else:
@@ -218,10 +300,15 @@ class TelegramActions:
                     await self._notifier.send_text(
                         chat_id,
                         (
-                            "图表降级为文本 (Chart downgraded to text): "
-                            f"{reason} ({self._chart_reason_text(reason)})."
+                            "图表发送能力不可用，已降级为文本说明。\n"
+                            f"原因: {self._chart_reason_text(reason)}"
                         ),
                     )
+            if not has_news:
+                await self._notifier.send_text(
+                    chat_id,
+                    "新闻回显: news_count=0 时间窗=近7天 来源=aggregated_news\n近7天未抓到新闻，可选：扩到30天 / 重试。",
+                )
 
         return ActionResult(command="analyze_snapshot", request_id=request_id)
 
@@ -305,10 +392,12 @@ class TelegramActions:
             evidence = self._store.list_nl_execution_evidence(request_id=report.request_id, limit=10)
             latest = evidence[0] if evidence else {}
             confidence = "high" if metrics_line and "Missing" not in metrics_line else "medium"
+            metric_source_keys = sorted([str(key) for key in report.key_metrics.keys()])
             evidence_suffix = (
                 "\n证据块 (Evidence):\n"
                 f"- data_window={report.created_at} -> {report.updated_at}\n"
                 f"- source=request_id:{report.request_id}\n"
+                f"- metric_source_keys={','.join(metric_source_keys)}\n"
                 f"- confidence_label={confidence}\n"
                 f"- schema_version={latest.get('schema_version', 'unknown')}\n"
                 f"- action_version={latest.get('action_version', 'unknown')}"

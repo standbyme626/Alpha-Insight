@@ -23,6 +23,22 @@ from agents.telegram_nlu_planner import (
 from services.runtime_controls import RuntimeLimits
 from services.telegram_actions import TelegramActions
 from services.telegram_store import TelegramTaskStore
+from tools.market_data import normalize_market_symbol
+
+
+_ALLOWED_ANALYZE_PERIODS = {"5d", "1mo", "3mo", "6mo", "1y"}
+_SYMBOL_ALIAS_MAP_VERSION = "v1.0.0"
+_SYMBOL_ALIAS_UPDATED_AT = "2026-02-27T00:00:00+00:00"
+_SYMBOL_ALIAS_MAP: dict[str, list[str]] = {
+    "腾讯": ["0700.HK", "TCEHY"],
+    "tencent": ["0700.HK", "TCEHY"],
+    "阿里": ["9988.HK", "BABA"],
+    "alibaba": ["9988.HK", "BABA"],
+    "特斯拉": ["TSLA"],
+    "tesla": ["TSLA"],
+    "苹果": ["AAPL"],
+    "apple": ["AAPL"],
+}
 
 
 def _mask_chat_id(chat_id: str) -> str:
@@ -95,7 +111,7 @@ class TelegramGateway:
         return {
             "update_id": int(update.get("update_id", 0)),
             "message": {
-                "chat": {"id": str(effective_chat.get("id", ""))},
+                "chat": {"id": str(effective_chat.get("id", "")), "type": str(effective_chat.get("type", ""))},
                 "text": effective_text[:256],
                 "from": effective_message.get("from") or {},
             },
@@ -107,6 +123,118 @@ class TelegramGateway:
             else None,
             "raw_message": {"chat": {"id": str(chat.get("id", ""))}, "text": text[:256]},
         }
+
+    @staticmethod
+    def _short_request_id(request_id: str) -> str:
+        return request_id[-6:] if request_id else "n/a"
+
+    @staticmethod
+    def _conversation_scope_key(*, chat_id: str, chat_type: str, user_id: str | None) -> str:
+        chat_kind = (chat_type or "").lower()
+        if chat_kind in {"group", "supergroup"} and user_id:
+            return f"group_user:{chat_id}:{user_id}"
+        return f"chat:{chat_id}"
+
+    @staticmethod
+    def _extract_period_from_text(text: str) -> str | None:
+        lowered = (text or "").lower()
+        if any(item in lowered for item in ("近30天", "一个月", "1个月", "一月", "本月", "上月", "30d", "30天", "1mo")):
+            return "1mo"
+        if any(item in lowered for item in ("近3个月", "三个月", "3个月", "3mo")):
+            return "3mo"
+        if any(item in lowered for item in ("半年", "6个月", "6mo")):
+            return "6mo"
+        if any(item in lowered for item in ("一年", "1年", "1y")):
+            return "1y"
+        if any(item in lowered for item in ("一周", "1周", "week")):
+            return "5d"
+        return None
+
+    @staticmethod
+    def _extract_explicit_symbol_token(text: str) -> str | None:
+        for token in re.findall(r"[A-Za-z0-9.\-]{1,16}", text or ""):
+            if token.strip().lower() in {"k"}:
+                continue
+            normalized = normalize_market_symbol(token, market="auto")
+            if normalized and re.fullmatch(r"[A-Z0-9.\-]{1,12}", normalized):
+                return normalized
+        return None
+
+    @staticmethod
+    def _extract_alias_candidates(text: str) -> tuple[list[str], str | None]:
+        lowered = (text or "").lower()
+        matched_alias: str | None = None
+        for alias, symbols in _SYMBOL_ALIAS_MAP.items():
+            if alias in lowered:
+                matched_alias = alias
+                return [str(item).upper() for item in symbols], alias
+        return [], matched_alias
+
+    @staticmethod
+    def _is_explicit_switch_text(text: str) -> bool:
+        lowered = (text or "").lower()
+        return any(item in lowered for item in ("不是", "换成", "改看", "换标的", "怎么样"))
+
+    def _inject_snapshot_defaults(
+        self,
+        *,
+        plan: NLUPlan,
+        normalized_text: str,
+        scope_key: str,
+    ) -> tuple[NLUPlan, str | None, bool]:
+        if plan.intent != "analyze_snapshot":
+            return plan, None, False
+
+        context = self._store.get_conversation_context(scope_key=scope_key)
+        slots = dict(plan.slots)
+        explicit_symbol = self._extract_explicit_symbol_token(normalized_text)
+        candidates, alias = self._extract_alias_candidates(normalized_text)
+        explicit_switch = self._is_explicit_switch_text(normalized_text)
+        carry_hit = False
+        carry_symbol: str | None = None
+
+        if explicit_symbol:
+            slots["symbol"] = explicit_symbol
+        elif len(candidates) == 1:
+            slots["symbol"] = candidates[0]
+        elif len(candidates) > 1 and not explicit_symbol:
+            slots["_candidate_symbols"] = candidates
+            slots["_candidate_alias"] = alias
+            plan.slots = slots
+            plan.reject_reason = "candidate_selection_needed"
+            plan.explain = "candidate_selection_needed"
+            plan.clarify_slot = "symbol"
+            return plan, None, False
+        elif context and context.last_symbol_context and (not str(slots.get("symbol", "")).strip()):
+            slots["symbol"] = str(context.last_symbol_context)
+            carry_hit = True
+            carry_symbol = str(context.last_symbol_context)
+
+        infer_period = self._extract_period_from_text(normalized_text)
+        if infer_period:
+            slots["period"] = infer_period
+        elif context and context.last_period_context:
+            slots["period"] = str(context.last_period_context)
+        else:
+            slots["period"] = "1mo"
+
+        if str(slots.get("period", "")).lower() not in _ALLOWED_ANALYZE_PERIODS:
+            slots["period"] = "1mo"
+        slots["_context_scope_key"] = scope_key
+        slots["_alias_map_version"] = _SYMBOL_ALIAS_MAP_VERSION
+        slots["_alias_map_updated_at"] = _SYMBOL_ALIAS_UPDATED_AT
+        plan.slots = slots
+
+        symbol = str(slots.get("symbol", "")).strip()
+        if symbol:
+            plan.reject_reason = None
+            plan.explain = "snapshot defaults resolved"
+            if plan.confidence < 0.75:
+                plan.confidence = 0.9
+        elif not candidates and explicit_switch:
+            plan.reject_reason = "unknown_symbol"
+            plan.explain = "alias_not_found"
+        return plan, carry_symbol, carry_hit
 
     async def enqueue_update(self, update: dict[str, Any]) -> int | None:
         update_id = int(update.get("update_id", 0))
@@ -457,6 +585,17 @@ class TelegramGateway:
                 last_error=None,
                 confirm_deadline_at=None,
             )
+            if record.intent == "analyze_snapshot":
+                scope_key = str(record.slots.get("_context_scope_key", "")).strip()
+                symbol = str(record.slots.get("symbol", "")).strip().upper()
+                period = str(record.slots.get("period", "1mo")).strip().lower()
+                if scope_key and symbol:
+                    self._store.upsert_conversation_context(
+                        scope_key=scope_key,
+                        last_symbol_context=symbol,
+                        last_period_context=period if period in _ALLOWED_ANALYZE_PERIODS else "1mo",
+                        ttl_seconds=1800,
+                    )
             self._add_execution_evidence(record=record, update_id=update_id, result="completed", run_id=run_id)
             self._store.record_metric(metric_name="nl_intent_success", metric_value=1.0, tags={"intent": record.intent})
             self._store.update_bot_update_status(
@@ -559,6 +698,20 @@ class TelegramGateway:
         return action, request_ref
 
     @staticmethod
+    def _parse_callback_candidate(data: str) -> tuple[str, str] | None:
+        raw = (data or "").strip()
+        if not raw.startswith("pick|"):
+            return None
+        parts = raw.split("|", 2)
+        if len(parts) != 3:
+            return None
+        request_ref = parts[1].strip()
+        chosen_symbol = parts[2].strip().upper()
+        if not request_ref or not chosen_symbol:
+            return None
+        return request_ref, chosen_symbol
+
+    @staticmethod
     def _parse_text_confirm(text: str) -> tuple[str, str] | None:
         raw = (text or "").strip()
         match = re.match(r"^(yes|no|cancel|是|否)\s+([A-Za-z0-9\-]+)$", raw, flags=re.IGNORECASE)
@@ -636,6 +789,66 @@ class TelegramGateway:
         await self._execute_nl_request(update_id=update_id, request_id=pending.request_id)
         return True
 
+    async def _handle_candidate_selection(
+        self,
+        *,
+        chat_id: str,
+        update_id: int,
+        request_ref: str,
+        chosen_symbol: str,
+    ) -> bool:
+        pending = self._store.get_pending_candidate_by_ref(chat_id=chat_id, request_ref=request_ref)
+        if pending is None:
+            await self._actions.send_error_message(
+                chat_id=chat_id,
+                text=(
+                    "候选点选已过期或已完成。请重发请求。\n"
+                    "示例：分析 0700.HK 近30天、分析 TSLA 近3个月。"
+                ),
+            )
+            self._store.update_bot_update_status(
+                update_id=update_id,
+                status="processed",
+                command="candidate_selection_expired",
+                error=None,
+            )
+            return True
+        if chosen_symbol not in pending.candidates:
+            await self._actions.send_error_message(
+                chat_id=chat_id,
+                text="候选不匹配该请求，请重新点选对应按钮。",
+            )
+            self._store.update_bot_update_status(
+                update_id=update_id,
+                status="failed",
+                command="candidate_selection_rejected",
+                request_id=pending.request_id,
+                error="candidate_not_in_request",
+            )
+            return True
+        record = self._store.get_nl_request(request_id=pending.request_id)
+        if record is None or record.status not in {"clarify_pending", "queued"}:
+            self._store.mark_pending_candidate_selection(request_id=pending.request_id, status="rejected")
+            await self._actions.send_error_message(chat_id=chat_id, text="该请求已结束，请重发。")
+            return True
+        slots = dict(record.slots)
+        slots["symbol"] = chosen_symbol
+        self._store.update_nl_request_slots(request_id=record.request_id, slots=slots)
+        self._store.transition_nl_request_status(
+            request_id=record.request_id,
+            from_statuses=("clarify_pending", "queued"),
+            to_status="queued",
+            reject_reason=None,
+            last_error=None,
+        )
+        self._store.mark_pending_candidate_selection(request_id=record.request_id, status="resolved")
+        await self._actions.send_error_message(
+            chat_id=chat_id,
+            text=f"已选择标的 {chosen_symbol}，开始分析。request_id(short)={self._short_request_id(record.request_id)}",
+        )
+        await self._execute_nl_request(update_id=update_id, request_id=record.request_id)
+        return True
+
     async def process_enqueued_update(self, *, update_id: int) -> bool:
         started_at = time.perf_counter()
         payload = self._store.get_bot_update_payload(update_id=update_id)
@@ -646,8 +859,11 @@ class TelegramGateway:
         callback_query = payload.get("callback_query") or {}
         chat = message.get("chat") or {}
         chat_id = str(chat.get("id", ""))
+        chat_type = str(chat.get("type", "private"))
         from_user = message.get("from") or {}
-        user_id = str(from_user.get("id", "")) if from_user.get("id") is not None else None
+        callback_from = callback_query.get("from") or {}
+        effective_from = from_user or callback_from
+        user_id = str(effective_from.get("id", "")) if effective_from.get("id") is not None else None
         username = str(from_user.get("username", "")).strip() or None
         text = str(message.get("text", "")).strip()
         callback_data = str(callback_query.get("data", "")).strip()
@@ -695,6 +911,15 @@ class TelegramGateway:
             self._store.upsert_telegram_chat(chat_id=chat_id, user_id=user_id, username=username)
 
             if callback_data:
+                candidate = self._parse_callback_candidate(callback_data)
+                if candidate is not None:
+                    request_ref, chosen_symbol = candidate
+                    return await self._handle_candidate_selection(
+                        chat_id=chat_id,
+                        update_id=update_id,
+                        request_ref=request_ref,
+                        chosen_symbol=chosen_symbol,
+                    )
                 confirm = self._parse_callback_confirm(callback_data)
                 if confirm is None:
                     await self._actions.send_error_message(chat_id=chat_id, text="确认回调无效 (Invalid confirmation callback).")
@@ -736,6 +961,21 @@ class TelegramGateway:
                 return True
 
             if text.startswith("/"):
+                if text.split()[0].lower() == "/reset":
+                    scope_key = self._conversation_scope_key(chat_id=chat_id, chat_type=chat_type, user_id=user_id)
+                    self._store.reset_conversation_runtime_state(chat_id=chat_id, scope_key=scope_key)
+                    await self._actions.send_error_message(
+                        chat_id=chat_id,
+                        text="已清空上下文：last_symbol_context、last_period_context、pending_candidate_selection、pending_confirm。",
+                    )
+                    self._store.update_bot_update_status(
+                        update_id=update_id,
+                        status="processed",
+                        command="reset",
+                        request_id=None,
+                        error=None,
+                    )
+                    return True
                 if text.split()[0].lower() == "/cancel":
                     return await self._cancel_pending_confirm(chat_id=chat_id, update_id=update_id)
                 parsed = parse_telegram_command(text)
@@ -1065,6 +1305,12 @@ class TelegramGateway:
 
             now = self._current_ts()
             request_id = f"nlr-{uuid4().hex[:10]}"
+            scope_key = self._conversation_scope_key(chat_id=chat_id, chat_type=chat_type, user_id=user_id)
+            plan, carry_symbol, carry_hit = self._inject_snapshot_defaults(
+                plan=plan,
+                normalized_text=normalized,
+                scope_key=scope_key,
+            )
             text_key, intent_key = self._build_dedupe_keys(
                 chat_id=chat_id,
                 normalized_text=normalized,
@@ -1176,6 +1422,63 @@ class TelegramGateway:
                 )
                 return True
 
+            if plan.reject_reason == "candidate_selection_needed":
+                self._store.set_nl_request_status(
+                    request_id=request_id,
+                    to_status="clarify_pending",
+                    reject_reason="candidate_selection_needed",
+                    last_error="candidate_selection_needed",
+                )
+                candidates = [str(item).upper() for item in plan.slots.get("_candidate_symbols", []) if isinstance(item, str)]
+                self._store.upsert_pending_candidate_selection(
+                    request_id=request_id,
+                    chat_id=chat_id,
+                    scope_key=scope_key,
+                    candidates=candidates,
+                    command_template=plan.command_template,
+                    ttl_seconds=300,
+                )
+                alias = str(plan.slots.get("_candidate_alias", "该标的")).strip()
+                tips = "\n".join([f"- {item} -> 回调: pick|{request_id}|{item}" for item in candidates[:4]])
+                await self._actions.send_error_message(
+                    chat_id=chat_id,
+                    text=(
+                        f"标的 `{alias}` 命中多个候选，请在 5 分钟内点选：\n{tips}\n"
+                        f"request_id(short)={self._short_request_id(request_id)}"
+                    ),
+                )
+                self._store.update_bot_update_status(
+                    update_id=update_id,
+                    status="processed",
+                    command="nl_candidate_selection",
+                    request_id=request_id,
+                    error=None,
+                )
+                return True
+
+            if plan.reject_reason == "unknown_symbol":
+                self._store.set_nl_request_status(
+                    request_id=request_id,
+                    to_status="rejected",
+                    reject_reason="unknown_symbol",
+                    last_error=plan.explain,
+                )
+                await self._actions.send_error_message(
+                    chat_id=chat_id,
+                    text=(
+                        "未识别该标的，已拒绝执行以避免误分析。\n"
+                        "请使用示例：`600519.SH`、`0700.HK`、`TSLA`。"
+                    ),
+                )
+                self._store.update_bot_update_status(
+                    update_id=update_id,
+                    status="processed",
+                    command="nl_rejected_unknown_symbol",
+                    request_id=request_id,
+                    error=None,
+                )
+                return True
+
             if plan.confidence < 0.75 or plan.reject_reason is not None:
                 reject_reason = plan.reject_reason or "low_confidence"
                 self._store.set_nl_request_status(
@@ -1230,6 +1533,12 @@ class TelegramGateway:
                 return True
 
             await self._execute_nl_request(update_id=update_id, request_id=request_id)
+            if carry_hit and carry_symbol:
+                await self._actions.send_error_message(
+                    chat_id=chat_id,
+                    text=f"默认沿用标的：{carry_symbol}。如需切换请回复：换标的 TSLA。",
+                )
+                self._store.record_metric(metric_name="symbol_carry_over_hit_rate", metric_value=1.0)
             return True
         except Exception as exc:
             self._store.update_bot_update_status(
