@@ -2521,6 +2521,43 @@ class TelegramTaskStore:
             "notification_state_transition_total": self.count_notification_state_transitions(),
         }
 
+    def _list_audit_metadata(self, *, event_type: str, limit: int = 500) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT metadata
+                FROM audit_events
+                WHERE event_type = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (event_type, int(max(1, limit))),
+            ).fetchall()
+        output: list[dict[str, Any]] = []
+        for row in rows:
+            payload = row["metadata"]
+            if not payload:
+                continue
+            try:
+                data = json.loads(str(payload))
+            except json.JSONDecodeError:
+                continue
+            if isinstance(data, dict):
+                output.append(data)
+        return output
+
+    def list_nl_execution_evidence(self, *, request_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+        rows = self._list_audit_metadata(event_type="nl_execution_evidence", limit=limit)
+        if request_id is None:
+            return rows
+        return [row for row in rows if str(row.get("request_id", "")) == str(request_id)]
+
+    def list_nl_plan_step_events(self, *, request_id: str | None = None, limit: int = 1000) -> list[dict[str, Any]]:
+        rows = self._list_audit_metadata(event_type="nl_plan_step", limit=limit)
+        if request_id is None:
+            return rows
+        return [row for row in rows if str(row.get("request_id", "")) == str(request_id)]
+
     def build_phase_d_run_report(self) -> dict[str, float | int]:
         report = dict(self.build_phase_c_run_report())
         report_lookup_success = self.count_metric_events(metric_name="report_lookup_success")
@@ -2545,6 +2582,16 @@ class TelegramTaskStore:
         report["suppressed_notifications_total"] = self.count_suppressed_notifications()
         report["enabled_outbound_webhooks"] = self._count_enabled_outbound_webhooks()
         report["watchlist_groups_total"] = self._count_watchlist_groups()
+        evidence_rows = self.list_nl_execution_evidence(limit=1000)
+        plan_rows = self.list_nl_plan_step_events(limit=2000)
+        report["nl_execution_evidence_total"] = len(evidence_rows)
+        report["nl_plan_step_total"] = len(plan_rows)
+        report["nl_plan_step_failed_total"] = sum(1 for row in plan_rows if str(row.get("status", "")).lower() == "failed")
+        report["nl_evidence_mapped_total"] = sum(
+            1
+            for row in evidence_rows
+            if row.get("request_id") and row.get("schema_version") and row.get("action_version")
+        )
         return report
 
     def _count_enabled_notification_routes(self) -> int:

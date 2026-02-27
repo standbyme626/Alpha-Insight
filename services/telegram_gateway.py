@@ -218,11 +218,151 @@ class TelegramGateway:
             ),
         )
 
+    @staticmethod
+    def _default_plan_steps(intent: str) -> list[dict[str, str]]:
+        return [
+            {"step": "validate_slots", "action": "validate_slots"},
+            {"step": "execute_intent", "action": "execute_intent"},
+            {"step": "render_response", "action": "render_response"},
+        ]
+
+    @staticmethod
+    def _extract_plan_steps(slots: dict[str, Any], intent: str) -> list[dict[str, Any]]:
+        raw = slots.get("_plan_steps")
+        if isinstance(raw, list):
+            steps: list[dict[str, Any]] = []
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                action = str(item.get("action", "")).strip()
+                step = str(item.get("step", action)).strip()
+                if not action:
+                    continue
+                steps.append({"step": step or action, "action": action})
+            if steps:
+                return steps
+        return TelegramGateway._default_plan_steps(intent)
+
+    def _add_execution_evidence(
+        self,
+        *,
+        record: Any,
+        update_id: int,
+        result: str,
+        run_id: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        schema_version = str(record.slots.get("_schema_version", "telegram_nlu_plan_v1"))
+        self._store.add_audit_event(
+            event_type="nl_execution_evidence",
+            chat_id=record.chat_id,
+            update_id=update_id,
+            action=record.intent,
+            reason=result,
+            metadata={
+                "request_id": record.request_id,
+                "schema_version": schema_version,
+                "action_version": record.action_version,
+                "intent": record.intent,
+                "result": result,
+                "run_id": run_id,
+                "error": error,
+            },
+        )
+
+    def _add_plan_step_event(
+        self,
+        *,
+        record: Any,
+        update_id: int,
+        index: int,
+        step: dict[str, Any],
+        status: str,
+        error: str | None = None,
+    ) -> None:
+        self._store.add_audit_event(
+            event_type="nl_plan_step",
+            chat_id=record.chat_id,
+            update_id=update_id,
+            action=record.intent,
+            reason=status,
+            metadata={
+                "request_id": record.request_id,
+                "action_version": record.action_version,
+                "schema_version": str(record.slots.get("_schema_version", "telegram_nlu_plan_v1")),
+                "step_index": index,
+                "step": str(step.get("step", "")),
+                "step_action": str(step.get("action", "")),
+                "status": status,
+                "error": error,
+            },
+        )
+
+    async def _execute_nl_intent(self, *, record: Any, update_id: int) -> str | None:
+        slots = record.slots
+        if record.intent == "create_monitor":
+            await self._actions.handle_monitor(
+                chat_id=record.chat_id,
+                symbol=str(slots.get("symbol", "")),
+                symbols=[str(slots.get("symbol", ""))],
+                interval_sec=int(slots.get("interval_sec", 0)),
+                mode=str(slots.get("mode", "anomaly")),
+                threshold=float(slots.get("threshold", 0.03)),
+                template=str(slots.get("template", "volatility")),
+                route_strategy=str(slots.get("route_strategy", "dual_channel")),
+            )
+            return None
+        if record.intent == "analyze_snapshot":
+            want_chart = bool(slots.get("need_chart", False))
+            fail_before = self._store.count_metric_events(metric_name="chart_render_fail_rate") if want_chart else 0
+            if want_chart:
+                self._store.record_metric(metric_name="chart_render_attempt_total", metric_value=1.0)
+                if self._store.is_degradation_active(state_key="chart_text_only"):
+                    slots = dict(slots)
+                    slots["need_chart"] = False
+                    self._store.add_audit_event(
+                        event_type="degrade_skip",
+                        chat_id=record.chat_id,
+                        update_id=update_id,
+                        action="analyze_snapshot_chart",
+                        reason="chart_text_only",
+                    )
+            await self._actions.handle_analyze_snapshot(
+                chat_id=record.chat_id,
+                symbol=str(slots.get("symbol", "")).upper(),
+                period=str(slots.get("period", "1mo")).lower(),
+                interval=str(slots.get("interval", "1d")).lower(),
+                need_chart=bool(slots.get("need_chart", False)),
+                need_news=bool(slots.get("need_news", False)),
+                request_id=record.request_id,
+            )
+            if want_chart:
+                fail_after = self._store.count_metric_events(metric_name="chart_render_fail_rate")
+                if fail_after > fail_before or bool(slots.get("need_chart", False)) is False:
+                    self._store.record_metric(metric_name="chart_render_fail_total", metric_value=1.0)
+                self._evaluate_chart_degradation()
+            report = self._store.get_analysis_report(report_id=record.request_id, chat_id=record.chat_id)
+            return report.run_id if report else None
+        if record.intent == "list_jobs":
+            await self._actions.handle_list(chat_id=record.chat_id)
+            return None
+        if record.intent == "stop_job":
+            await self._actions.handle_stop(
+                chat_id=record.chat_id,
+                target=str(slots.get("target", "")),
+                target_type=str(slots.get("target_type", "symbol")),
+            )
+            return None
+        if record.intent == "daily_digest":
+            await self._actions.handle_digest(chat_id=record.chat_id, period=str(slots.get("period", "daily")))
+            return None
+        raise ValueError(f"unsupported_intent:{record.intent}")
+
     async def _execute_nl_request(self, *, update_id: int, request_id: str) -> bool:
         record = self._store.get_nl_request(request_id=request_id)
         if record is None:
             return False
-        if record.intent not in {"create_monitor", "analyze_snapshot"}:
+        if record.intent not in {"create_monitor", "analyze_snapshot", "list_jobs", "stop_job", "daily_digest"}:
             self._store.set_nl_request_status(
                 request_id=request_id,
                 to_status="failed",
@@ -239,48 +379,26 @@ class TelegramGateway:
         )
         if not moved:
             return False
-        slots = record.slots
+        plan_steps = self._extract_plan_steps(record.slots, record.intent)
+        run_id: str | None = None
         try:
-            if record.intent == "create_monitor":
-                await self._actions.handle_monitor(
-                    chat_id=record.chat_id,
-                    symbol=str(slots.get("symbol", "")),
-                    symbols=[str(slots.get("symbol", ""))],
-                    interval_sec=int(slots.get("interval_sec", 0)),
-                    mode=str(slots.get("mode", "anomaly")),
-                    threshold=float(slots.get("threshold", 0.03)),
-                    template=str(slots.get("template", "volatility")),
-                    route_strategy=str(slots.get("route_strategy", "dual_channel")),
-                )
-            else:
-                want_chart = bool(slots.get("need_chart", False))
-                fail_before = self._store.count_metric_events(metric_name="chart_render_fail_rate") if want_chart else 0
-                if want_chart:
-                    self._store.record_metric(metric_name="chart_render_attempt_total", metric_value=1.0)
-                    if self._store.is_degradation_active(state_key="chart_text_only"):
-                        slots = dict(slots)
-                        slots["need_chart"] = False
-                        self._store.add_audit_event(
-                            event_type="degrade_skip",
-                            chat_id=record.chat_id,
-                            update_id=update_id,
-                            action="analyze_snapshot_chart",
-                            reason="chart_text_only",
-                        )
-                await self._actions.handle_analyze_snapshot(
-                    chat_id=record.chat_id,
-                    symbol=str(slots.get("symbol", "")).upper(),
-                    period=str(slots.get("period", "1mo")).lower(),
-                    interval=str(slots.get("interval", "1d")).lower(),
-                    need_chart=bool(slots.get("need_chart", False)),
-                    need_news=bool(slots.get("need_news", False)),
-                    request_id=record.request_id,
-                )
-                if want_chart:
-                    fail_after = self._store.count_metric_events(metric_name="chart_render_fail_rate")
-                    if fail_after > fail_before or bool(slots.get("need_chart", False)) is False:
-                        self._store.record_metric(metric_name="chart_render_fail_total", metric_value=1.0)
-                    self._evaluate_chart_degradation()
+            for idx, step in enumerate(plan_steps, start=1):
+                self._add_plan_step_event(record=record, update_id=update_id, index=idx, step=step, status="started")
+                action = str(step.get("action", "")).strip().lower()
+                try:
+                    if action == "execute_intent":
+                        run_id = await self._execute_nl_intent(record=record, update_id=update_id)
+                    self._add_plan_step_event(record=record, update_id=update_id, index=idx, step=step, status="completed")
+                except Exception as exc:
+                    self._add_plan_step_event(
+                        record=record,
+                        update_id=update_id,
+                        index=idx,
+                        step=step,
+                        status="failed",
+                        error=str(exc),
+                    )
+                    raise
             self._store.set_nl_request_status(
                 request_id=request_id,
                 to_status="completed",
@@ -288,6 +406,7 @@ class TelegramGateway:
                 last_error=None,
                 confirm_deadline_at=None,
             )
+            self._add_execution_evidence(record=record, update_id=update_id, result="completed", run_id=run_id)
             self._store.record_metric(metric_name="nl_intent_success", metric_value=1.0, tags={"intent": record.intent})
             self._store.update_bot_update_status(
                 update_id=update_id,
@@ -303,6 +422,7 @@ class TelegramGateway:
                 to_status="failed",
                 last_error=str(exc),
             )
+            self._add_execution_evidence(record=record, update_id=update_id, result="failed", run_id=run_id, error=str(exc))
             self._store.update_bot_update_status(
                 update_id=update_id,
                 status="failed",
@@ -840,7 +960,11 @@ class TelegramGateway:
                 update_id=update_id,
                 chat_id=chat_id,
                 intent=plan.intent,
-                slots=plan.slots,
+                slots={
+                    **plan.slots,
+                    **({"_plan_steps": plan.plan_steps} if plan.plan_steps else {}),
+                    "_schema_version": plan.schema_version,
+                },
                 confidence=plan.confidence,
                 needs_confirm=plan.needs_confirm,
                 status="queued",
@@ -878,6 +1002,47 @@ class TelegramGateway:
                     update_id=update_id,
                     status="processed",
                     command="nl_deduped",
+                    request_id=request_id,
+                    error=None,
+                )
+                return True
+
+            if plan.reject_reason == "clarify_needed" and plan.clarify_slot:
+                self._store.record_metric(metric_name="nl_clarify_asked_total", metric_value=1.0, tags={"slot": plan.clarify_slot})
+                self._store.set_nl_request_status(
+                    request_id=request_id,
+                    to_status="rejected",
+                    reject_reason="clarify_failed",
+                    last_error=plan.explain,
+                )
+                clarify_question = plan.clarify_question or "请补充必要参数。"
+                await self._actions.send_error_message(
+                    chat_id=chat_id,
+                    text=(
+                        f"{clarify_question}\n"
+                        f"仅支持一次澄清 (single clarify).\n"
+                        f"可复制命令模板 (Command template): {plan.command_template}"
+                    ),
+                )
+                self._store.add_audit_event(
+                    event_type="nl_rejected",
+                    chat_id=chat_id,
+                    update_id=update_id,
+                    action=plan.intent,
+                    reason="clarify_failed",
+                    metadata={
+                        "raw_text_hash": hash_text(text),
+                        "intent_candidate": plan.intent,
+                        "reject_reason": "clarify_failed",
+                        "clarify_slot": plan.clarify_slot,
+                        "confidence": plan.confidence,
+                    },
+                )
+                self._store.record_metric(metric_name="nl_intent_reject", metric_value=1.0, tags={"reason": "clarify_failed"})
+                self._store.update_bot_update_status(
+                    update_id=update_id,
+                    status="processed",
+                    command="nl_clarify_once",
                     request_id=request_id,
                     error=None,
                 )

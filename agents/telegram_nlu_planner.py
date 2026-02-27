@@ -14,6 +14,7 @@ _ALLOWED_INTERVALS = {"1m", "5m", "15m", "30m", "1h", "4h", "1d", "24h"}
 _ALLOWED_ANALYZE_PERIODS = {"5d", "1mo", "3mo", "6mo", "1y"}
 _ALLOWED_TEMPLATES = {"volatility", "price", "rsi"}
 _ALLOWED_ROUTE_STRATEGIES = {"telegram_only", "webhook_only", "dual_channel"}
+_ALLOWED_CLARIFY_SLOTS = {"symbol", "period", "interval", "template", "market"}
 _MAX_NL_TEXT_CHARS = 800
 _PROMPT_INJECTION_PATTERNS = [
     re.compile(r"ignore\s+(all|the)\s+(previous|prior|above)\s+(instructions?|prompts?)", re.IGNORECASE),
@@ -42,6 +43,10 @@ class NLUPlan:
     explain: str
     reject_reason: str | None = None
     command_template: str = "/monitor <symbol> <interval> [volatility|price|rsi] [telegram_only|webhook_only|dual_channel]"
+    schema_version: str = "telegram_nlu_plan_v2"
+    plan_steps: list[dict[str, Any]] | None = None
+    clarify_slot: str | None = None
+    clarify_question: str | None = None
 
 
 def normalize_text(text: str) -> str:
@@ -140,12 +145,16 @@ def _extract_route_strategy(text: str) -> str:
 
 def _intent_from_text(text: str) -> str:
     lowered = text.lower()
+    if any(keyword in lowered for keyword in ("digest", "日报", "daily digest", "每日报告", "日报告")):
+        return "daily_digest"
+    if any(keyword in lowered for keyword in ("list", "列表", "任务列表", "监控列表", "有哪些监控")):
+        return "list_jobs"
+    if any(keyword in lowered for keyword in ("stop", "停止", "取消监控", "停掉", "关掉", "删除监控")):
+        return "stop_job"
     if any(keyword in lowered for keyword in ("monitor", "盯", "监控", "提醒", "watch")):
         return "create_monitor"
     if any(keyword in lowered for keyword in ("analyze", "analysis", "分析", "涨跌", "走势", "看", "snapshot")):
         return "analyze_snapshot"
-    if any(keyword in lowered for keyword in ("stop", "停止", "取消监控")):
-        return "stop_job"
     if "bulk" in lowered or "批量" in lowered:
         return "bulk_change"
     return "unknown"
@@ -176,16 +185,70 @@ def _extract_need_news(text: str) -> bool:
     return any(item in lowered for item in ("新闻", "news", "综合分析", "研报", "情绪"))
 
 
+def _extract_stop_target(text: str) -> tuple[str | None, str]:
+    lowered = text.lower()
+    job_match = re.search(r"\b(job-[a-z0-9\-]+)\b", lowered)
+    if job_match:
+        return job_match.group(1), "job_id"
+    symbol = _extract_symbol(text)
+    if symbol:
+        return symbol, "symbol"
+    return None, "symbol"
+
+
+def _clarify(plan: NLUPlan, *, slot: str, question: str) -> NLUPlan:
+    if slot not in _ALLOWED_CLARIFY_SLOTS:
+        plan.reject_reason = "invalid_slot"
+        plan.explain = f"unsupported clarify slot: {slot}"
+        return plan
+    plan.reject_reason = "clarify_needed"
+    plan.clarify_slot = slot
+    plan.clarify_question = question
+    plan.explain = f"clarify {slot}"
+    return plan
+
+
+def _build_plan_steps(intent: str, *, need_chart: bool = False) -> list[dict[str, Any]]:
+    steps: list[dict[str, Any]] = [
+        {"step": "validate_slots", "action": "validate_slots", "status": "pending"},
+        {"step": "execute_intent", "action": "execute_intent", "status": "pending"},
+    ]
+    if intent == "daily_digest":
+        steps.insert(1, {"step": "build_digest", "action": "build_digest", "status": "pending"})
+    if intent == "list_jobs":
+        steps.insert(1, {"step": "list_jobs", "action": "list_jobs", "status": "pending"})
+    if intent == "analyze_snapshot" and need_chart:
+        steps.append({"step": "render_chart", "action": "render_chart", "status": "pending"})
+    steps.append({"step": "render_response", "action": "render_response", "status": "pending"})
+    return steps
+
+
 def _validate_slots(plan: NLUPlan) -> NLUPlan:
-    if plan.intent not in {"create_monitor", "stop_job", "bulk_change", "analyze_snapshot"}:
+    if plan.intent not in {"create_monitor", "stop_job", "bulk_change", "analyze_snapshot", "list_jobs", "daily_digest"}:
         plan.reject_reason = "low_confidence"
-        plan.explain = "intent not supported in v1"
+        plan.explain = "intent not supported in v2"
+        return plan
+
+    if plan.intent == "list_jobs":
+        return plan
+
+    if plan.intent == "daily_digest":
+        period = str(plan.slots.get("period", "daily")).lower()
+        if period != "daily":
+            plan.reject_reason = "invalid_slot"
+            plan.explain = "invalid digest period"
         return plan
 
     if plan.intent == "analyze_snapshot":
         symbol = str(plan.slots.get("symbol", "")).upper()
         period = str(plan.slots.get("period", "")).lower()
         interval = str(plan.slots.get("interval", "")).lower()
+        if not symbol:
+            return _clarify(
+                plan,
+                slot="symbol",
+                question="请补充标的 (symbol)，例如：TSLA。",
+            )
         if not symbol or not _SYMBOL_PATTERN.fullmatch(symbol):
             plan.reject_reason = "invalid_slot"
             plan.explain = "invalid symbol"
@@ -200,6 +263,23 @@ def _validate_slots(plan: NLUPlan) -> NLUPlan:
             return plan
         return plan
 
+    if plan.intent == "stop_job":
+        target = str(plan.slots.get("target", "")).strip()
+        target_type = str(plan.slots.get("target_type", "symbol")).lower()
+        if not target:
+            return _clarify(
+                plan,
+                slot="symbol",
+                question="请补充要停止的 symbol 或 job_id，例如：TSLA 或 job-abc123。",
+            )
+        if target_type == "symbol":
+            if not _SYMBOL_PATTERN.fullmatch(target.upper()):
+                plan.reject_reason = "invalid_slot"
+                plan.explain = "invalid stop target symbol"
+                return plan
+            plan.slots["target"] = target.upper()
+        return plan
+
     if plan.intent != "create_monitor":
         return plan
 
@@ -208,10 +288,22 @@ def _validate_slots(plan: NLUPlan) -> NLUPlan:
     template = str(plan.slots.get("template", "")).lower()
     route_strategy = str(plan.slots.get("route_strategy", "")).lower()
 
-    if not symbol or not _SYMBOL_PATTERN.fullmatch(symbol):
+    if not symbol:
+        return _clarify(
+            plan,
+            slot="symbol",
+            question="请补充监控标的 (symbol)，例如：TSLA。",
+        )
+    if not _SYMBOL_PATTERN.fullmatch(symbol):
         plan.reject_reason = "invalid_slot"
         plan.explain = "invalid symbol"
         return plan
+    if not interval:
+        return _clarify(
+            plan,
+            slot="interval",
+            question="请补充监控周期 (interval)：5m / 1h / 1d。",
+        )
     if interval not in _ALLOWED_INTERVALS or parse_interval_to_seconds(interval) is None:
         plan.reject_reason = "invalid_slot"
         plan.explain = "invalid interval"
@@ -231,7 +323,7 @@ def _validate_slots(plan: NLUPlan) -> NLUPlan:
 def plan_from_text(text: str) -> NLUPlan:
     normalized = normalize_text(text)
     intent = _intent_from_text(normalized)
-    action_version = "v1"
+    action_version = "v2"
     if intent == "analyze_snapshot":
         symbol = _extract_symbol(normalized)
         period = _extract_period(normalized)
@@ -256,6 +348,56 @@ def plan_from_text(text: str) -> NLUPlan:
             action_version=action_version,
             explain="rule-based analyze_snapshot parsing",
             command_template="/analyze <symbol>",
+            plan_steps=_build_plan_steps("analyze_snapshot", need_chart=need_chart),
+        )
+        return _validate_slots(plan)
+
+    if intent == "list_jobs":
+        plan = NLUPlan(
+            intent="list_jobs",
+            slots={},
+            confidence=0.95,
+            risk_level="low",
+            needs_confirm=False,
+            normalized_request="list_jobs",
+            action_version=action_version,
+            explain="rule-based list_jobs parsing",
+            command_template="/list",
+            plan_steps=_build_plan_steps("list_jobs"),
+        )
+        return _validate_slots(plan)
+
+    if intent == "daily_digest":
+        slots = {"period": "daily"}
+        plan = NLUPlan(
+            intent="daily_digest",
+            slots=slots,
+            confidence=0.95,
+            risk_level="low",
+            needs_confirm=False,
+            normalized_request=f"daily_digest {json.dumps(slots, sort_keys=True)}",
+            action_version=action_version,
+            explain="rule-based daily_digest parsing",
+            command_template="/digest daily",
+            plan_steps=_build_plan_steps("daily_digest"),
+        )
+        return _validate_slots(plan)
+
+    if intent == "stop_job":
+        target, target_type = _extract_stop_target(normalized)
+        confidence = 0.9 if target else 0.5
+        slots = {"target": target or "", "target_type": target_type}
+        plan = NLUPlan(
+            intent="stop_job",
+            slots=slots,
+            confidence=confidence,
+            risk_level="high",
+            needs_confirm=True,
+            normalized_request=f"stop_job {json.dumps(slots, sort_keys=True)}",
+            action_version=action_version,
+            explain="rule-based stop_job parsing",
+            command_template="/stop <job_id|symbol>",
+            plan_steps=_build_plan_steps("stop_job"),
         )
         return _validate_slots(plan)
 
@@ -268,8 +410,9 @@ def plan_from_text(text: str) -> NLUPlan:
             needs_confirm=intent in {"create_monitor", "stop_job", "bulk_change"},
             normalized_request=normalized,
             action_version=action_version,
-            explain="could not map request to create_monitor",
+            explain="could not map request to supported intents",
             reject_reason="low_confidence",
+            plan_steps=[{"step": "fallback_help", "action": "fallback_help", "status": "pending"}],
         )
 
     symbol = _extract_symbol(normalized)
@@ -297,5 +440,6 @@ def plan_from_text(text: str) -> NLUPlan:
         normalized_request=f"create_monitor {json.dumps(slots, sort_keys=True)}",
         action_version=action_version,
         explain="rule-based create_monitor parsing",
+        plan_steps=_build_plan_steps("create_monitor"),
     )
     return _validate_slots(plan)

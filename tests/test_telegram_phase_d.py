@@ -608,3 +608,172 @@ async def test_phase_b_analyze_snapshot_dedupe_requires_double_key_hit(tmp_path)
     assert calls["n"] == 2
     assert await gateway.process_update(third)
     assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_phase_d_nl_list_jobs_and_daily_digest_intents(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": "run-d-intent", **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 30001, "message": {"chat": {"id": "chat-dn1"}, "text": "/monitor TSLA 1h"}})
+    assert await gateway.process_update({"update_id": 30002, "message": {"chat": {"id": "chat-dn1"}, "text": "看看我的监控列表"}})
+    assert "Active monitor jobs" in sender.messages[-1][1]
+
+    assert await gateway.process_update({"update_id": 30003, "message": {"chat": {"id": "chat-dn1"}, "text": "给我每日报告"}})
+    assert "Daily digest" in sender.messages[-1][1]
+
+    with store._connect() as conn:  # noqa: SLF001
+        list_row = conn.execute("SELECT request_id FROM bot_updates WHERE update_id = 30002").fetchone()
+        digest_row = conn.execute("SELECT request_id FROM bot_updates WHERE update_id = 30003").fetchone()
+    assert list_row is not None and digest_row is not None
+    list_req = store.get_nl_request(request_id=str(list_row["request_id"]))
+    digest_req = store.get_nl_request(request_id=str(digest_row["request_id"]))
+    assert list_req is not None and list_req.intent == "list_jobs" and list_req.status == "completed"
+    assert digest_req is not None and digest_req.intent == "daily_digest" and digest_req.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_phase_d_nl_stop_job_requires_confirm_then_executes(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": "run-d-stop", **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 30011, "message": {"chat": {"id": "chat-dn2"}, "text": "/monitor TSLA 1h"}})
+    assert store.count_active_watch_jobs(chat_id="chat-dn2") == 1
+
+    assert await gateway.process_update({"update_id": 30012, "message": {"chat": {"id": "chat-dn2"}, "text": "停止 TSLA 监控"}})
+    pending = store.get_pending_confirm_request(chat_id="chat-dn2")
+    assert pending is not None
+    assert pending.intent == "stop_job"
+    assert store.count_active_watch_jobs(chat_id="chat-dn2") == 1
+
+    assert await gateway.process_update(
+        {
+            "update_id": 30013,
+            "callback_query": {"id": "cb-dn2", "data": f"yes|{pending.request_id}", "message": {"chat": {"id": "chat-dn2"}}},
+        }
+    )
+    assert store.count_active_watch_jobs(chat_id="chat-dn2") == 0
+    req = store.get_nl_request(request_id=pending.request_id)
+    assert req is not None and req.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_phase_d_plan_steps_and_evidence_trace_versions(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {
+            "run_id": "run-d-plan",
+            "fused_insights": {"summary": "Plan/evidence trace."},
+            "metrics": {"data_close": 10.0},
+            **kwargs,
+        }
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 30021, "message": {"chat": {"id": "chat-dn3"}, "text": "分析腾讯一个月走势"}})
+    with store._connect() as conn:  # noqa: SLF001
+        row = conn.execute("SELECT request_id FROM bot_updates WHERE update_id = 30021").fetchone()
+    assert row is not None
+    request_id = str(row["request_id"])
+    req = store.get_nl_request(request_id=request_id)
+    assert req is not None
+    assert req.action_version == "v2"
+    assert req.slots.get("_schema_version") == "telegram_nlu_plan_v2"
+
+    plan_steps = store.list_nl_plan_step_events(request_id=request_id)
+    assert plan_steps
+    assert any(str(item.get("status", "")).lower() == "completed" for item in plan_steps)
+    evidence = store.list_nl_execution_evidence(request_id=request_id)
+    assert evidence
+    assert evidence[0]["request_id"] == request_id
+    assert evidence[0]["schema_version"] == "telegram_nlu_plan_v2"
+    assert evidence[0]["action_version"] == "v2"
+    assert evidence[0]["result"] == "completed"
+
+    report = store.build_phase_d_run_report()
+    assert report["nl_execution_evidence_total"] >= 1
+    assert report["nl_plan_step_total"] >= 1
+    assert report["nl_evidence_mapped_total"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_phase_d_v2_compatible_with_v1_replay_request(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {
+            "run_id": "run-d-v1",
+            "fused_insights": {"summary": "v1 replay"},
+            "metrics": {"data_close": 10.0},
+            **kwargs,
+        }
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    store.insert_bot_update_if_new(update_id=30031, chat_id="chat-dn4", payload={"message": {"chat": {"id": "chat-dn4"}, "text": "legacy"}})
+    created = store.create_nl_request(
+        request_id="nlr-legacyv1",
+        update_id=30031,
+        chat_id="chat-dn4",
+        intent="analyze_snapshot",
+        slots={"symbol": "TSLA", "period": "1mo", "interval": "1d", "need_chart": False, "need_news": False},
+        confidence=0.95,
+        needs_confirm=False,
+        status="queued",
+        text_dedupe_key="t-v1",
+        intent_dedupe_key="i-v1",
+        normalized_text="legacy",
+        normalized_request="analyze_snapshot legacy",
+        action_version="v1",
+        risk_level="low",
+        raw_text_hash="legacyhash",
+        intent_candidate="analyze_snapshot",
+    )
+    assert created
+    assert await gateway._execute_nl_request(update_id=30031, request_id="nlr-legacyv1")  # noqa: SLF001
+    req = store.get_nl_request(request_id="nlr-legacyv1")
+    assert req is not None and req.status == "completed"
+    evidence = store.list_nl_execution_evidence(request_id="nlr-legacyv1")
+    assert evidence
+    assert evidence[0]["action_version"] == "v1"
+
+
+@pytest.mark.asyncio
+async def test_phase_d_clarify_once_returns_command_template(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": "run-d-clarify", **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 30041, "message": {"chat": {"id": "chat-dn5"}, "text": "帮我盯 每小时"}})
+    assert "single clarify" in sender.messages[-1][1]
+    assert "/monitor <symbol> <interval>" in sender.messages[-1][1]
+    with store._connect() as conn:  # noqa: SLF001
+        row = conn.execute("SELECT request_id FROM bot_updates WHERE update_id = 30041").fetchone()
+    assert row is not None
+    req = store.get_nl_request(request_id=str(row["request_id"]))
+    assert req is not None
+    assert req.status == "rejected"
+    assert req.reject_reason == "clarify_failed"
+    assert store.count_metric_events(metric_name="nl_clarify_asked_total") == 1
