@@ -332,7 +332,7 @@ class WatchExecutor:
     def _build_message(payload: dict[str, Any], *, summary_mode: bool) -> str:
         if summary_mode:
             return (
-                f"[Degraded Summary] {payload['symbol']} {round(float(payload['pct_change']) * 100, 2)}% "
+                f"[降级摘要 (Degraded Summary)] {payload['symbol']} {round(float(payload['pct_change']) * 100, 2)}% "
                 f"price={round(float(payload['price']), 4)}"
             )
         pseudo_signal = type(

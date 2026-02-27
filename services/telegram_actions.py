@@ -49,20 +49,20 @@ class TelegramActions:
     async def handle_help(self, *, chat_id: str) -> ActionResult:
         await self._notifier.send_text(
             chat_id,
-            "Available commands:\n"
-            "/analyze <symbol> - run unified research and return run_id\n"
-            "/monitor <symbol> <interval> [volatility|price|rsi] - create monitor job (legacy format)\n"
+            "可用命令 (Available commands):\n"
+            "/analyze <symbol> - 运行统一研究并返回 run_id (run unified research)\n"
+            "/monitor <symbol> <interval> [volatility|price|rsi] - 创建监控任务 (create monitor job, legacy format)\n"
             "/monitor <symbol|sym1,sym2> <interval> [volatility|price|rsi] [telegram_only|webhook_only|dual_channel]\n"
-            "/list - list monitor jobs\n"
-            "/stop <job_id|symbol> - disable monitor job\n"
-            "/report <run_id|request_id> [short|full] - query report summary\n"
-            "/digest daily - get last-24h summary\n"
-            "/alerts [triggered|failed|suppressed] [limit] - alert hub views\n"
-            "/bulk <enable|disable|interval|threshold> <target|all> [value] - bulk job operations\n"
-            "/webhook <set|disable|list> ... - manage webhook route\n"
-            "/pref <summary|quiet|priority> <value> - notification preferences\n"
-            "Compliance: for research and alerts only, no auto-trading.\n"
-            "/help - show this help",
+            "/list - 查看监控任务列表 (list monitor jobs)\n"
+            "/stop <job_id|symbol> - 停止监控任务 (disable monitor job)\n"
+            "/report <run_id|request_id> [short|full] - 查询报告摘要 (query report summary)\n"
+            "/digest daily - 获取近24小时摘要 (last-24h summary)\n"
+            "/alerts [triggered|failed|suppressed] [limit] - 告警中心视图 (alert hub views)\n"
+            "/bulk <enable|disable|interval|threshold> <target|all> [value] - 批量任务操作 (bulk job operations)\n"
+            "/webhook <set|disable|list> ... - 管理 webhook 路由 (manage webhook route)\n"
+            "/pref <summary|quiet|priority> <value> - 通知偏好设置 (notification preferences)\n"
+            "合规提示 (Compliance): 仅用于研究与提醒，不支持自动交易 (no auto-trading).\n"
+            "/help - 显示帮助 (show this help)",
         )
         return ActionResult(command="help")
 
@@ -87,7 +87,7 @@ class TelegramActions:
             status="queued",
         )
 
-        await self._notifier.send_text(chat_id, f"Request accepted. request_id={rid}")
+        await self._notifier.send_text(chat_id, f"请求已受理 (Request accepted). request_id={rid}")
         await self._run_analysis_request(
             request_id=rid,
             symbol=symbol,
@@ -189,7 +189,7 @@ class TelegramActions:
         if not self._store.can_chat_monitor(chat_id=chat_id):
             await self._notifier.send_text(
                 chat_id,
-                "Permission denied: this chat is not allowed to create monitor jobs.",
+                "无权限 (Permission denied): 当前 chat 不允许创建监控任务。",
             )
             return ActionResult(command="monitor")
 
@@ -197,7 +197,7 @@ class TelegramActions:
         if active_jobs >= self._limits.max_watch_jobs_per_chat:
             await self._notifier.send_text(
                 chat_id,
-                f"Quota exceeded: max monitor jobs per chat is {self._limits.max_watch_jobs_per_chat}.",
+                f"配额超限 (Quota exceeded): 单 chat 最大监控任务数为 {self._limits.max_watch_jobs_per_chat}。",
             )
             self._store.add_audit_event(
                 event_type="quota_exceeded",
@@ -232,7 +232,7 @@ class TelegramActions:
         )
         await self._notifier.send_text(
             chat_id,
-            f"Monitor created: scope={scope} symbols={','.join(symbol_list)} every {job.interval_sec}s template={template} "
+            f"监控已创建 (Monitor created): scope={scope} symbols={','.join(symbol_list)} every {job.interval_sec}s template={template} "
             f"mode={job.mode} threshold={job.threshold} route={route_strategy} "
             f"job_id={job.job_id} next_run_at={job.next_run_at}",
         )
@@ -242,7 +242,7 @@ class TelegramActions:
         self._store.record_metric(metric_name="report_lookup_total", metric_value=1.0)
         report = self._store.get_analysis_report(report_id=target_id, chat_id=chat_id)
         if report is None:
-            await self._notifier.send_text(chat_id, f"No report found for `{target_id}`.")
+            await self._notifier.send_text(chat_id, f"未找到报告 (No report found) `{target_id}`。")
             return ActionResult(command="report")
 
         close_price = report.key_metrics.get("data_close")
@@ -252,12 +252,12 @@ class TelegramActions:
             metrics_text.append(f"close={round(float(close_price), 4)}")
         if rsi is not None:
             metrics_text.append(f"rsi14={round(float(rsi), 2)}")
-        metrics_suffix = f"\nKey metrics: {' '.join(metrics_text)}" if metrics_text else ""
+        metrics_suffix = f"\n关键指标 (Key metrics): {' '.join(metrics_text)}" if metrics_text else ""
         summary = report.summary[:220] if detail == "short" else report.summary[:1200]
-        help_suffix = "" if detail == "full" else f"\nUse `/report {target_id} full` for full summary."
+        help_suffix = "" if detail == "full" else f"\n查看完整摘要请用 (Use) `/report {target_id} full`."
         await self._notifier.send_text(
             chat_id,
-            f"Report summary\nrun_id={report.run_id}\nrequest_id={report.request_id}\n"
+            f"报告摘要 (Report summary)\nrun_id={report.run_id}\nrequest_id={report.request_id}\n"
             f"symbol={report.symbol}\nsummary={summary}{metrics_suffix}{help_suffix}",
         )
         self._store.record_metric(metric_name="report_lookup_success", metric_value=1.0)
@@ -266,19 +266,19 @@ class TelegramActions:
     async def handle_digest(self, *, chat_id: str, period: str) -> ActionResult:
         digest = self._store.build_daily_digest(chat_id=chat_id) if period == "daily" else {}
         if not digest:
-            await self._notifier.send_text(chat_id, "Digest period is not supported.")
+            await self._notifier.send_text(chat_id, "摘要周期不支持 (Digest period is not supported).")
             return ActionResult(command="digest")
 
         latest = digest.get("latest_reports") or []
         lines = [
-            "Daily digest (last 24h)",
+            "每日报告 / Daily digest (last 24h)",
             f"active_jobs={digest['active_jobs']}",
             f"alerts_triggered={digest['alerts_triggered']}",
             f"delivered_notifications={digest['delivered_notifications']}",
             f"completed_analyses={digest['completed_analyses']}",
         ]
         if latest:
-            lines.append("latest_reports:")
+            lines.append("最新报告 (latest_reports):")
             for item in latest:
                 lines.append(f"- {item['symbol']} run_id={item['run_id']}")
         await self._notifier.send_text(chat_id, "\n".join(lines))
@@ -288,10 +288,10 @@ class TelegramActions:
     async def handle_list(self, *, chat_id: str) -> ActionResult:
         jobs = self._store.list_watch_jobs(chat_id=chat_id, include_disabled=False)
         if not jobs:
-            await self._notifier.send_text(chat_id, "No active monitor jobs. Use /monitor <symbol> <interval>.")
+            await self._notifier.send_text(chat_id, "当前无活跃监控任务 (No active monitor jobs)。可用 /monitor <symbol> <interval> 创建。")
             return ActionResult(command="list")
 
-        lines = ["Active monitor jobs:"]
+        lines = ["活跃监控任务 (Active monitor jobs):"]
         for job in jobs:
             last_triggered_at, last_pct_change = self._store.get_recent_watch_event_summary(job_id=job.job_id)
             recent = "none"
@@ -307,9 +307,9 @@ class TelegramActions:
     async def handle_alerts(self, *, chat_id: str, view: str, limit: int) -> ActionResult:
         rows = self._store.list_alert_hub(chat_id=chat_id, view=view, limit=limit)
         if not rows:
-            await self._notifier.send_text(chat_id, f"No alert records for view={view}.")
+            await self._notifier.send_text(chat_id, f"视图 {view} 暂无告警记录 (No alert records).")
             return ActionResult(command="alerts")
-        lines = [f"Alert Hub view={view} (latest {limit})"]
+        lines = [f"告警中心 (Alert Hub) view={view} (latest {limit})"]
         for row in rows:
             extra = ""
             if row.suppressed_reason:
@@ -322,7 +322,7 @@ class TelegramActions:
 
     async def handle_bulk(self, *, chat_id: str, action: str, target: str, value: str = "") -> ActionResult:
         changed = self._store.bulk_update_watch_jobs(chat_id=chat_id, action=action, target=target, value=value)
-        await self._notifier.send_text(chat_id, f"Bulk update done: action={action} target={target} changed={changed}")
+        await self._notifier.send_text(chat_id, f"批量更新完成 (Bulk update done): action={action} target={target} changed={changed}")
         return ActionResult(command="bulk")
 
     async def handle_webhook(
@@ -336,17 +336,17 @@ class TelegramActions:
     ) -> ActionResult:
         if action == "set":
             hook = self._store.upsert_outbound_webhook(chat_id=chat_id, url=url, secret=secret)
-            await self._notifier.send_text(chat_id, f"Webhook enabled: {hook.webhook_id} -> {hook.url}")
+            await self._notifier.send_text(chat_id, f"Webhook 已启用 (Webhook enabled): {hook.webhook_id} -> {hook.url}")
             return ActionResult(command="webhook")
         if action == "disable":
             ok = self._store.disable_outbound_webhook(chat_id=chat_id, webhook_id=webhook_id)
-            await self._notifier.send_text(chat_id, "Webhook disabled." if ok else "Webhook not found.")
+            await self._notifier.send_text(chat_id, "Webhook 已禁用 (Webhook disabled)." if ok else "未找到 Webhook (Webhook not found).")
             return ActionResult(command="webhook")
         hooks = self._store.list_outbound_webhooks(chat_id=chat_id, enabled_only=False)
         if not hooks:
-            await self._notifier.send_text(chat_id, "No webhook configured.")
+            await self._notifier.send_text(chat_id, "未配置 Webhook (No webhook configured).")
             return ActionResult(command="webhook")
-        lines = ["Webhook routes:"]
+        lines = ["Webhook 路由 (Webhook routes):"]
         for hook in hooks:
             lines.append(f"- {hook.webhook_id} enabled={hook.enabled} timeout_ms={hook.timeout_ms} url={hook.url}")
         await self._notifier.send_text(chat_id, "\n".join(lines))
@@ -360,11 +360,11 @@ class TelegramActions:
         elif setting == "quiet":
             pref = self._store.upsert_chat_preferences(chat_id=chat_id, quiet_hours=None if value == "off" else value)
         else:
-            await self._notifier.send_text(chat_id, "Unsupported preference setting.")
+            await self._notifier.send_text(chat_id, "不支持的偏好设置 (Unsupported preference setting).")
             return ActionResult(command="pref")
         await self._notifier.send_text(
             chat_id,
-            f"Preference updated: summary={pref.summary_mode} priority={pref.min_priority} quiet={pref.quiet_hours or 'off'}",
+            f"偏好已更新 (Preference updated): summary={pref.summary_mode} priority={pref.min_priority} quiet={pref.quiet_hours or 'off'}",
         )
         return ActionResult(command="pref")
 
@@ -372,16 +372,16 @@ class TelegramActions:
         if not self._store.can_chat_monitor(chat_id=chat_id):
             await self._notifier.send_text(
                 chat_id,
-                "Permission denied: this chat is not allowed to stop monitor jobs.",
+                "无权限 (Permission denied): 当前 chat 不允许停止监控任务。",
             )
             return ActionResult(command="stop")
 
         disabled = self._store.disable_watch_job(chat_id=chat_id, target=target, target_type=target_type)
         if disabled <= 0:
-            await self._notifier.send_text(chat_id, f"No active monitor job matched: {target}")
+            await self._notifier.send_text(chat_id, f"未匹配到活跃监控任务 (No active monitor job matched): {target}")
             return ActionResult(command="stop")
 
-        await self._notifier.send_text(chat_id, f"Stopped {disabled} monitor job(s) for target={target}")
+        await self._notifier.send_text(chat_id, f"已停止监控任务 (Stopped) {disabled} 个，target={target}")
         return ActionResult(command="stop")
 
     async def process_due_analysis_recovery(self, *, limit: int = 10) -> int:
@@ -442,7 +442,7 @@ class TelegramActions:
                     summary=summary or "No summary",
                     key_metrics=key_metrics,
                 )
-            await self._notifier.send_text(chat_id, f"Analysis completed. request_id={request_id}, run_id={run_id}")
+            await self._notifier.send_text(chat_id, f"分析完成 (Analysis completed). request_id={request_id}, run_id={run_id}")
         except TimeoutError:
             self._store.transition_analysis_request_status(
                 request_id=request_id,
@@ -463,7 +463,7 @@ class TelegramActions:
             )
             await self._notifier.send_text(
                 chat_id,
-                f"Analysis timeout. request_id={request_id}. Result will be retried in background.",
+                f"分析超时 (Analysis timeout). request_id={request_id}. 结果将后台重试 (retried in background).",
             )
         except Exception as exc:
             self._store.transition_analysis_request_status(
@@ -473,7 +473,7 @@ class TelegramActions:
                 run_id=None,
                 last_error=str(exc),
             )
-            await self._notifier.send_text(chat_id, f"Analysis failed. request_id={request_id}, error={exc}")
+            await self._notifier.send_text(chat_id, f"分析失败 (Analysis failed). request_id={request_id}, error={exc}")
         finally:
             latency_ms = (time.perf_counter() - start) * 1000
             self._store.record_metric(metric_name="analysis_latency_ms", metric_value=latency_ms, tags={"chat_id": chat_id})
