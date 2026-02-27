@@ -111,7 +111,12 @@ async def _build_app(args: argparse.Namespace) -> web.Application:
         actions=actions,
         limits=limits,
         allowed_chat_ids=_parse_csv_set(os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "")),
-        allowed_commands=_parse_csv_set(os.getenv("TELEGRAM_ALLOWED_COMMANDS", "help,analyze,monitor,list,stop,report,digest")),
+        allowed_commands=_parse_csv_set(
+            os.getenv(
+                "TELEGRAM_ALLOWED_COMMANDS",
+                "help,analyze,monitor,list,stop,report,digest,alerts,bulk,webhook,pref",
+            )
+        ),
         gray_release_enabled=os.getenv("TELEGRAM_GRAY_RELEASE_ENABLED", "false").strip().lower() in {"1", "true", "yes"},
     )
 

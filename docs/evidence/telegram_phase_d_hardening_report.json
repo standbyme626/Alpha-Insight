@@ -1,0 +1,14 @@
+{
+  "generated_at": "2026-02-27T05:05:41.849281+00:00",
+  "cold_start_seconds": 0.0613,
+  "cold_start_under_30m": true,
+  "minimal_loop_ok": true,
+  "webhook_retry_depth": 0,
+  "webhook_dlq_count": 1,
+  "webhook_transition_total": 5,
+  "webhook_e2e_ok": true,
+  "notes": [
+    "cold-start uses in-process gateway/actions/store minimal loop",
+    "webhook e2e uses forced failing webhook sender to verify retry->dlq transitions"
+  ]
+}

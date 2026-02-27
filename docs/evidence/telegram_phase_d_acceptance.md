@@ -20,6 +20,14 @@ Date: 2026-02-27
 - 生成命令:
   - `PYTHONPATH=/home/kkk/Project/Alpha-Insight python scripts/telegram_phase_d_report.py --db-path storage/telegram_gateway.db --output docs/evidence/telegram_phase_d_run_report.json`
 
+## Hardening Evidence (D 验收缺口补齐)
+- JSON: `docs/evidence/telegram_phase_d_hardening_report.json`
+- 生成命令:
+  - `PYTHONPATH=/home/kkk/Project/Alpha-Insight python scripts/telegram_phase_d_hardening_report.py --output docs/evidence/telegram_phase_d_hardening_report.json`
+- 结果摘要（2026-02-27）:
+  - `cold_start_seconds=0.0613`，`cold_start_under_30m=true`，`minimal_loop_ok=true`
+  - `webhook_retry_depth=0`，`webhook_dlq_count=1`，`webhook_transition_total=5`，`webhook_e2e_ok=true`
+
 ## D3 Artifacts
 - 容器化模板：`docker-compose.telegram.yml`
 - 运维文档更新：`docs/runbook.md`（新增 Telegram Phase D 章节）
