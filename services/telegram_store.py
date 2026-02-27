@@ -124,6 +124,31 @@ class AnalysisReportRecord:
 
 
 @dataclass
+class NLRequestRecord:
+    request_id: str
+    update_id: int
+    chat_id: str
+    intent: str
+    slots: dict[str, Any]
+    confidence: float
+    needs_confirm: bool
+    status: str
+    text_dedupe_key: str
+    intent_dedupe_key: str
+    normalized_text: str
+    normalized_request: str
+    action_version: str
+    risk_level: str
+    raw_text_hash: str
+    intent_candidate: str
+    reject_reason: str | None
+    confirm_deadline_at: str | None
+    last_error: str | None
+    created_at: str
+    updated_at: str
+
+
+@dataclass
 class NotificationRoute:
     chat_id: str
     channel: str
@@ -400,6 +425,34 @@ class TelegramTaskStore:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS nl_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    request_id TEXT NOT NULL UNIQUE,
+                    update_id INTEGER NOT NULL,
+                    chat_id TEXT NOT NULL,
+                    intent TEXT NOT NULL,
+                    slots TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    needs_confirm INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    text_dedupe_key TEXT NOT NULL,
+                    intent_dedupe_key TEXT NOT NULL,
+                    normalized_text TEXT NOT NULL,
+                    normalized_request TEXT NOT NULL,
+                    action_version TEXT NOT NULL,
+                    risk_level TEXT NOT NULL,
+                    raw_text_hash TEXT NOT NULL,
+                    intent_candidate TEXT NOT NULL,
+                    reject_reason TEXT,
+                    confirm_deadline_at TEXT,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS metric_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     metric_name TEXT NOT NULL,
@@ -484,6 +537,9 @@ class TelegramTaskStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_ts ON audit_events(created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_analysis_reports_chat_created ON analysis_reports(chat_id, created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_notification_routes_chat_enabled ON notification_routes(chat_id, enabled)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_nl_requests_chat_status ON nl_requests(chat_id, status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_nl_requests_text_dedupe ON nl_requests(chat_id, text_dedupe_key)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_nl_requests_intent_dedupe ON nl_requests(chat_id, intent_dedupe_key)")
             self._ensure_column(conn, "watch_jobs", "scope", "TEXT NOT NULL DEFAULT 'single'")
             self._ensure_column(conn, "watch_jobs", "group_id", "TEXT")
             self._ensure_column(conn, "watch_jobs", "route_strategy", "TEXT NOT NULL DEFAULT 'dual_channel'")
@@ -653,6 +709,311 @@ class TelegramTaskStore:
             updated_at=str(row["updated_at"]),
             last_error=str(row["last_error"]) if row["last_error"] is not None else None,
         )
+
+    def create_nl_request(
+        self,
+        *,
+        request_id: str,
+        update_id: int,
+        chat_id: str,
+        intent: str,
+        slots: dict[str, Any],
+        confidence: float,
+        needs_confirm: bool,
+        status: str,
+        text_dedupe_key: str,
+        intent_dedupe_key: str,
+        normalized_text: str,
+        normalized_request: str,
+        action_version: str,
+        risk_level: str,
+        raw_text_hash: str,
+        intent_candidate: str,
+        reject_reason: str | None = None,
+        confirm_deadline_at: str | None = None,
+        last_error: str | None = None,
+    ) -> bool:
+        now = _utc_now()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO nl_requests(
+                    request_id, update_id, chat_id, intent, slots, confidence, needs_confirm, status,
+                    text_dedupe_key, intent_dedupe_key, normalized_text, normalized_request, action_version, risk_level,
+                    raw_text_hash, intent_candidate, reject_reason, confirm_deadline_at, last_error, created_at, updated_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    request_id,
+                    int(update_id),
+                    str(chat_id),
+                    intent,
+                    _json_dumps(slots),
+                    float(confidence),
+                    1 if needs_confirm else 0,
+                    status,
+                    text_dedupe_key,
+                    intent_dedupe_key,
+                    normalized_text,
+                    normalized_request,
+                    action_version,
+                    risk_level,
+                    raw_text_hash,
+                    intent_candidate,
+                    reject_reason,
+                    confirm_deadline_at,
+                    last_error,
+                    now,
+                    now,
+                ),
+            )
+            return cursor.rowcount > 0
+
+    def transition_nl_request_status(
+        self,
+        *,
+        request_id: str,
+        from_statuses: Iterable[str],
+        to_status: str,
+        reject_reason: str | None = None,
+        last_error: str | None = None,
+        confirm_deadline_at: str | None = None,
+    ) -> bool:
+        allowed = list(dict.fromkeys(from_statuses))
+        if not allowed:
+            return False
+        placeholders = ",".join("?" for _ in allowed)
+        params: list[Any] = [
+            to_status,
+            reject_reason,
+            last_error,
+            confirm_deadline_at,
+            _utc_now(),
+            request_id,
+            *allowed,
+        ]
+        with self._connect() as conn:
+            cursor = conn.execute(
+                f"""
+                UPDATE nl_requests
+                SET status = ?,
+                    reject_reason = COALESCE(?, reject_reason),
+                    last_error = ?,
+                    confirm_deadline_at = COALESCE(?, confirm_deadline_at),
+                    updated_at = ?
+                WHERE request_id = ?
+                  AND status IN ({placeholders})
+                """,
+                params,
+            )
+            return cursor.rowcount > 0
+
+    def set_nl_request_status(
+        self,
+        *,
+        request_id: str,
+        to_status: str,
+        reject_reason: str | None = None,
+        last_error: str | None = None,
+        confirm_deadline_at: str | None = None,
+    ) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE nl_requests
+                SET status = ?,
+                    reject_reason = COALESCE(?, reject_reason),
+                    last_error = ?,
+                    confirm_deadline_at = COALESCE(?, confirm_deadline_at),
+                    updated_at = ?
+                WHERE request_id = ?
+                """,
+                (to_status, reject_reason, last_error, confirm_deadline_at, _utc_now(), request_id),
+            )
+            return cursor.rowcount > 0
+
+    def get_nl_request(self, *, request_id: str) -> NLRequestRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT request_id, update_id, chat_id, intent, slots, confidence, needs_confirm, status,
+                       text_dedupe_key, intent_dedupe_key, normalized_text, normalized_request, action_version, risk_level,
+                       raw_text_hash, intent_candidate, reject_reason, confirm_deadline_at, last_error, created_at, updated_at
+                FROM nl_requests
+                WHERE request_id = ?
+                LIMIT 1
+                """,
+                (request_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return NLRequestRecord(
+            request_id=str(row["request_id"]),
+            update_id=int(row["update_id"]),
+            chat_id=str(row["chat_id"]),
+            intent=str(row["intent"]),
+            slots=json.loads(str(row["slots"])),
+            confidence=float(row["confidence"]),
+            needs_confirm=bool(int(row["needs_confirm"])),
+            status=str(row["status"]),
+            text_dedupe_key=str(row["text_dedupe_key"]),
+            intent_dedupe_key=str(row["intent_dedupe_key"]),
+            normalized_text=str(row["normalized_text"]),
+            normalized_request=str(row["normalized_request"]),
+            action_version=str(row["action_version"]),
+            risk_level=str(row["risk_level"]),
+            raw_text_hash=str(row["raw_text_hash"]),
+            intent_candidate=str(row["intent_candidate"]),
+            reject_reason=str(row["reject_reason"]) if row["reject_reason"] else None,
+            confirm_deadline_at=str(row["confirm_deadline_at"]) if row["confirm_deadline_at"] else None,
+            last_error=str(row["last_error"]) if row["last_error"] else None,
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+
+    def get_pending_confirm_request(self, *, chat_id: str) -> NLRequestRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT request_id, update_id, chat_id, intent, slots, confidence, needs_confirm, status,
+                       text_dedupe_key, intent_dedupe_key, normalized_text, normalized_request, action_version, risk_level,
+                       raw_text_hash, intent_candidate, reject_reason, confirm_deadline_at, last_error, created_at, updated_at
+                FROM nl_requests
+                WHERE chat_id = ? AND status = 'pending_confirm'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (str(chat_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        return NLRequestRecord(
+            request_id=str(row["request_id"]),
+            update_id=int(row["update_id"]),
+            chat_id=str(row["chat_id"]),
+            intent=str(row["intent"]),
+            slots=json.loads(str(row["slots"])),
+            confidence=float(row["confidence"]),
+            needs_confirm=bool(int(row["needs_confirm"])),
+            status=str(row["status"]),
+            text_dedupe_key=str(row["text_dedupe_key"]),
+            intent_dedupe_key=str(row["intent_dedupe_key"]),
+            normalized_text=str(row["normalized_text"]),
+            normalized_request=str(row["normalized_request"]),
+            action_version=str(row["action_version"]),
+            risk_level=str(row["risk_level"]),
+            raw_text_hash=str(row["raw_text_hash"]),
+            intent_candidate=str(row["intent_candidate"]),
+            reject_reason=str(row["reject_reason"]) if row["reject_reason"] else None,
+            confirm_deadline_at=str(row["confirm_deadline_at"]) if row["confirm_deadline_at"] else None,
+            last_error=str(row["last_error"]) if row["last_error"] else None,
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+
+    def get_pending_confirm_by_ref(self, *, chat_id: str, request_ref: str) -> NLRequestRecord | None:
+        ref = (request_ref or "").strip()
+        if not ref:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT request_id, update_id, chat_id, intent, slots, confidence, needs_confirm, status,
+                       text_dedupe_key, intent_dedupe_key, normalized_text, normalized_request, action_version, risk_level,
+                       raw_text_hash, intent_candidate, reject_reason, confirm_deadline_at, last_error, created_at, updated_at
+                FROM nl_requests
+                WHERE chat_id = ?
+                  AND status = 'pending_confirm'
+                  AND (
+                      request_id = ?
+                      OR substr(request_id, -6) = ?
+                  )
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (str(chat_id), ref, ref[-6:]),
+            ).fetchone()
+        if row is None:
+            return None
+        return NLRequestRecord(
+            request_id=str(row["request_id"]),
+            update_id=int(row["update_id"]),
+            chat_id=str(row["chat_id"]),
+            intent=str(row["intent"]),
+            slots=json.loads(str(row["slots"])),
+            confidence=float(row["confidence"]),
+            needs_confirm=bool(int(row["needs_confirm"])),
+            status=str(row["status"]),
+            text_dedupe_key=str(row["text_dedupe_key"]),
+            intent_dedupe_key=str(row["intent_dedupe_key"]),
+            normalized_text=str(row["normalized_text"]),
+            normalized_request=str(row["normalized_request"]),
+            action_version=str(row["action_version"]),
+            risk_level=str(row["risk_level"]),
+            raw_text_hash=str(row["raw_text_hash"]),
+            intent_candidate=str(row["intent_candidate"]),
+            reject_reason=str(row["reject_reason"]) if row["reject_reason"] else None,
+            confirm_deadline_at=str(row["confirm_deadline_at"]) if row["confirm_deadline_at"] else None,
+            last_error=str(row["last_error"]) if row["last_error"] else None,
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+
+    def has_executing_nl_request(self, *, chat_id: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS c FROM nl_requests WHERE chat_id = ? AND status = 'executing'",
+                (str(chat_id),),
+            ).fetchone()
+        return int(row["c"]) > 0
+
+    def find_recent_nl_duplicates(
+        self,
+        *,
+        chat_id: str,
+        text_dedupe_key: str,
+        intent_dedupe_key: str,
+        intent: str,
+        current_request_id: str,
+    ) -> tuple[bool, str | None]:
+        with self._connect() as conn:
+            text_hit = conn.execute(
+                """
+                SELECT request_id
+                FROM nl_requests
+                WHERE chat_id = ?
+                  AND text_dedupe_key = ?
+                  AND request_id != ?
+                  AND status IN ('pending_confirm', 'executing', 'completed')
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (str(chat_id), text_dedupe_key, current_request_id),
+            ).fetchone()
+            intent_hit = conn.execute(
+                """
+                SELECT request_id
+                FROM nl_requests
+                WHERE chat_id = ?
+                  AND intent_dedupe_key = ?
+                  AND request_id != ?
+                  AND status IN ('pending_confirm', 'executing', 'completed')
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (str(chat_id), intent_dedupe_key, current_request_id),
+            ).fetchone()
+
+        text_req = str(text_hit["request_id"]) if text_hit else None
+        intent_req = str(intent_hit["request_id"]) if intent_hit else None
+        if intent == "create_monitor":
+            return intent_req is not None, intent_req
+        if intent == "analyze_snapshot":
+            if text_req and intent_req:
+                return True, intent_req
+            return False, None
+        return False, None
 
     def upsert_analysis_report(
         self,

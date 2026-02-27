@@ -378,3 +378,134 @@ async def test_quiet_hours_and_priority_preference_suppresses_non_critical(tmp_p
     suppressed = store.list_alert_hub(chat_id="chat-d8", view="suppressed", limit=5)
     assert suppressed
     assert suppressed[0].suppressed_reason in {"quiet_hours", "preference_priority"}
+
+
+@pytest.mark.asyncio
+async def test_phase_a_high_risk_nl_requires_confirm_before_execute(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": "run-a1", **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    update = {"update_id": 20001, "message": {"chat": {"id": "chat-a1"}, "from": {"id": 1}, "text": "帮我盯 TSLA 每小时"}}
+    assert await gateway.process_update(update)
+
+    pending = store.get_pending_confirm_request(chat_id="chat-a1")
+    assert pending is not None
+    assert pending.intent == "create_monitor"
+    assert store.count_active_watch_jobs(chat_id="chat-a1") == 0
+
+
+@pytest.mark.asyncio
+async def test_phase_a_confirm_callback_binds_request_id_and_no_cross_apply(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": "run-a2", **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    first_id = "nlr-first001"
+    second_id = "nlr-second01"
+    base_payload = {
+        "intent": "create_monitor",
+        "slots": {
+            "symbol": "TSLA",
+            "interval": "1h",
+            "interval_sec": 3600,
+            "template": "volatility",
+            "mode": "anomaly",
+            "threshold": 0.03,
+            "route_strategy": "dual_channel",
+        },
+        "confidence": 0.95,
+        "needs_confirm": True,
+        "status": "pending_confirm",
+        "text_dedupe_key": "k1",
+        "intent_dedupe_key": "ik1",
+        "normalized_text": "盯 TSLA 每小时",
+        "normalized_request": "create_monitor",
+        "action_version": "v1",
+        "risk_level": "high",
+        "raw_text_hash": "h1",
+        "intent_candidate": "create_monitor",
+    }
+    store.create_nl_request(request_id=first_id, update_id=1, chat_id="chat-a2", **base_payload)
+    store.create_nl_request(
+        request_id=second_id,
+        update_id=2,
+        chat_id="chat-a2",
+        **{
+            **base_payload,
+            "slots": {**base_payload["slots"], "symbol": "AAPL"},
+            "text_dedupe_key": "k2",
+            "intent_dedupe_key": "ik2",
+            "raw_text_hash": "h2",
+        },
+    )
+
+    callback = {
+        "update_id": 20002,
+        "callback_query": {"id": "cb-1", "data": f"yes|{second_id}", "message": {"chat": {"id": "chat-a2"}}},
+    }
+    assert await gateway.process_update(callback)
+    first = store.get_nl_request(request_id=first_id)
+    second = store.get_nl_request(request_id=second_id)
+    assert first is not None and second is not None
+    assert first.status == "pending_confirm"
+    assert second.status == "completed"
+    jobs = store.list_watch_jobs(chat_id="chat-a2")
+    assert len(jobs) == 1
+    assert jobs[0].symbol == "AAPL"
+
+
+@pytest.mark.asyncio
+async def test_phase_a_nl_dedupe_prevents_duplicate_monitor_execution(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": "run-a3", **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    first = {"update_id": 20003, "message": {"chat": {"id": "chat-a3"}, "text": "帮我盯 TSLA 每小时"}}
+    assert await gateway.process_update(first)
+    pending = store.get_pending_confirm_request(chat_id="chat-a3")
+    assert pending is not None
+
+    confirm = {
+        "update_id": 20004,
+        "callback_query": {"id": "cb-2", "data": f"yes|{pending.request_id}", "message": {"chat": {"id": "chat-a3"}}},
+    }
+    assert await gateway.process_update(confirm)
+    assert store.count_active_watch_jobs(chat_id="chat-a3") == 1
+
+    dup = {"update_id": 20005, "message": {"chat": {"id": "chat-a3"}, "text": "帮我盯 TSLA 每小时"}}
+    assert await gateway.process_update(dup)
+    assert store.count_active_watch_jobs(chat_id="chat-a3") == 1
+
+
+@pytest.mark.asyncio
+async def test_phase_a_monitor_command_compatibility_no_regression(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": "run-a4", **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    update = {"update_id": 20006, "message": {"chat": {"id": "chat-a4"}, "text": "/monitor TSLA 1h rsi"}}
+    assert await gateway.process_update(update)
+    jobs = store.list_watch_jobs(chat_id="chat-a4")
+    assert len(jobs) == 1
+    assert jobs[0].mode == "rsi_extreme"
