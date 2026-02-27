@@ -13,9 +13,24 @@ class TelegramChartService:
         if isinstance(direct, str) and direct.strip():
             return Path(direct.strip())
 
+        for key in ("sandbox_images", "sandbox_output_files"):
+            candidates = result.get(key)
+            if isinstance(candidates, list):
+                for item in candidates:
+                    value = str(item or "").strip()
+                    if value and value.lower().endswith(".png"):
+                        return Path(value)
+
         sandbox_artifacts = result.get("sandbox_artifacts")
         if not isinstance(sandbox_artifacts, dict):
             return None
+        for key in ("images", "output_files"):
+            candidates = sandbox_artifacts.get(key)
+            if isinstance(candidates, list):
+                for item in candidates:
+                    value = str(item or "").strip()
+                    if value and value.lower().endswith(".png"):
+                        return Path(value)
         stdout = sandbox_artifacts.get("stdout")
         if not isinstance(stdout, str) or not stdout.strip():
             return None

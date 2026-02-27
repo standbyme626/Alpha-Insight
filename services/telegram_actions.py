@@ -134,6 +134,18 @@ class TelegramActions:
         return mapping.get(reason, "图表生成失败")
 
     @staticmethod
+    def _resolve_chart_failure_reason(
+        *,
+        latest_close: float | None,
+        chart_error: str | None,
+    ) -> str:
+        if latest_close is None:
+            return "data_empty"
+        if chart_error in {"artifact_missing", "chart_oversize"}:
+            return chart_error
+        return "artifact_missing"
+
+    @staticmethod
     def _metric_float(metrics: dict[str, Any], *keys: str) -> float | None:
         for key in keys:
             value = metrics.get(key)
@@ -297,6 +309,7 @@ class TelegramActions:
                     period=period,
                     interval=interval,
                     news_limit=(8 if news_window_days <= 7 else 20) if need_news else 0,
+                    need_chart=need_chart,
                 ),
                 timeout=self._analysis_timeout_seconds,
             )
@@ -401,7 +414,7 @@ class TelegramActions:
             chart_path, chart_size, chart_error = self._chart_service.ensure_chart_within_limit(chart_candidate)
             if chart_size is not None:
                 self._store.record_metric(metric_name="chart_payload_bytes", metric_value=float(chart_size))
-            chart_reason = "data_empty" if latest_close is None else ("artifact_missing" if chart_error else "")
+            chart_reason = self._resolve_chart_failure_reason(latest_close=latest_close, chart_error=chart_error)
             if chart_path is None and chart_reason == "artifact_missing":
                 self._store.record_metric(metric_name="chart_retry_attempted", metric_value=1.0)
                 await self._send_text(chat_id=chat_id, text="首次未取到图表产物，已自动重试一次。\n证据: 图表状态=重试中")
@@ -413,6 +426,7 @@ class TelegramActions:
                             period=period,
                             interval=interval,
                             news_limit=(8 if news_window_days <= 7 else 20) if need_news else 0,
+                            need_chart=need_chart,
                         ),
                         timeout=self._analysis_timeout_seconds,
                     )
@@ -430,7 +444,7 @@ class TelegramActions:
                 else:
                     chart_error = retry_error
             if chart_path is None:
-                reason = "data_empty" if latest_close is None else "artifact_missing"
+                reason = self._resolve_chart_failure_reason(latest_close=latest_close, chart_error=chart_error)
                 chart_state = "failed"
                 if target_request_id:
                     self._store.upsert_request_chart_state(request_id=target_request_id, chart_state=chart_state)

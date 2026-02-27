@@ -595,6 +595,55 @@ async def test_phase_b_analyze_snapshot_chart_failure_degrades_to_text(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_phase_b_analyze_snapshot_uses_output_files_chart_fallback(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+    chart = Path(tmp_path / "chart_from_output_files.png")
+    chart.write_bytes(b"\x89PNG\r\n" + b"D" * 1024)
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {
+            "run_id": "run-b2-fallback",
+            "fused_insights": {"summary": "Chart comes from output_files."},
+            "metrics": {"data_close": 123.4, "technical_rsi_14": 52.1},
+            "sandbox_output_files": [str(chart)],
+            "sandbox_artifacts": {"stdout": ""},
+            **kwargs,
+        }
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    update = {"update_id": 21008, "message": {"chat": {"id": "chat-b2-fallback"}, "text": "分析 TSLA 一个月走势并发图"}}
+    assert await gateway.process_update(update)
+    assert sender.photos
+    assert sender.photos[-1][0] == "chat-b2-fallback"
+
+
+@pytest.mark.asyncio
+async def test_phase_b_data_empty_chart_failure_skips_artifact_retry(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {
+            "run_id": "run-b2-data-empty",
+            "fused_insights": {"summary": "No data available."},
+            "metrics": {},
+            "sandbox_artifacts": {"stdout": ""},
+            **kwargs,
+        }
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    update = {"update_id": 21009, "message": {"chat": {"id": "chat-b2-data-empty"}, "text": "分析 TSLA 一个月走势并发图"}}
+    assert await gateway.process_update(update)
+    assert any("缺少可绘图的数据区间" in str(item[1]) for item in sender.messages)
+    assert not any("首次未取到图表产物" in str(item[1]) for item in sender.messages)
+
+
+@pytest.mark.asyncio
 async def test_phase_b_analyze_snapshot_dedupe_requires_double_key_hit(tmp_path) -> None:  # noqa: ANN001
     store = TelegramTaskStore(tmp_path / "telegram.db")
     sender = FakeChatSender()

@@ -25,6 +25,7 @@ class Week2GraphState(TypedDict, total=False):
     symbol: str
     period: str
     interval: str
+    need_chart: bool
 
     plan_steps: list[str]
     data_source: str
@@ -37,6 +38,8 @@ class Week2GraphState(TypedDict, total=False):
     sandbox_stdout: str
     sandbox_stderr: str
     sandbox_backend: str
+    sandbox_images: list[str]
+    sandbox_output_files: list[str]
     traceback: dict[str, Any] | None
 
     debug_advice: str
@@ -59,6 +62,7 @@ async def planner_node(state: Week2GraphState) -> Week2GraphState:
         "planner_reason": plan.reason,
         "planner_provider": plan.provider,
         "interval": str(state.get("interval", "1d")),
+        "need_chart": bool(state.get("need_chart", False)),
         "retry_count": int(state.get("retry_count", 0)),
         "max_retries": int(state.get("max_retries", 2)),
     }
@@ -162,6 +166,8 @@ async def executor_node(state: Week2GraphState) -> Week2GraphState:
         "sandbox_stdout": result.stdout,
         "sandbox_stderr": result.stderr,
         "sandbox_backend": backend,
+        "sandbox_images": list(getattr(result, "images", []) or []),
+        "sandbox_output_files": list(getattr(result, "output_files", []) or []),
         "traceback": tb,
         "retry_count": retry_count,
         "success": tb is None,
@@ -341,6 +347,7 @@ async def run_unified_research(
     interval: str = "1d",
     max_retries: int = 2,
     news_limit: int = 8,
+    need_chart: bool = False,
 ) -> dict[str, Any]:
     run_id = f"run-{uuid4().hex[:12]}"
     app = build_week2_graph()
@@ -350,6 +357,7 @@ async def run_unified_research(
             "symbol": symbol.strip().upper(),
             "period": period.strip(),
             "interval": interval.strip(),
+            "need_chart": bool(need_chart),
             "max_retries": max_retries,
         },
         config={"configurable": {"thread_id": run_id}},
@@ -433,4 +441,21 @@ async def run_unified_research(
         metrics=metrics,
         provenance=provenance,
     )
-    return result.model_dump(mode="json")
+    payload = result.model_dump(mode="json")
+    sandbox_output_files = [str(item) for item in full_output.get("sandbox_output_files", []) if str(item).strip()]
+    sandbox_images = [str(item) for item in full_output.get("sandbox_images", []) if str(item).strip()]
+    if sandbox_output_files:
+        payload["sandbox_output_files"] = sandbox_output_files
+    if sandbox_images:
+        payload["sandbox_images"] = sandbox_images
+    artifact_png = next(
+        (
+            item
+            for item in [*sandbox_images, *sandbox_output_files]
+            if str(item).strip().lower().endswith(".png")
+        ),
+        "",
+    )
+    if artifact_png:
+        payload["artifact_png"] = artifact_png
+    return payload

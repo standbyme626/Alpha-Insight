@@ -15,8 +15,36 @@ CODER_STYLE_GUIDE = """
 """.strip()
 
 
-def _base_script(bundle: dict[str, Any], *, bad_column: bool = False) -> str:
+def _base_script(bundle: dict[str, Any], *, bad_column: bool = False, render_chart: bool = False) -> str:
     ma_source_col = "Clsoe" if bad_column else "Close"
+    chart_block = ""
+    if render_chart:
+        chart_block = """
+from pathlib import Path
+
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    out_dir = Path("storage/outputs")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    symbol = str(bundle.get("symbol", "UNKNOWN")).replace("/", "_")
+    chart_path = out_dir / f"chart_{symbol}_{pd.Timestamp.utcnow().strftime('%Y%m%d%H%M%S%f')}.png"
+    close_series = pd.to_numeric(df["Close"], errors="coerce").fillna(0)
+    plt.figure(figsize=(9, 4.5))
+    plt.plot(close_series.index, close_series.values, linewidth=1.6)
+    plt.title(f"{symbol} close trend")
+    plt.xlabel("index")
+    plt.ylabel("price")
+    plt.grid(alpha=0.25)
+    plt.tight_layout()
+    plt.savefig(chart_path, dpi=150)
+    plt.close()
+    print(f"ARTIFACT_PNG={chart_path.resolve()}")
+except Exception as chart_exc:  # keep analysis result even if chart rendering fails
+    print(f"CHART_RENDER_ERROR={type(chart_exc).__name__}:{chart_exc}")
+""".rstrip()
     payload_json = json.dumps(bundle, ensure_ascii=False, sort_keys=True)
     return f"""
 import json
@@ -51,6 +79,7 @@ print(
     f" rows={{len(records)}}"
 )
 print(summary.to_string(index=False))
+{chart_block}
 """.strip()
 
 
@@ -70,12 +99,16 @@ def generate_code(state: dict[str, Any]) -> str:
     # Test hook: force a bad first attempt to validate self-correction loop.
     inject_failure = bool(state.get("inject_failure", False))
     retry_count = int(state.get("retry_count", 0))
+    need_chart = bool(state.get("need_chart", False))
+    if not need_chart:
+        request = str(state.get("request", "")).lower()
+        need_chart = "need_chart=true" in request
 
     if inject_failure and retry_count == 0:
-        return _base_script(bundle, bad_column=True)
+        return _base_script(bundle, bad_column=True, render_chart=need_chart)
 
     debug_advice = str(state.get("debug_advice") or "")
     if "use_close_column" in debug_advice:
-        return _base_script(bundle, bad_column=False)
+        return _base_script(bundle, bad_column=False, render_chart=need_chart)
 
-    return _base_script(bundle, bad_column=False)
+    return _base_script(bundle, bad_column=False, render_chart=need_chart)
