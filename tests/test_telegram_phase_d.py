@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -20,6 +21,7 @@ class FakeChatSender:
         self.messages: list[tuple[str, str]] = []
         self.photos: list[tuple[str, str, str]] = []
         self.keyboards: list[tuple[str, dict[str, object]]] = []
+        self.chat_actions: list[tuple[str, str]] = []
 
     async def send_text(self, chat_id: str, text: str, reply_markup: dict[str, object] | None = None) -> dict[str, object]:
         self.messages.append((chat_id, text))
@@ -29,6 +31,10 @@ class FakeChatSender:
 
     async def send_photo(self, chat_id: str, image_path: str, caption: str = "") -> dict[str, object]:
         self.photos.append((chat_id, image_path, caption))
+        return {"ok": True}
+
+    async def send_chat_action(self, chat_id: str, action: str = "typing") -> dict[str, object]:
+        self.chat_actions.append((chat_id, action))
         return {"ok": True}
 
 
@@ -74,6 +80,30 @@ async def test_help_contains_compliance_and_monitor_template(tmp_path) -> None: 
     message = sender.messages[-1][1]
     assert "no auto-trading" in message
     assert "/monitor <symbol> <interval> [volatility|price|rsi]" in message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", ["你好", "你会什么", "怎么用"])
+async def test_phase_d_general_conversation_returns_capability_card(tmp_path, text) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": "run-greet", **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update(
+        {"update_id": 12005 + len(text), "message": {"chat": {"id": "chat-greet"}, "from": {"id": 9}, "text": text}}
+    )
+    latest = sender.messages[-1][1]
+    assert "能力卡" in latest
+    assert "示例提问" in latest
+    assert "请求已拒绝" not in latest
+    assert sender.keyboards
+    keyboard = sender.keyboards[-1][1]
+    assert keyboard.get("inline_keyboard")
 
 
 @pytest.mark.asyncio
@@ -671,6 +701,65 @@ async def test_phase_b_analyze_snapshot_dedupe_requires_double_key_hit(tmp_path)
     assert calls["n"] == 2
     assert await gateway.process_update(third)
     assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_phase_d_analyze_snapshot_ack_then_result_order(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        await asyncio.sleep(0.01)
+        return {
+            "run_id": "run-order",
+            "fused_insights": {"summary": "Ordered response check"},
+            "metrics": {"data_close": 101.0, "technical_rsi_14": 56.0},
+            "sandbox_artifacts": {"stdout": ""},
+            **kwargs,
+        }
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 22001, "message": {"chat": {"id": "chat-order"}, "text": "分析 TSLA 一个月走势"}})
+    with store._connect() as conn:  # noqa: SLF001
+        row = conn.execute("SELECT request_id FROM bot_updates WHERE update_id = ?", (22001,)).fetchone()
+    assert row is not None and row["request_id"]
+    request_id = str(row["request_id"])
+    short_id = request_id[-6:]
+
+    texts = [item[1] for item in sender.messages]
+    ack_idx = next(index for index, text in enumerate(texts) if "已受理请求，开始分析" in text)
+    progress_idx = next(index for index, text in enumerate(texts) if "阶段进度 1/4：识别标的" in text)
+    result_idx = next(index for index, text in enumerate(texts) if "Snapshot Analysis" in text)
+    assert ack_idx < progress_idx < result_idx
+    assert f"request_id(short)={short_id}" in texts[ack_idx]
+
+
+@pytest.mark.asyncio
+async def test_phase_d_typing_heartbeat_start_and_stop(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        await asyncio.sleep(0.05)
+        return {
+            "run_id": "run-typing",
+            "fused_insights": {"summary": "typing heartbeat"},
+            "metrics": {"data_close": 88.0},
+            "sandbox_artifacts": {"stdout": ""},
+            **kwargs,
+        }
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 22002, "message": {"chat": {"id": "chat-typing"}, "text": "分析 TSLA 一个月走势"}})
+    action_count = len(sender.chat_actions)
+    assert action_count >= 1
+
+    await asyncio.sleep(0.05)
+    assert len(sender.chat_actions) == action_count
 
 
 @pytest.mark.asyncio

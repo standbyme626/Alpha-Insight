@@ -69,6 +69,18 @@ async def send_photo(bot_token: str, chat_id: str, image_path: str, caption: str
             return data
 
 
+async def send_chat_action(bot_token: str, chat_id: str, action: str = "typing") -> dict:
+    base_url = os.getenv("TELEGRAM_API_BASE_URL", "https://api.telegram.org").rstrip("/")
+    url = f"{base_url}/bot{bot_token}/sendChatAction"
+    payload = {"chat_id": chat_id, "action": action}
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, timeout=30) as response:
+            data = await response.json(content_type=None)
+            if response.status >= 400 or not data.get("ok"):
+                raise TelegramError(f"Telegram sendChatAction failed: {data}")
+            return data
+
+
 class TelegramNotifier:
     channel_name = "telegram"
 
@@ -78,6 +90,9 @@ class TelegramNotifier:
 
     async def send_text(self, text: str) -> dict[str, Any]:
         return await send_text(self._bot_token, self._chat_id, text)
+
+    async def send_chat_action(self, action: str = "typing") -> dict[str, Any]:
+        return await send_chat_action(self._bot_token, self._chat_id, action)
 
 
 async def dispatch_notifications(

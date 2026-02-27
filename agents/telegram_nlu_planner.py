@@ -15,6 +15,7 @@ _ALLOWED_ANALYZE_PERIODS = {"5d", "1mo", "3mo", "6mo", "1y"}
 _ALLOWED_TEMPLATES = {"volatility", "price", "rsi"}
 _ALLOWED_ROUTE_STRATEGIES = {"telegram_only", "webhook_only", "dual_channel"}
 _ALLOWED_CLARIFY_SLOTS = {"symbol", "period", "interval", "template", "market"}
+_GENERAL_CONVERSATION_INTENTS = {"greeting", "capability", "help", "how_to_start"}
 _MAX_NL_TEXT_CHARS = 800
 _PROMPT_INJECTION_PATTERNS = [
     re.compile(r"ignore\s+(all|the)\s+(previous|prior|above)\s+(instructions?|prompts?)", re.IGNORECASE),
@@ -149,6 +150,9 @@ def _extract_route_strategy(text: str) -> str:
 
 def _intent_from_text(text: str) -> str:
     lowered = text.lower()
+    conversation_intent = detect_general_conversation_intent(text)
+    if conversation_intent is not None:
+        return conversation_intent
     if any(keyword in lowered for keyword in ("digest", "日报", "daily digest", "每日报告", "日报告")):
         return "daily_digest"
     if any(keyword in lowered for keyword in ("list", "列表", "任务列表", "监控列表", "有哪些监控")):
@@ -162,6 +166,28 @@ def _intent_from_text(text: str) -> str:
     if "bulk" in lowered or "批量" in lowered:
         return "bulk_change"
     return "unknown"
+
+
+def detect_general_conversation_intent(text: str) -> str | None:
+    normalized = normalize_text(text)
+    lowered = normalized.lower()
+    if not lowered:
+        return None
+
+    if any(keyword in lowered for keyword in ("你会什么", "能做什么", "能力", "capability", "what can you do")):
+        return "capability"
+    if any(keyword in lowered for keyword in ("怎么开始", "如何开始", "新手", "从哪开始", "how to start", "start guide")):
+        return "how_to_start"
+    if any(
+        keyword in lowered
+        for keyword in ("怎么用", "如何用", "help", "帮助", "指令", "命令", "使用说明", "怎么使用", "如何使用")
+    ):
+        return "help"
+    if normalized in {"你好", "您好", "hi", "hello", "嗨", "在吗", "在嗎", "哈喽", "哈囉"}:
+        return "greeting"
+    if len(normalized) <= 16 and any(token in lowered for token in ("你好", "您好", "hi", "hello", "嗨")):
+        return "greeting"
+    return None
 
 
 def _extract_period(text: str) -> str:
@@ -247,6 +273,8 @@ def _build_plan_steps(intent: str, *, need_chart: bool = False) -> list[dict[str
         {"step": "validate_slots", "action": "validate_slots", "status": "pending"},
         {"step": "execute_intent", "action": "execute_intent", "status": "pending"},
     ]
+    if intent in _GENERAL_CONVERSATION_INTENTS:
+        steps.insert(1, {"step": "render_capability_card", "action": "render_capability_card", "status": "pending"})
     if intent == "daily_digest":
         steps.insert(1, {"step": "build_digest", "action": "build_digest", "status": "pending"})
     if intent == "list_jobs":
@@ -258,9 +286,20 @@ def _build_plan_steps(intent: str, *, need_chart: bool = False) -> list[dict[str
 
 
 def _validate_slots(plan: NLUPlan) -> NLUPlan:
-    if plan.intent not in {"create_monitor", "stop_job", "bulk_change", "analyze_snapshot", "list_jobs", "daily_digest"}:
+    if plan.intent not in {
+        "create_monitor",
+        "stop_job",
+        "bulk_change",
+        "analyze_snapshot",
+        "list_jobs",
+        "daily_digest",
+        *_GENERAL_CONVERSATION_INTENTS,
+    }:
         plan.reject_reason = "low_confidence"
         plan.explain = "intent not supported in v2"
+        return plan
+
+    if plan.intent in _GENERAL_CONVERSATION_INTENTS:
         return plan
 
     if plan.intent == "list_jobs":
@@ -432,6 +471,22 @@ def plan_from_text(text: str) -> NLUPlan:
             explain="rule-based stop_job parsing",
             command_template="/stop <job_id|symbol>",
             plan_steps=_build_plan_steps("stop_job"),
+        )
+        return _validate_slots(plan)
+
+    if intent in _GENERAL_CONVERSATION_INTENTS:
+        slots = {"conversation_intent": intent}
+        plan = NLUPlan(
+            intent=intent,
+            slots=slots,
+            confidence=0.98,
+            risk_level="low",
+            needs_confirm=False,
+            normalized_request=f"{intent} {json.dumps(slots, sort_keys=True)}",
+            action_version=action_version,
+            explain="rule-based general conversation parsing",
+            command_template="/help",
+            plan_steps=_build_plan_steps(intent),
         )
         return _validate_slots(plan)
 

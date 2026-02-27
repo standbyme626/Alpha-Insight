@@ -49,6 +49,7 @@ def _mask_chat_id(chat_id: str) -> str:
 
 class TelegramGateway:
     _CLARIFY_SLOT_WHITELIST = {"symbol", "period", "interval", "template", "market"}
+    _GENERAL_CONVERSATION_INTENTS = {"greeting", "capability", "help", "how_to_start"}
     _TEMPLATE_MODE_THRESHOLD = {
         "volatility": ("anomaly", 0.03),
         "price": ("price_breakout", 0.02),
@@ -373,6 +374,10 @@ class TelegramGateway:
             {"step": "render_response", "action": "render_response"},
         ]
 
+    @classmethod
+    def _is_conversation_intent(cls, intent: str) -> bool:
+        return intent in cls._GENERAL_CONVERSATION_INTENTS
+
     @staticmethod
     def _extract_plan_steps(slots: dict[str, Any], intent: str) -> list[dict[str, Any]]:
         raw = slots.get("_plan_steps")
@@ -475,6 +480,9 @@ class TelegramGateway:
 
     async def _execute_nl_intent(self, *, record: Any, update_id: int) -> str | None:
         slots = record.slots
+        if self._is_conversation_intent(record.intent):
+            await self._actions.handle_general_conversation(chat_id=record.chat_id, intent=record.intent)
+            return None
         if record.intent == "create_monitor":
             await self._actions.handle_monitor(
                 chat_id=record.chat_id,
@@ -488,6 +496,26 @@ class TelegramGateway:
             )
             return None
         if record.intent == "analyze_snapshot":
+            await self._actions.send_analysis_progress(
+                chat_id=record.chat_id,
+                request_id=record.request_id,
+                stage="identify_symbol",
+            )
+            await self._actions.send_analysis_progress(
+                chat_id=record.chat_id,
+                request_id=record.request_id,
+                stage="fetch_market_data",
+            )
+            await self._actions.send_analysis_progress(
+                chat_id=record.chat_id,
+                request_id=record.request_id,
+                stage="merge_news",
+            )
+            await self._actions.send_analysis_progress(
+                chat_id=record.chat_id,
+                request_id=record.request_id,
+                stage="process_chart",
+            )
             want_chart = bool(slots.get("need_chart", False))
             fail_before = self._store.count_metric_events(metric_name="chart_render_fail_rate") if want_chart else 0
             if want_chart:
@@ -541,7 +569,14 @@ class TelegramGateway:
         record = self._store.get_nl_request(request_id=request_id)
         if record is None:
             return False
-        if record.intent not in {"create_monitor", "analyze_snapshot", "list_jobs", "stop_job", "daily_digest"}:
+        if record.intent not in {
+            "create_monitor",
+            "analyze_snapshot",
+            "list_jobs",
+            "stop_job",
+            "daily_digest",
+            *self._GENERAL_CONVERSATION_INTENTS,
+        }:
             self._store.set_nl_request_status(
                 request_id=request_id,
                 to_status="failed",
@@ -558,6 +593,8 @@ class TelegramGateway:
         )
         if not moved:
             return False
+        if record.intent == "analyze_snapshot":
+            await self._actions.send_analysis_ack(chat_id=record.chat_id, request_id=record.request_id)
         plan_steps = self._extract_plan_steps(record.slots, record.intent)
         run_id: str | None = None
         try:
@@ -735,6 +772,43 @@ class TelegramGateway:
         }:
             return None
         return request_ref, action
+
+    @staticmethod
+    def _parse_callback_guide(data: str) -> str | None:
+        raw = (data or "").strip()
+        if not raw.startswith("guide|"):
+            return None
+        parts = raw.split("|", 1)
+        if len(parts) != 2:
+            return None
+        action = parts[1].strip().lower()
+        if action not in {"analyze", "monitor", "help", "start"}:
+            return None
+        return action
+
+    async def _handle_guide_action(self, *, chat_id: str, update_id: int, action: str) -> bool:
+        if action == "analyze":
+            await self._actions.send_error_message(
+                chat_id=chat_id,
+                text="示例：分析 TSLA 一个月走势；或 分析 0700.HK 近30天并给我K线。",
+            )
+        elif action == "monitor":
+            await self._actions.send_error_message(
+                chat_id=chat_id,
+                text="示例：帮我盯 TSLA 每小时；或 /monitor TSLA 1h volatility。",
+            )
+        elif action == "help":
+            await self._actions.handle_help(chat_id=chat_id)
+        else:
+            await self._actions.handle_general_conversation(chat_id=chat_id, intent="how_to_start")
+        self._store.update_bot_update_status(
+            update_id=update_id,
+            status="processed",
+            command=f"guide_{action}",
+            request_id=None,
+            error=None,
+        )
+        return True
 
     @staticmethod
     def _parse_text_confirm(text: str) -> tuple[str, str] | None:
@@ -1061,6 +1135,9 @@ class TelegramGateway:
             self._store.upsert_telegram_chat(chat_id=chat_id, user_id=user_id, username=username)
 
             if callback_data:
+                guide_action = self._parse_callback_guide(callback_data)
+                if guide_action is not None:
+                    return await self._handle_guide_action(chat_id=chat_id, update_id=update_id, action=guide_action)
                 candidate = self._parse_callback_candidate(callback_data)
                 if candidate is not None:
                     request_ref, chosen_symbol = candidate
@@ -1501,13 +1578,16 @@ class TelegramGateway:
                 reject_reason=plan.reject_reason,
             )
 
-            duplicate, duplicate_request_id = self._store.find_recent_nl_duplicates(
-                chat_id=chat_id,
-                text_dedupe_key=text_key,
-                intent_dedupe_key=intent_key,
-                intent=plan.intent,
-                current_request_id=request_id,
-            )
+            duplicate = False
+            duplicate_request_id: str | None = None
+            if not self._is_conversation_intent(plan.intent):
+                duplicate, duplicate_request_id = self._store.find_recent_nl_duplicates(
+                    chat_id=chat_id,
+                    text_dedupe_key=text_key,
+                    intent_dedupe_key=intent_key,
+                    intent=plan.intent,
+                    current_request_id=request_id,
+                )
             if duplicate:
                 self._store.set_nl_request_status(
                     request_id=request_id,

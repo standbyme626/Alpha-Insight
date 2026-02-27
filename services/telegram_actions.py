@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -39,6 +40,12 @@ class TelegramActions:
         "_plan_steps",
         "_schema_version",
     )
+    _ANALYZE_PROGRESS_TEXT = {
+        "identify_symbol": "阶段进度 1/4：识别标的",
+        "fetch_market_data": "阶段进度 2/4：拉取行情",
+        "merge_news": "阶段进度 3/4：融合新闻",
+        "process_chart": "阶段进度 4/4：图表处理",
+    }
 
     def __init__(
         self,
@@ -231,6 +238,109 @@ class TelegramActions:
     ) -> None:
         await self._send_text(chat_id=chat_id, text=text, buttons=buttons)
 
+    @staticmethod
+    def _short_request_id(request_id: str | None) -> str:
+        if not request_id:
+            return "n/a"
+        return request_id[-6:]
+
+    @staticmethod
+    def _capability_card_text(*, intent: str) -> str:
+        header = "你好，我是 Alpha-Insight 投研助手。"
+        if intent == "capability":
+            header = "我可以帮你做这些事情："
+        elif intent == "how_to_start":
+            header = "从这里开始最简单："
+        elif intent == "help":
+            header = "你可以这样使用我："
+        return (
+            f"{header}\n"
+            "能力卡 (Capability Card)\n"
+            "1) 快速分析：输入“分析 TSLA 一个月走势”\n"
+            "2) 监控提醒：输入“帮我盯 TSLA 每小时”\n"
+            "3) 查询任务：输入“看看我的监控列表”\n"
+            "示例提问：\n"
+            "- 分析 0700.HK 近30天并给我K线\n"
+            "- 给我 TSLA 最近7天新闻\n"
+            "- 帮我设置 AAPL 每日波动提醒"
+        )
+
+    @staticmethod
+    def _capability_buttons() -> list[list[tuple[str, str]]]:
+        return [
+            [("📈 快速分析", "guide|analyze"), ("🔔 创建监控", "guide|monitor")],
+            [("📋 查看命令", "guide|help"), ("🧭 怎么开始", "guide|start")],
+        ]
+
+    async def handle_general_conversation(self, *, chat_id: str, intent: str) -> ActionResult:
+        await self._send_text(
+            chat_id=chat_id,
+            text=self._capability_card_text(intent=intent),
+            buttons=self._capability_buttons(),
+        )
+        return ActionResult(command=f"conversation_{intent}")
+
+    async def send_analysis_ack(self, *, chat_id: str, request_id: str) -> None:
+        await self._send_text(
+            chat_id=chat_id,
+            text=f"已受理请求，开始分析。request_id(short)={self._short_request_id(request_id)}",
+        )
+
+    async def send_analysis_progress(
+        self,
+        *,
+        chat_id: str,
+        request_id: str,
+        stage: str,
+    ) -> None:
+        stage_text = self._ANALYZE_PROGRESS_TEXT.get(stage)
+        if not stage_text:
+            return
+        await self._send_text(
+            chat_id=chat_id,
+            text=f"{stage_text}\nrequest_id(short)={self._short_request_id(request_id)}",
+        )
+
+    async def _send_chat_action(self, *, chat_id: str, action: str = "typing") -> None:
+        sender = getattr(self._notifier, "send_chat_action", None)
+        if not callable(sender):
+            return
+        try:
+            await sender(chat_id, action)
+        except Exception:  # noqa: BLE001
+            return
+
+    @contextlib.asynccontextmanager
+    async def _typing_heartbeat(
+        self,
+        *,
+        chat_id: str,
+        action: str = "typing",
+        interval_seconds: float = 4.0,
+    ):
+        sender = getattr(self._notifier, "send_chat_action", None)
+        if not callable(sender) or interval_seconds <= 0:
+            yield
+            return
+
+        stop_event = asyncio.Event()
+
+        async def _pulse() -> None:
+            while not stop_event.is_set():
+                await self._send_chat_action(chat_id=chat_id, action=action)
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
+                except TimeoutError:
+                    continue
+
+        task = asyncio.create_task(_pulse())
+        try:
+            yield
+        finally:
+            stop_event.set()
+            with contextlib.suppress(Exception):
+                await task
+
     async def handle_help(self, *, chat_id: str) -> ActionResult:
         await self._send_text(
             chat_id=chat_id,
@@ -301,18 +411,19 @@ class TelegramActions:
             f"Analyze snapshot for {symbol} period={period} interval={interval} "
             f"need_news={str(bool(need_news)).lower()}"
         )
-        async with self._global_gate.acquire():
-            result = await asyncio.wait_for(
-                self._research_runner(
-                    request=request_text,
-                    symbol=symbol,
-                    period=period,
-                    interval=interval,
-                    news_limit=(8 if news_window_days <= 7 else 20) if need_news else 0,
-                    need_chart=need_chart,
-                ),
-                timeout=self._analysis_timeout_seconds,
-            )
+        async with self._typing_heartbeat(chat_id=chat_id):
+            async with self._global_gate.acquire():
+                result = await asyncio.wait_for(
+                    self._research_runner(
+                        request=request_text,
+                        symbol=symbol,
+                        period=period,
+                        interval=interval,
+                        news_limit=(8 if news_window_days <= 7 else 20) if need_news else 0,
+                        need_chart=need_chart,
+                    ),
+                    timeout=self._analysis_timeout_seconds,
+                )
 
         run_id = str(result.get("run_id", "")).strip()
         summary = str(((result.get("fused_insights") or {}).get("summary") or "")).strip() or "暂无摘要。"
@@ -766,11 +877,12 @@ class TelegramActions:
             return
         start = time.perf_counter()
         try:
-            async with self._global_gate.acquire():
-                result = await asyncio.wait_for(
-                    self._research_runner(request=request_text, symbol=symbol),
-                    timeout=timeout_seconds,
-                )
+            async with self._typing_heartbeat(chat_id=chat_id):
+                async with self._global_gate.acquire():
+                    result = await asyncio.wait_for(
+                        self._research_runner(request=request_text, symbol=symbol),
+                        timeout=timeout_seconds,
+                    )
             run_id = str(result.get("run_id", ""))
             summary = str(((result.get("fused_insights") or {}).get("summary") or "")).strip()
             key_metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
