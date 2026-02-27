@@ -21,6 +21,15 @@ def _isoformat(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).isoformat()
 
 
+def _parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
 def _json_dumps(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
@@ -66,6 +75,33 @@ class DueWatchJob:
     threshold: float
     mode: str
     next_run_at: str
+
+
+@dataclass
+class DueNotification:
+    notification_id: str
+    event_id: str
+    channel: str
+    retry_count: int
+    last_error: str | None
+
+
+@dataclass
+class DueAnalysisRecovery:
+    request_id: str
+    chat_id: str
+    symbol: str
+    retry_count: int
+
+
+@dataclass
+class DegradationState:
+    state_key: str
+    status: str
+    triggered_at: str | None
+    recovered_at: str | None
+    reason: str | None
+    updated_at: str
 
 
 class TelegramTaskStore:
@@ -186,6 +222,92 @@ class TelegramTaskStore:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS notification_state_transitions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    notification_id TEXT NOT NULL,
+                    event_id TEXT NOT NULL,
+                    channel TEXT NOT NULL,
+                    from_state TEXT,
+                    to_state TEXT NOT NULL,
+                    reason TEXT,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS analysis_recovery_queue (
+                    request_id TEXT PRIMARY KEY,
+                    chat_id TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    retry_count INTEGER NOT NULL,
+                    next_retry_at TEXT NOT NULL,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS command_rate_limits (
+                    chat_id TEXT NOT NULL,
+                    window_start TEXT NOT NULL,
+                    command_count INTEGER NOT NULL,
+                    PRIMARY KEY(chat_id, window_start)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS metric_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    metric_name TEXT NOT NULL,
+                    metric_value REAL NOT NULL,
+                    tags TEXT,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS degradation_states (
+                    state_key TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    triggered_at TEXT,
+                    recovered_at TEXT,
+                    reason TEXT,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS degradation_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    state_key TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    reason TEXT,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS audit_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_type TEXT NOT NULL,
+                    chat_id TEXT,
+                    update_id INTEGER,
+                    action TEXT,
+                    reason TEXT,
+                    metadata TEXT,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS feature_flags (
                     flag_key TEXT PRIMARY KEY,
                     enabled INTEGER NOT NULL
@@ -203,6 +325,8 @@ class TelegramTaskStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_watch_jobs_chat_enabled ON watch_jobs(chat_id, enabled)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_watch_jobs_next_run_at ON watch_jobs(next_run_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_notifications_state_next_retry ON notifications(state, next_retry_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_metric_events_name_ts ON metric_events(metric_name, created_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_ts ON audit_events(created_at)")
 
     def insert_bot_update_if_new(self, *, update_id: int, chat_id: str, payload: dict[str, Any]) -> bool:
         now = _utc_now()
@@ -360,6 +484,69 @@ class TelegramTaskStore:
             last_error=str(row["last_error"]) if row["last_error"] is not None else None,
         )
 
+    def enqueue_analysis_recovery(
+        self,
+        *,
+        request_id: str,
+        chat_id: str,
+        symbol: str,
+        retry_count: int,
+        next_retry_at: datetime,
+        last_error: str | None,
+    ) -> None:
+        now = _utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO analysis_recovery_queue(request_id, chat_id, symbol, retry_count, next_retry_at, last_error, created_at, updated_at)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(request_id) DO UPDATE SET
+                    retry_count = excluded.retry_count,
+                    next_retry_at = excluded.next_retry_at,
+                    last_error = excluded.last_error,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    request_id,
+                    chat_id,
+                    symbol,
+                    int(retry_count),
+                    _isoformat(next_retry_at),
+                    last_error,
+                    now,
+                    now,
+                ),
+            )
+
+    def claim_due_analysis_recovery(self, *, now: datetime | None = None, limit: int = 20) -> list[DueAnalysisRecovery]:
+        current = now or _utc_now_dt()
+        now_iso = _isoformat(current)
+        claimed: list[DueAnalysisRecovery] = []
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                """
+                SELECT request_id, chat_id, symbol, retry_count
+                FROM analysis_recovery_queue
+                WHERE next_retry_at <= ?
+                ORDER BY next_retry_at ASC
+                LIMIT ?
+                """,
+                (now_iso, max(1, int(limit))),
+            ).fetchall()
+            for row in rows:
+                conn.execute("DELETE FROM analysis_recovery_queue WHERE request_id = ?", (str(row["request_id"]),))
+                claimed.append(
+                    DueAnalysisRecovery(
+                        request_id=str(row["request_id"]),
+                        chat_id=str(row["chat_id"]),
+                        symbol=str(row["symbol"]),
+                        retry_count=int(row["retry_count"]),
+                    )
+                )
+            conn.commit()
+        return claimed
+
     def upsert_telegram_chat(self, *, chat_id: str, user_id: str | None, username: str | None, status: str = "active") -> None:
         now = _utc_now()
         with self._connect() as conn:
@@ -396,6 +583,55 @@ class TelegramTaskStore:
                 (str(chat_id),),
             ).fetchone()
         return bool(row and int(row["can_monitor"]) == 1)
+
+    def check_and_increment_command_rate_limit(
+        self,
+        *,
+        chat_id: str,
+        max_per_minute: int,
+        now: datetime | None = None,
+    ) -> tuple[bool, int]:
+        current = now or _utc_now_dt()
+        window_start = current.replace(second=0, microsecond=0)
+        window_iso = _isoformat(window_start)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO command_rate_limits(chat_id, window_start, command_count)
+                VALUES(?, ?, 0)
+                ON CONFLICT(chat_id, window_start) DO NOTHING
+                """,
+                (str(chat_id), window_iso),
+            )
+            row = conn.execute(
+                """
+                SELECT command_count
+                FROM command_rate_limits
+                WHERE chat_id = ? AND window_start = ?
+                """,
+                (str(chat_id), window_iso),
+            ).fetchone()
+            current_count = int(row["command_count"]) if row else 0
+            if current_count >= max_per_minute:
+                return False, current_count
+            next_count = current_count + 1
+            conn.execute(
+                """
+                UPDATE command_rate_limits
+                SET command_count = ?
+                WHERE chat_id = ? AND window_start = ?
+                """,
+                (next_count, str(chat_id), window_iso),
+            )
+            return True, next_count
+
+    def count_active_watch_jobs(self, *, chat_id: str) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS c FROM watch_jobs WHERE chat_id = ? AND enabled = 1",
+                (str(chat_id),),
+            ).fetchone()
+        return int(row["c"])
 
     def create_watch_job(
         self,
@@ -645,6 +881,33 @@ class TelegramTaskStore:
             return None, None
         return str(row["trigger_ts"]), float(row["pct_change"])
 
+    def get_watch_event(self, *, event_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT we.event_id, we.job_id, we.trigger_ts, we.price, we.pct_change, we.reason, we.rule, we.run_id,
+                       wj.chat_id, wj.symbol
+                FROM watch_events we
+                JOIN watch_jobs wj ON wj.job_id = we.job_id
+                WHERE we.event_id = ?
+                """,
+                (event_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "event_id": str(row["event_id"]),
+            "job_id": str(row["job_id"]),
+            "trigger_ts": str(row["trigger_ts"]),
+            "price": float(row["price"]),
+            "pct_change": float(row["pct_change"]),
+            "reason": str(row["reason"]),
+            "rule": str(row["rule"]),
+            "run_id": str(row["run_id"]) if row["run_id"] else None,
+            "chat_id": str(row["chat_id"]),
+            "symbol": str(row["symbol"]),
+        }
+
     def record_watch_event_if_new(
         self,
         *,
@@ -717,10 +980,18 @@ class TelegramTaskStore:
         next_retry_at: str | None = None,
         last_error: str | None = None,
         delivered_at: str | None = None,
+        reason: str | None = None,
     ) -> None:
         now = _utc_now()
         notification_id = f"ntf-{uuid4().hex[:10]}"
         with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT notification_id, state FROM notifications WHERE event_id = ? AND channel = ?",
+                (event_id, channel),
+            ).fetchone()
+            from_state = str(existing["state"]) if existing else None
+            existing_notification_id = str(existing["notification_id"]) if existing else None
+
             conn.execute(
                 """
                 INSERT INTO notifications(
@@ -737,7 +1008,7 @@ class TelegramTaskStore:
                     updated_at = excluded.updated_at
                 """,
                 (
-                    notification_id,
+                    existing_notification_id or notification_id,
                     event_id,
                     channel,
                     state,
@@ -750,6 +1021,198 @@ class TelegramTaskStore:
                 ),
             )
 
+            if from_state != state:
+                conn.execute(
+                    """
+                    INSERT INTO notification_state_transitions(notification_id, event_id, channel, from_state, to_state, reason, created_at)
+                    VALUES(?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (existing_notification_id or notification_id, event_id, channel, from_state, state, reason, now),
+                )
+
+    def claim_due_notification_retries(self, *, now: datetime | None = None, limit: int = 20) -> list[DueNotification]:
+        current = now or _utc_now_dt()
+        now_iso = _isoformat(current)
+        claimed: list[DueNotification] = []
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                """
+                SELECT notification_id, event_id, channel, retry_count, last_error
+                FROM notifications
+                WHERE state = 'retry_pending' AND next_retry_at IS NOT NULL AND next_retry_at <= ?
+                ORDER BY next_retry_at ASC
+                LIMIT ?
+                """,
+                (now_iso, max(1, int(limit))),
+            ).fetchall()
+            for row in rows:
+                conn.execute(
+                    """
+                    UPDATE notifications
+                    SET state = 'retrying', updated_at = ?
+                    WHERE notification_id = ?
+                    """,
+                    (now_iso, str(row["notification_id"])),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO notification_state_transitions(notification_id, event_id, channel, from_state, to_state, reason, created_at)
+                    VALUES(?, ?, ?, 'retry_pending', 'retrying', 'retry dispatch', ?)
+                    """,
+                    (str(row["notification_id"]), str(row["event_id"]), str(row["channel"]), now_iso),
+                )
+                claimed.append(
+                    DueNotification(
+                        notification_id=str(row["notification_id"]),
+                        event_id=str(row["event_id"]),
+                        channel=str(row["channel"]),
+                        retry_count=int(row["retry_count"]),
+                        last_error=str(row["last_error"]) if row["last_error"] else None,
+                    )
+                )
+            conn.commit()
+        return claimed
+
+    def add_audit_event(
+        self,
+        *,
+        event_type: str,
+        chat_id: str | None,
+        update_id: int | None,
+        action: str | None,
+        reason: str | None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO audit_events(event_type, chat_id, update_id, action, reason, metadata, created_at)
+                VALUES(?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_type,
+                    str(chat_id) if chat_id is not None else None,
+                    update_id,
+                    action,
+                    reason,
+                    _json_dumps(metadata or {}),
+                    _utc_now(),
+                ),
+            )
+
+    def count_audit_events(self, *, event_type: str | None = None) -> int:
+        with self._connect() as conn:
+            if event_type:
+                row = conn.execute("SELECT COUNT(*) AS c FROM audit_events WHERE event_type = ?", (event_type,)).fetchone()
+            else:
+                row = conn.execute("SELECT COUNT(*) AS c FROM audit_events").fetchone()
+        return int(row["c"])
+
+    def record_metric(self, *, metric_name: str, metric_value: float, tags: dict[str, Any] | None = None, created_at: datetime | None = None) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO metric_events(metric_name, metric_value, tags, created_at)
+                VALUES(?, ?, ?, ?)
+                """,
+                (
+                    metric_name,
+                    float(metric_value),
+                    _json_dumps({k: str(v) for k, v in (tags or {}).items()}),
+                    _isoformat(created_at or _utc_now_dt()),
+                ),
+            )
+
+    def metric_values(self, *, metric_name: str, since: datetime | None = None) -> list[float]:
+        since_iso = _isoformat(since) if since else None
+        query = "SELECT metric_value FROM metric_events WHERE metric_name = ?"
+        params: list[Any] = [metric_name]
+        if since_iso:
+            query += " AND created_at >= ?"
+            params.append(since_iso)
+        query += " ORDER BY created_at ASC"
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        return [float(row["metric_value"]) for row in rows]
+
+    def count_metric_events(self, *, metric_name: str, since: datetime | None = None) -> int:
+        since_iso = _isoformat(since) if since else None
+        query = "SELECT COUNT(*) AS c FROM metric_events WHERE metric_name = ?"
+        params: list[Any] = [metric_name]
+        if since_iso:
+            query += " AND created_at >= ?"
+            params.append(since_iso)
+        with self._connect() as conn:
+            row = conn.execute(query, tuple(params)).fetchone()
+        return int(row["c"])
+
+    def get_degradation_state(self, *, state_key: str) -> DegradationState | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT state_key, status, triggered_at, recovered_at, reason, updated_at
+                FROM degradation_states
+                WHERE state_key = ?
+                """,
+                (state_key,),
+            ).fetchone()
+        if row is None:
+            return None
+        return DegradationState(
+            state_key=str(row["state_key"]),
+            status=str(row["status"]),
+            triggered_at=str(row["triggered_at"]) if row["triggered_at"] else None,
+            recovered_at=str(row["recovered_at"]) if row["recovered_at"] else None,
+            reason=str(row["reason"]) if row["reason"] else None,
+            updated_at=str(row["updated_at"]),
+        )
+
+    def set_degradation_state(self, *, state_key: str, status: str, reason: str) -> None:
+        now = _utc_now()
+        state = self.get_degradation_state(state_key=state_key)
+        changed = state is None or state.status != status
+        with self._connect() as conn:
+            if status == "active":
+                conn.execute(
+                    """
+                    INSERT INTO degradation_states(state_key, status, triggered_at, recovered_at, reason, updated_at)
+                    VALUES(?, 'active', ?, NULL, ?, ?)
+                    ON CONFLICT(state_key) DO UPDATE SET
+                        status = 'active',
+                        triggered_at = COALESCE(degradation_states.triggered_at, excluded.triggered_at),
+                        recovered_at = NULL,
+                        reason = excluded.reason,
+                        updated_at = excluded.updated_at
+                    """,
+                    (state_key, now, reason, now),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO degradation_states(state_key, status, triggered_at, recovered_at, reason, updated_at)
+                    VALUES(?, 'recovered', NULL, ?, ?, ?)
+                    ON CONFLICT(state_key) DO UPDATE SET
+                        status = 'recovered',
+                        recovered_at = excluded.recovered_at,
+                        reason = excluded.reason,
+                        updated_at = excluded.updated_at
+                    """,
+                    (state_key, now, reason, now),
+                )
+            if changed:
+                conn.execute(
+                    """
+                    INSERT INTO degradation_events(state_key, event_type, reason, created_at)
+                    VALUES(?, ?, ?, ?)
+                    """,
+                    (state_key, "triggered" if status == "active" else "recovered", reason, now),
+                )
+
+    def is_degradation_active(self, *, state_key: str) -> bool:
+        state = self.get_degradation_state(state_key=state_key)
+        return bool(state and state.status == "active")
+
     def count_watch_events(self) -> int:
         with self._connect() as conn:
             row = conn.execute("SELECT COUNT(*) AS c FROM watch_events").fetchone()
@@ -760,6 +1223,23 @@ class TelegramTaskStore:
             row = conn.execute(
                 "SELECT COUNT(*) AS c FROM notifications WHERE state = 'delivered'"
             ).fetchone()
+        return int(row["c"])
+
+    def count_retry_queue_depth(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS c FROM notifications WHERE state IN ('retry_pending', 'retrying')"
+            ).fetchone()
+        return int(row["c"])
+
+    def count_dlq(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS c FROM notifications WHERE state = 'dlq'").fetchone()
+        return int(row["c"])
+
+    def count_notification_state_transitions(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS c FROM notification_state_transitions").fetchone()
         return int(row["c"])
 
     def verification_counts(self) -> dict[str, int]:
@@ -799,12 +1279,8 @@ class TelegramTaskStore:
                 conn.execute(
                     """
                     SELECT COUNT(*) AS c
-                    FROM (
-                        SELECT dedupe_key, COUNT(*) AS n
-                        FROM watch_events
-                        GROUP BY dedupe_key
-                        HAVING n > 1
-                    ) t
+                    FROM metric_events
+                    WHERE metric_name = 'dedupe_suppressed_count' AND metric_value > 0
                     """
                 ).fetchone()["c"]
             )
@@ -813,4 +1289,46 @@ class TelegramTaskStore:
             "distinct_updates": distinct_updates,
             "duplicate_running_or_completed": duplicate_running_or_completed,
             "dedupe_suppressed_count": dedupe_suppressed_count,
+            "retry_queue_depth": self.count_retry_queue_depth(),
+            "dlq_count": self.count_dlq(),
+            "notification_state_transition_total": self.count_notification_state_transitions(),
+        }
+
+    @staticmethod
+    def _p95(values: list[float]) -> float:
+        if not values:
+            return 0.0
+        ordered = sorted(values)
+        idx = max(0, int(round(0.95 * (len(ordered) - 1))))
+        return float(ordered[idx])
+
+    def build_phase_c_run_report(self) -> dict[str, float | int]:
+        command_total = self.count_metric_events(metric_name="command_total")
+        command_success = self.count_metric_events(metric_name="command_success")
+        monitor_triggered = self.count_metric_events(metric_name="monitor_trigger")
+        monitor_executed = self.count_metric_events(metric_name="monitor_executed")
+        push_attempts = self.count_metric_events(metric_name="push_attempt")
+        push_success = self.count_metric_events(metric_name="push_success")
+
+        command_success_rate = (command_success / command_total) if command_total else 1.0
+        monitor_trigger_rate = (monitor_triggered / monitor_executed) if monitor_executed else 0.0
+        push_success_rate = (push_success / push_attempts) if push_attempts else 1.0
+
+        p95_command_latency = self._p95(self.metric_values(metric_name="command_latency_ms"))
+        p95_analysis_latency = self._p95(self.metric_values(metric_name="analysis_latency_ms"))
+
+        duplicate_update_dropped = self.count_metric_events(metric_name="duplicate_update_dropped")
+        dedupe_suppressed = int(sum(self.metric_values(metric_name="dedupe_suppressed_count")))
+
+        return {
+            "command_success_rate": round(command_success_rate, 4),
+            "monitor_trigger_rate": round(monitor_trigger_rate, 4),
+            "push_success_rate": round(push_success_rate, 4),
+            "p95_command_latency": round(p95_command_latency, 3),
+            "p95_analysis_latency": round(p95_analysis_latency, 3),
+            "duplicate_update_dropped": duplicate_update_dropped,
+            "dedupe_suppressed_count": dedupe_suppressed,
+            "retry_queue_depth": self.count_retry_queue_depth(),
+            "dlq_count": self.count_dlq(),
+            "notification_state_transition_total": self.count_notification_state_transitions(),
         }

@@ -1,0 +1,12 @@
+{
+  "command_success_rate": 0.95,
+  "monitor_trigger_rate": 0.6667,
+  "push_success_rate": 0.875,
+  "p95_command_latency": 100.0,
+  "p95_analysis_latency": 2000.0,
+  "duplicate_update_dropped": 2,
+  "dedupe_suppressed_count": 2,
+  "retry_queue_depth": 0,
+  "dlq_count": 0,
+  "notification_state_transition_total": 0
+}

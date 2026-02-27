@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Protocol
 
 from agents.scanner_engine import ScanConfig, WatchlistRunResult, build_scan_trigger, format_signal_message, run_watchlist_cycle
-from services.telegram_store import DueWatchJob, TelegramTaskStore
+from services.runtime_controls import GlobalConcurrencyGate, RuntimeLimits
+from services.telegram_store import DueNotification, DueWatchJob, TelegramTaskStore
 
 
 class ChatSender(Protocol):
@@ -34,14 +35,31 @@ class WatchExecutor:
         scan_runner: ScanRunner = run_watchlist_cycle,
         dedupe_bucket_minutes: int = 15,
         enable_triggered_research: bool = True,
+        limits: RuntimeLimits | None = None,
+        global_gate: GlobalConcurrencyGate | None = None,
     ):
         self._store = store
         self._notifier = notifier
         self._scan_runner = scan_runner
         self._dedupe_bucket_minutes = dedupe_bucket_minutes
         self._enable_triggered_research = enable_triggered_research
+        self._limits = limits or RuntimeLimits()
+        self._global_gate = global_gate or GlobalConcurrencyGate(self._limits.global_concurrency)
 
     async def execute_job(self, job: DueWatchJob) -> WatchExecutionResult:
+        self._store.record_metric(metric_name="monitor_executed", metric_value=1.0, tags={"job_id": job.job_id})
+
+        enable_research = self._enable_triggered_research and (not self._store.is_degradation_active(state_key="disable_critical_research"))
+        if not enable_research:
+            self._store.add_audit_event(
+                event_type="degrade_skip",
+                chat_id=job.chat_id,
+                update_id=None,
+                action="critical_research",
+                reason="disable_critical_research",
+                metadata={"job_id": job.job_id, "symbol": job.symbol},
+            )
+
         config = ScanConfig(
             watchlist=[job.symbol],
             market=job.market,
@@ -49,19 +67,21 @@ class WatchExecutor:
             pct_alert_threshold=job.threshold,
         )
         trigger = build_scan_trigger(trigger_type="scheduled", trigger_id=f"watch-{job.job_id}")
-        result = await self._scan_runner(
-            config,
-            trigger=trigger,
-            mode=job.mode,
-            notifier=None,
-            enable_triggered_research=self._enable_triggered_research,
-        )
+        async with self._global_gate.acquire():
+            result = await self._scan_runner(
+                config,
+                trigger=trigger,
+                mode=job.mode,
+                notifier=None,
+                enable_triggered_research=enable_research,
+            )
 
         snapshot_by_symbol = {snapshot.signal.symbol: snapshot for snapshot in result.snapshots}
         pushed_count = 0
         dedupe_suppressed_count = 0
 
         for signal in result.selected_alerts:
+            self._store.record_metric(metric_name="monitor_trigger", metric_value=1.0, tags={"job_id": job.job_id})
             snapshot = snapshot_by_symbol.get(signal.symbol)
             run_id = snapshot.research_run_id if snapshot is not None else None
             event_id, created = self._store.record_watch_event_if_new(
@@ -77,32 +97,16 @@ class WatchExecutor:
             )
             if not created:
                 dedupe_suppressed_count += 1
+                self._store.record_metric(metric_name="dedupe_suppressed_count", metric_value=1.0)
                 continue
 
-            text = format_signal_message(signal)
-            if run_id:
-                text += f"\nrun_id={run_id}"
-
-            try:
-                await self._notifier.send_text(job.chat_id, text)
-                self._store.mark_watch_event_pushed(event_id=event_id)
-                self._store.upsert_notification_state(
-                    event_id=event_id,
-                    channel="telegram",
-                    state="delivered",
-                    retry_count=0,
-                    delivered_at=datetime.now(timezone.utc).isoformat(),
-                )
+            notification_payload = self._store.get_watch_event(event_id=event_id)
+            if not notification_payload:
+                continue
+            delivered = await self._dispatch_notification(notification_payload, retry_count=0)
+            if delivered:
                 self._store.mark_watch_job_triggered(job_id=job.job_id)
                 pushed_count += 1
-            except Exception as exc:  # pragma: no cover - defensive runtime branch.
-                self._store.upsert_notification_state(
-                    event_id=event_id,
-                    channel="telegram",
-                    state="failed",
-                    retry_count=1,
-                    last_error=str(exc),
-                )
 
         return WatchExecutionResult(
             job_id=job.job_id,
@@ -111,6 +115,142 @@ class WatchExecutor:
             pushed_count=pushed_count,
             dedupe_suppressed_count=dedupe_suppressed_count,
         )
+
+    async def process_retry_queue(self, *, limit: int = 20) -> int:
+        due = self._store.claim_due_notification_retries(limit=limit)
+        delivered = 0
+        for item in due:
+            payload = self._store.get_watch_event(event_id=item.event_id)
+            if not payload:
+                continue
+            if await self._dispatch_notification(payload, retry_count=item.retry_count):
+                delivered += 1
+        return delivered
+
+    async def _dispatch_notification(self, payload: dict[str, Any], *, retry_count: int) -> bool:
+        event_id = str(payload["event_id"])
+        chat_id = str(payload["chat_id"])
+        job_id = str(payload["job_id"])
+        symbol = str(payload["symbol"])
+
+        if self._store.is_degradation_active(state_key="no_monitor_push"):
+            self._store.upsert_notification_state(
+                event_id=event_id,
+                channel="telegram",
+                state="suppressed",
+                retry_count=retry_count,
+                reason="no_monitor_push",
+            )
+            self._store.add_audit_event(
+                event_type="degrade_skip",
+                chat_id=chat_id,
+                update_id=None,
+                action="monitor_push",
+                reason="no_monitor_push",
+                metadata={"event_id": event_id, "job_id": job_id},
+            )
+            return False
+
+        summary_mode = self._store.is_degradation_active(state_key="summary_mode")
+        if summary_mode and self._is_throttled(job_id=job_id, interval_sec=900):
+            self._store.upsert_notification_state(
+                event_id=event_id,
+                channel="telegram",
+                state="suppressed",
+                retry_count=retry_count,
+                reason="summary_mode_throttle",
+            )
+            self._store.add_audit_event(
+                event_type="degrade_skip",
+                chat_id=chat_id,
+                update_id=None,
+                action="monitor_push",
+                reason="summary_mode_throttle",
+                metadata={"event_id": event_id, "symbol": symbol},
+            )
+            return False
+
+        text = self._build_message(payload, summary_mode=summary_mode)
+        self._store.record_metric(metric_name="push_attempt", metric_value=1.0, tags={"job_id": job_id})
+
+        try:
+            await self._notifier.send_text(chat_id, text)
+            self._store.mark_watch_event_pushed(event_id=event_id)
+            self._store.upsert_notification_state(
+                event_id=event_id,
+                channel="telegram",
+                state="delivered",
+                retry_count=retry_count,
+                delivered_at=datetime.now(timezone.utc).isoformat(),
+                reason="delivery_success",
+            )
+            self._store.record_metric(metric_name="push_success", metric_value=1.0, tags={"job_id": job_id})
+            return True
+        except Exception as exc:  # pragma: no cover
+            next_retry = retry_count + 1
+            if next_retry >= self._limits.notification_max_retry:
+                self._store.upsert_notification_state(
+                    event_id=event_id,
+                    channel="telegram",
+                    state="dlq",
+                    retry_count=next_retry,
+                    last_error=str(exc),
+                    reason="max_retry_exceeded",
+                )
+                self._store.add_audit_event(
+                    event_type="notification_dlq",
+                    chat_id=chat_id,
+                    update_id=None,
+                    action="push",
+                    reason=str(exc),
+                    metadata={"event_id": event_id, "retries": next_retry},
+                )
+                return False
+
+            backoff_seconds = min(300, 15 * (2 ** max(0, next_retry - 1)))
+            self._store.upsert_notification_state(
+                event_id=event_id,
+                channel="telegram",
+                state="retry_pending",
+                retry_count=next_retry,
+                next_retry_at=(datetime.now(timezone.utc) + timedelta(seconds=backoff_seconds)).isoformat(),
+                last_error=str(exc),
+                reason="delivery_failed",
+            )
+            return False
+
+    def _is_throttled(self, *, job_id: str, interval_sec: int) -> bool:
+        job = self._store.get_watch_job(job_id=job_id)
+        if not job.last_triggered_at:
+            return False
+        last = datetime.fromisoformat(job.last_triggered_at)
+        return (datetime.now(timezone.utc) - last).total_seconds() < interval_sec
+
+    @staticmethod
+    def _build_message(payload: dict[str, Any], *, summary_mode: bool) -> str:
+        if summary_mode:
+            return (
+                f"[Degraded Summary] {payload['symbol']} {round(float(payload['pct_change']) * 100, 2)}% "
+                f"price={round(float(payload['price']), 4)}"
+            )
+        pseudo_signal = type(
+            "Signal",
+            (),
+            {
+                "symbol": payload["symbol"],
+                "timestamp": datetime.fromisoformat(str(payload["trigger_ts"])),
+                "price": float(payload["price"]),
+                "pct_change": float(payload["pct_change"]),
+                "rsi": 0.0,
+                "priority": "medium",
+                "reason": str(payload["reason"]),
+                "company_name": str(payload["symbol"]),
+            },
+        )()
+        text = format_signal_message(pseudo_signal)
+        if payload.get("run_id"):
+            text += f"\nrun_id={payload['run_id']}"
+        return text
 
     @staticmethod
     def _interval_for_job(interval_sec: int) -> str:

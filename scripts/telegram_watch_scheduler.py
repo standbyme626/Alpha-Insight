@@ -5,6 +5,8 @@ import asyncio
 import os
 from pathlib import Path
 
+from services.reliability_governor import GovernorConfig, ReliabilityGovernor
+from services.runtime_controls import GlobalConcurrencyGate, RuntimeLimits
 from services.scheduler import TelegramWatchScheduler
 from services.telegram_store import TelegramTaskStore
 from services.watch_executor import WatchExecutor
@@ -20,7 +22,7 @@ class TelegramChatSender:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Telegram watch scheduler for Alpha-Insight Phase B")
+    parser = argparse.ArgumentParser(description="Telegram watch scheduler for Alpha-Insight Phase C")
     parser.add_argument("--db-path", default=os.getenv("TELEGRAM_GATEWAY_DB", "storage/telegram_gateway.db"))
     parser.add_argument("--poll-interval-seconds", type=float, default=1.0)
     parser.add_argument("--batch-size", type=int, default=20)
@@ -33,12 +35,28 @@ async def _main() -> int:
     if not bot_token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is required")
 
+    limits = RuntimeLimits(
+        per_chat_per_minute=int(os.getenv("TELEGRAM_PER_CHAT_PER_MINUTE", "20")),
+        max_watch_jobs_per_chat=int(os.getenv("TELEGRAM_MAX_WATCH_JOBS_PER_CHAT", "10")),
+        global_concurrency=int(os.getenv("TELEGRAM_GLOBAL_CONCURRENCY", "8")),
+        notification_max_retry=int(os.getenv("TELEGRAM_NOTIFICATION_MAX_RETRY", "3")),
+    )
+    gate = GlobalConcurrencyGate(limits.global_concurrency)
+
     store = TelegramTaskStore(Path(args.db_path))
     notifier = TelegramChatSender(bot_token)
-    executor = WatchExecutor(store=store, notifier=notifier)
+    executor = WatchExecutor(store=store, notifier=notifier, limits=limits, global_gate=gate)
+    governor = ReliabilityGovernor(
+        store=store,
+        config=GovernorConfig(
+            push_success_threshold=float(os.getenv("TELEGRAM_SLO_PUSH_SUCCESS", "0.99")),
+            analysis_p95_threshold_ms=float(os.getenv("TELEGRAM_SLO_ANALYSIS_P95_MS", "90000")),
+        ),
+    )
     scheduler = TelegramWatchScheduler(
         store=store,
         executor=executor,
+        governor=governor,
         poll_interval_seconds=args.poll_interval_seconds,
         batch_size=args.batch_size,
     )

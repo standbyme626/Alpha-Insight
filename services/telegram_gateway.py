@@ -1,13 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import time
+from datetime import datetime, timezone
 from typing import Any
 
 import aiohttp
 
 from agents.telegram_command_router import CommandError, parse_telegram_command
+from services.runtime_controls import RuntimeLimits
 from services.telegram_actions import TelegramActions
 from services.telegram_store import TelegramTaskStore
+
+
+def _mask_chat_id(chat_id: str) -> str:
+    if len(chat_id) <= 4:
+        return "***"
+    return f"{chat_id[:2]}***{chat_id[-2:]}"
 
 
 class TelegramGateway:
@@ -16,10 +25,29 @@ class TelegramGateway:
         *,
         store: TelegramTaskStore,
         actions: TelegramActions,
+        limits: RuntimeLimits | None = None,
+        allowed_chat_ids: set[str] | None = None,
+        allowed_commands: set[str] | None = None,
     ):
         self._store = store
         self._actions = actions
+        self._limits = limits or RuntimeLimits()
+        self._allowed_chat_ids = allowed_chat_ids or set()
+        self._allowed_commands = allowed_commands or {"help", "analyze", "monitor", "list", "stop"}
         self._offset = max(0, self._store.get_latest_update_id() + 1)
+
+    @staticmethod
+    def _audit_payload(update: dict[str, Any]) -> dict[str, Any]:
+        message = update.get("message") or {}
+        chat = message.get("chat") or {}
+        text = str(message.get("text", "")).strip()
+        return {
+            "update_id": int(update.get("update_id", 0)),
+            "message": {
+                "chat": {"id": str(chat.get("id", ""))},
+                "text": text[:256],
+            },
+        }
 
     async def enqueue_update(self, update: dict[str, Any]) -> int | None:
         update_id = int(update.get("update_id", 0))
@@ -32,9 +60,10 @@ class TelegramGateway:
         inserted = self._store.insert_bot_update_if_new(
             update_id=update_id,
             chat_id=chat_id,
-            payload=update,
+            payload=self._audit_payload(update),
         )
         if not inserted:
+            self._store.record_metric(metric_name="duplicate_update_dropped", metric_value=1.0)
             return None
         return update_id
 
@@ -45,6 +74,7 @@ class TelegramGateway:
         return await self.process_enqueued_update(update_id=update_id)
 
     async def process_enqueued_update(self, *, update_id: int) -> bool:
+        started_at = time.perf_counter()
         payload = self._store.get_bot_update_payload(update_id=update_id)
         if payload is None:
             return False
@@ -57,8 +87,52 @@ class TelegramGateway:
         username = str(from_user.get("username", "")).strip() or None
         text = str(message.get("text", "")).strip()
 
+        print(f"[gateway] handling update={update_id} chat={_mask_chat_id(chat_id)}")
+        self._store.record_metric(metric_name="command_total", metric_value=1.0, tags={"chat_id": chat_id})
+
         try:
+            if self._allowed_chat_ids and chat_id not in self._allowed_chat_ids:
+                denied = "chat is not allowlisted"
+                await self._actions.send_error_message(chat_id=chat_id, text=f"Permission denied: {denied}")
+                self._store.update_bot_update_status(
+                    update_id=update_id,
+                    status="failed",
+                    command="source_denied",
+                    error=denied,
+                )
+                self._store.add_audit_event(
+                    event_type="source_denied",
+                    chat_id=chat_id,
+                    update_id=update_id,
+                    action="reject",
+                    reason=denied,
+                )
+                return True
+
             self._store.upsert_telegram_chat(chat_id=chat_id, user_id=user_id, username=username)
+
+            within_limit, _ = self._store.check_and_increment_command_rate_limit(
+                chat_id=chat_id,
+                max_per_minute=self._limits.per_chat_per_minute,
+            )
+            if not within_limit:
+                msg = f"Rate limit exceeded: max {self._limits.per_chat_per_minute} commands/minute."
+                await self._actions.send_error_message(chat_id=chat_id, text=msg)
+                self._store.update_bot_update_status(
+                    update_id=update_id,
+                    status="failed",
+                    command="rate_limited",
+                    error=msg,
+                )
+                self._store.add_audit_event(
+                    event_type="rate_limited",
+                    chat_id=chat_id,
+                    update_id=update_id,
+                    action="reject",
+                    reason="per_chat_per_minute",
+                )
+                return True
+
             parsed = parse_telegram_command(text)
             if isinstance(parsed, CommandError):
                 await self._actions.send_error_message(chat_id=chat_id, text=parsed.message)
@@ -67,6 +141,24 @@ class TelegramGateway:
                     status="failed",
                     command="invalid_command",
                     error=parsed.message,
+                )
+                return True
+
+            if parsed.name not in self._allowed_commands:
+                error = f"Command not allowlisted: {parsed.name}"
+                await self._actions.send_error_message(chat_id=chat_id, text=error)
+                self._store.update_bot_update_status(
+                    update_id=update_id,
+                    status="failed",
+                    command="command_denied",
+                    error=error,
+                )
+                self._store.add_audit_event(
+                    event_type="command_denied",
+                    chat_id=chat_id,
+                    update_id=update_id,
+                    action=parsed.name,
+                    reason="command_not_allowlisted",
                 )
                 return True
 
@@ -79,11 +171,23 @@ class TelegramGateway:
                     symbol=parsed.args["symbol"],
                 )
             elif parsed.name == "monitor":
-                result = await self._actions.handle_monitor(
-                    chat_id=chat_id,
-                    symbol=parsed.args["symbol"],
-                    interval_sec=int(parsed.args["interval_sec"]),
-                )
+                if self._store.is_degradation_active(state_key="no_monitor_push"):
+                    reason = "monitor push paused due to SLO degradation"
+                    await self._actions.send_error_message(chat_id=chat_id, text=reason)
+                    self._store.add_audit_event(
+                        event_type="degrade_skip",
+                        chat_id=chat_id,
+                        update_id=update_id,
+                        action="monitor",
+                        reason=reason,
+                    )
+                    result = type("ActionResult", (), {"command": "monitor_skipped", "request_id": None})()
+                else:
+                    result = await self._actions.handle_monitor(
+                        chat_id=chat_id,
+                        symbol=parsed.args["symbol"],
+                        interval_sec=int(parsed.args["interval_sec"]),
+                    )
             elif parsed.name == "list":
                 result = await self._actions.handle_list(chat_id=chat_id)
             elif parsed.name == "stop":
@@ -102,6 +206,7 @@ class TelegramGateway:
                 request_id=result.request_id,
                 error=None,
             )
+            self._store.record_metric(metric_name="command_success", metric_value=1.0, tags={"command": parsed.name})
             return True
         except Exception as exc:
             self._store.update_bot_update_status(
@@ -112,6 +217,9 @@ class TelegramGateway:
                 error=str(exc),
             )
             raise
+        finally:
+            latency_ms = (time.perf_counter() - started_at) * 1000
+            self._store.record_metric(metric_name="command_latency_ms", metric_value=latency_ms)
 
     async def process_pending_updates(self, *, limit: int = 100) -> int:
         pending_update_ids = self._store.list_pending_bot_update_ids(limit=limit)
@@ -119,6 +227,7 @@ class TelegramGateway:
         for update_id in pending_update_ids:
             if await self.process_enqueued_update(update_id=update_id):
                 handled += 1
+        handled += await self._actions.process_due_analysis_recovery(limit=limit)
         return handled
 
     async def process_updates(self, updates: list[dict[str, Any]]) -> int:

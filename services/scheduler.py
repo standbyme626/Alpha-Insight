@@ -5,8 +5,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable
 
+from services.reliability_governor import ReliabilityGovernor
 from services.telegram_store import TelegramTaskStore
-from services.watch_executor import WatchExecutor, WatchExecutionResult
+from services.watch_executor import WatchExecutionResult, WatchExecutor
 
 
 @dataclass
@@ -15,6 +16,7 @@ class SchedulerTickResult:
     executed_jobs: int
     pushed_notifications: int
     dedupe_suppressed_count: int
+    retried_notifications: int
 
 
 class TelegramWatchScheduler:
@@ -23,12 +25,14 @@ class TelegramWatchScheduler:
         *,
         store: TelegramTaskStore,
         executor: WatchExecutor,
+        governor: ReliabilityGovernor | None = None,
         poll_interval_seconds: float = 1.0,
         batch_size: int = 20,
         now_provider: Callable[[], datetime] | None = None,
     ):
         self._store = store
         self._executor = executor
+        self._governor = governor or ReliabilityGovernor(store=store)
         self._poll_interval_seconds = poll_interval_seconds
         self._batch_size = batch_size
         self._now_provider = now_provider or (lambda: datetime.now(timezone.utc))
@@ -46,14 +50,20 @@ class TelegramWatchScheduler:
                 pushed_notifications += outcome.pushed_count
                 dedupe_suppressed_count += outcome.dedupe_suppressed_count
                 self._store.mark_watch_job_error(job_id=job.job_id, error=None)
-            except Exception as exc:  # pragma: no cover - defensive runtime branch.
+            except Exception as exc:  # pragma: no cover
                 self._store.mark_watch_job_error(job_id=job.job_id, error=str(exc))
+
+        retried_notifications = 0
+        if hasattr(self._executor, "process_retry_queue"):
+            retried_notifications = await self._executor.process_retry_queue(limit=self._batch_size)
+        self._governor.evaluate(now=self._now_provider())
 
         return SchedulerTickResult(
             claimed_jobs=len(jobs),
             executed_jobs=executed_jobs,
             pushed_notifications=pushed_notifications,
             dedupe_suppressed_count=dedupe_suppressed_count,
+            retried_notifications=retried_notifications,
         )
 
     async def run_forever(self) -> None:

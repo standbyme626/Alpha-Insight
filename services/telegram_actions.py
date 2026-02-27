@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Protocol
 
 from agents.workflow_engine import run_unified_research
+from services.runtime_controls import GlobalConcurrencyGate, RuntimeLimits
 from services.telegram_store import TelegramTaskStore
 
 
@@ -30,11 +33,15 @@ class TelegramActions:
         notifier: MessageSender,
         research_runner: ResearchRunner = run_unified_research,
         analysis_timeout_seconds: float = 90.0,
+        limits: RuntimeLimits | None = None,
+        global_gate: GlobalConcurrencyGate | None = None,
     ):
         self._store = store
         self._notifier = notifier
         self._research_runner = research_runner
         self._analysis_timeout_seconds = analysis_timeout_seconds
+        self._limits = limits or RuntimeLimits()
+        self._global_gate = global_gate or GlobalConcurrencyGate(self._limits.global_concurrency)
 
     async def handle_help(self, *, chat_id: str) -> ActionResult:
         await self._notifier.send_text(
@@ -75,6 +82,8 @@ class TelegramActions:
             symbol=symbol,
             request_text=f"Analyze {symbol}",
             chat_id=chat_id,
+            timeout_seconds=self._analysis_timeout_seconds,
+            timeout_retry_count=0,
         )
         return ActionResult(command="analyze", request_id=rid)
 
@@ -83,6 +92,22 @@ class TelegramActions:
             await self._notifier.send_text(
                 chat_id,
                 "Permission denied: this chat is not allowed to create monitor jobs.",
+            )
+            return ActionResult(command="monitor")
+
+        active_jobs = self._store.count_active_watch_jobs(chat_id=chat_id)
+        if active_jobs >= self._limits.max_watch_jobs_per_chat:
+            await self._notifier.send_text(
+                chat_id,
+                f"Quota exceeded: max monitor jobs per chat is {self._limits.max_watch_jobs_per_chat}.",
+            )
+            self._store.add_audit_event(
+                event_type="quota_exceeded",
+                chat_id=chat_id,
+                update_id=None,
+                action="monitor",
+                reason="max_watch_jobs_per_chat",
+                metadata={"active_jobs": active_jobs},
             )
             return ActionResult(command="monitor")
 
@@ -135,6 +160,21 @@ class TelegramActions:
         await self._notifier.send_text(chat_id, f"Stopped {disabled} monitor job(s) for target={target}")
         return ActionResult(command="stop")
 
+    async def process_due_analysis_recovery(self, *, limit: int = 10) -> int:
+        due = self._store.claim_due_analysis_recovery(limit=limit)
+        handled = 0
+        for item in due:
+            await self._run_analysis_request(
+                request_id=item.request_id,
+                symbol=item.symbol,
+                request_text=f"Analyze {item.symbol}",
+                chat_id=item.chat_id,
+                timeout_seconds=max(self._analysis_timeout_seconds, 180.0),
+                timeout_retry_count=item.retry_count,
+            )
+            handled += 1
+        return handled
+
     async def _run_analysis_request(
         self,
         *,
@@ -142,19 +182,23 @@ class TelegramActions:
         symbol: str,
         request_text: str,
         chat_id: str,
+        timeout_seconds: float,
+        timeout_retry_count: int,
     ) -> None:
         transitioned = self._store.transition_analysis_request_status(
             request_id=request_id,
-            from_statuses=("queued",),
+            from_statuses=("queued", "timeout"),
             to_status="running",
         )
         if not transitioned:
             return
+        start = time.perf_counter()
         try:
-            result = await asyncio.wait_for(
-                self._research_runner(request=request_text, symbol=symbol),
-                timeout=self._analysis_timeout_seconds,
-            )
+            async with self._global_gate.acquire():
+                result = await asyncio.wait_for(
+                    self._research_runner(request=request_text, symbol=symbol),
+                    timeout=timeout_seconds,
+                )
             run_id = str(result.get("run_id", ""))
             self._store.transition_analysis_request_status(
                 request_id=request_id,
@@ -164,6 +208,28 @@ class TelegramActions:
                 last_error=None,
             )
             await self._notifier.send_text(chat_id, f"Analysis completed. request_id={request_id}, run_id={run_id}")
+        except TimeoutError:
+            self._store.transition_analysis_request_status(
+                request_id=request_id,
+                from_statuses=("running",),
+                to_status="timeout",
+                run_id=None,
+                last_error="analysis timeout",
+            )
+            retry_count = timeout_retry_count + 1
+            backoff_seconds = min(300, 30 * (2 ** max(0, retry_count - 1)))
+            self._store.enqueue_analysis_recovery(
+                request_id=request_id,
+                chat_id=chat_id,
+                symbol=symbol,
+                retry_count=retry_count,
+                next_retry_at=datetime.now(timezone.utc) + timedelta(seconds=backoff_seconds),
+                last_error="analysis timeout",
+            )
+            await self._notifier.send_text(
+                chat_id,
+                f"Analysis timeout. request_id={request_id}. Result will be retried in background.",
+            )
         except Exception as exc:
             self._store.transition_analysis_request_status(
                 request_id=request_id,
@@ -173,3 +239,6 @@ class TelegramActions:
                 last_error=str(exc),
             )
             await self._notifier.send_text(chat_id, f"Analysis failed. request_id={request_id}, error={exc}")
+        finally:
+            latency_ms = (time.perf_counter() - start) * 1000
+            self._store.record_metric(metric_name="analysis_latency_ms", metric_value=latency_ms, tags={"chat_id": chat_id})
