@@ -1610,11 +1610,13 @@ class TelegramTaskStore:
         *,
         chat_id: str,
         max_per_minute: int,
+        rate_scope: str = "command",
         now: datetime | None = None,
     ) -> tuple[bool, int]:
         current = now or _utc_now_dt()
         window_start = current.replace(second=0, microsecond=0)
         window_iso = _isoformat(window_start)
+        scope_key = f"{rate_scope}:{chat_id}"
         with self._connect() as conn:
             conn.execute(
                 """
@@ -1622,7 +1624,7 @@ class TelegramTaskStore:
                 VALUES(?, ?, 0)
                 ON CONFLICT(chat_id, window_start) DO NOTHING
                 """,
-                (str(chat_id), window_iso),
+                (scope_key, window_iso),
             )
             row = conn.execute(
                 """
@@ -1630,7 +1632,7 @@ class TelegramTaskStore:
                 FROM command_rate_limits
                 WHERE chat_id = ? AND window_start = ?
                 """,
-                (str(chat_id), window_iso),
+                (scope_key, window_iso),
             ).fetchone()
             current_count = int(row["command_count"]) if row else 0
             if current_count >= max_per_minute:
@@ -1642,9 +1644,22 @@ class TelegramTaskStore:
                 SET command_count = ?
                 WHERE chat_id = ? AND window_start = ?
                 """,
-                (next_count, str(chat_id), window_iso),
+                (next_count, scope_key, window_iso),
             )
             return True, next_count
+
+    def count_recent_nl_requests(self, *, chat_id: str, since: datetime) -> int:
+        since_iso = _isoformat(since)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM nl_requests
+                WHERE chat_id = ? AND created_at >= ?
+                """,
+                (str(chat_id), since_iso),
+            ).fetchone()
+        return int(row["c"])
 
     def count_active_watch_jobs(self, *, chat_id: str) -> int:
         with self._connect() as conn:
@@ -2455,6 +2470,28 @@ class TelegramTaskStore:
 
         p95_command_latency = self._p95(self.metric_values(metric_name="command_latency_ms"))
         p95_analysis_latency = self._p95(self.metric_values(metric_name="analysis_latency_ms"))
+        llm_parse_latency_p95 = self._p95(self.metric_values(metric_name="llm_parse_latency_ms"))
+
+        llm_parse_total = self.count_metric_events(metric_name="llm_parse_total")
+        llm_parse_failed = self.count_metric_events(metric_name="llm_parse_failed")
+        llm_parse_fail_rate = (llm_parse_failed / llm_parse_total) if llm_parse_total else 0.0
+
+        nl_intent_total = self.count_metric_events(metric_name="nl_intent_total")
+        nl_intent_success = self.count_metric_events(metric_name="nl_intent_success")
+        nl_intent_reject = self.count_metric_events(metric_name="nl_intent_reject")
+        nl_intent_fallback_help = self.count_metric_events(metric_name="nl_intent_fallback_help")
+        nl_confirm_timeout_count = self.count_metric_events(metric_name="nl_confirm_timeout_count")
+        nl_dedupe_suppressed_count = self.count_metric_events(metric_name="nl_dedupe_suppressed_count")
+        nl_clarify_asked_total = self.count_metric_events(metric_name="nl_clarify_asked_total")
+        nl_clarify_resolved_total = self.count_metric_events(metric_name="nl_clarify_resolved_total")
+        nl_clarify_resolved_rate = (
+            nl_clarify_resolved_total / nl_clarify_asked_total if nl_clarify_asked_total else 1.0
+        )
+
+        chart_attempt_total = self.count_metric_events(metric_name="chart_render_attempt_total")
+        chart_fail_total = self.count_metric_events(metric_name="chart_render_fail_total")
+        chart_render_fail_rate = (chart_fail_total / chart_attempt_total) if chart_attempt_total else 0.0
+        chart_payload_bytes_p95 = self._p95(self.metric_values(metric_name="chart_payload_bytes"))
 
         duplicate_update_dropped = self.count_metric_events(metric_name="duplicate_update_dropped")
         dedupe_suppressed = int(sum(self.metric_values(metric_name="dedupe_suppressed_count")))
@@ -2467,6 +2504,18 @@ class TelegramTaskStore:
             "p95_analysis_latency": round(p95_analysis_latency, 3),
             "duplicate_update_dropped": duplicate_update_dropped,
             "dedupe_suppressed_count": dedupe_suppressed,
+            "nl_intent_total": nl_intent_total,
+            "nl_intent_success": nl_intent_success,
+            "nl_intent_reject": nl_intent_reject,
+            "nl_intent_fallback_help": nl_intent_fallback_help,
+            "nl_confirm_timeout_count": nl_confirm_timeout_count,
+            "llm_parse_latency_p95": round(llm_parse_latency_p95, 3),
+            "llm_parse_fail_rate": round(llm_parse_fail_rate, 4),
+            "nl_dedupe_suppressed_count": nl_dedupe_suppressed_count,
+            "nl_clarify_asked_total": nl_clarify_asked_total,
+            "nl_clarify_resolved_rate": round(nl_clarify_resolved_rate, 4),
+            "chart_render_fail_rate": round(chart_render_fail_rate, 4),
+            "chart_payload_bytes_p95": round(chart_payload_bytes_p95, 3),
             "retry_queue_depth": self.count_retry_queue_depth(),
             "dlq_count": self.count_dlq(),
             "notification_state_transition_total": self.count_notification_state_transitions(),

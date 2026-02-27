@@ -14,6 +14,14 @@ _ALLOWED_INTERVALS = {"1m", "5m", "15m", "30m", "1h", "4h", "1d", "24h"}
 _ALLOWED_ANALYZE_PERIODS = {"5d", "1mo", "3mo", "6mo", "1y"}
 _ALLOWED_TEMPLATES = {"volatility", "price", "rsi"}
 _ALLOWED_ROUTE_STRATEGIES = {"telegram_only", "webhook_only", "dual_channel"}
+_MAX_NL_TEXT_CHARS = 800
+_PROMPT_INJECTION_PATTERNS = [
+    re.compile(r"ignore\s+(all|the)\s+(previous|prior|above)\s+(instructions?|prompts?)", re.IGNORECASE),
+    re.compile(r"(system|developer)\s*[:：]\s*", re.IGNORECASE),
+    re.compile(r"you\s+are\s+chatgpt", re.IGNORECASE),
+    re.compile(r"(reveal|show|print).{0,24}(system prompt|hidden prompt|developer message)", re.IGNORECASE),
+    re.compile(r"</?system>", re.IGNORECASE),
+]
 
 _TEMPLATE_MODE_THRESHOLD = {
     "volatility": ("anomaly", 0.03),
@@ -38,6 +46,22 @@ class NLUPlan:
 
 def normalize_text(text: str) -> str:
     return " ".join((text or "").strip().split())
+
+
+def sanitize_user_text(text: str) -> str:
+    compact = "".join(ch for ch in (text or "") if ch.isprintable())
+    normalized = normalize_text(compact)
+    return normalized[:_MAX_NL_TEXT_CHARS]
+
+
+def detect_prompt_injection_risk(text: str) -> str | None:
+    value = text or ""
+    if not value:
+        return "empty_input"
+    for pattern in _PROMPT_INJECTION_PATTERNS:
+        if pattern.search(value):
+            return "prompt_injection_pattern"
+    return None
 
 
 def hash_text(text: str) -> str:

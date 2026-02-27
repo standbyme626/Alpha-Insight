@@ -5,13 +5,19 @@ import json
 import re
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 import aiohttp
 
 from agents.telegram_command_router import CommandError, parse_telegram_command
-from agents.telegram_nlu_planner import NLUPlan, hash_text, normalize_text, plan_from_text
+from agents.telegram_nlu_planner import (
+    NLUPlan,
+    detect_prompt_injection_risk,
+    hash_text,
+    plan_from_text,
+    sanitize_user_text,
+)
 from services.runtime_controls import RuntimeLimits
 from services.telegram_actions import TelegramActions
 from services.telegram_store import TelegramTaskStore
@@ -33,6 +39,7 @@ class TelegramGateway:
         allowed_chat_ids: set[str] | None = None,
         allowed_commands: set[str] | None = None,
         gray_release_enabled: bool = False,
+        nlu_parser: Callable[[str], NLUPlan] = plan_from_text,
     ):
         self._store = store
         self._actions = actions
@@ -52,6 +59,7 @@ class TelegramGateway:
             "pref",
         }
         self._gray_release_enabled = gray_release_enabled
+        self._nlu_parser = nlu_parser
         self._offset = max(0, self._store.get_latest_update_id() + 1)
 
     @staticmethod
@@ -130,10 +138,66 @@ class TelegramGateway:
         now: datetime,
     ) -> tuple[str, str]:
         bucket = self._build_bucket(now, seconds=30)
-        text_key = f"{chat_id}:{normalized_text.lower()}:{bucket}"
+        text_key = f"{chat_id}:{hash_text(normalized_text.lower())}:{bucket}"
         slots_key = json.dumps(slots, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-        intent_key = f"{chat_id}:{intent}:{slots_key}:{bucket}"
+        intent_key = f"{chat_id}:{intent}:{hash_text(slots_key)}:{bucket}"
         return text_key, intent_key
+
+    def _evaluate_llm_degradation(self) -> None:
+        now = self._current_ts()
+        since = now - timedelta(minutes=max(1, int(self._limits.llm_degrade_window_minutes)))
+        total = self._store.count_metric_events(metric_name="llm_parse_total", since=since)
+        failed = self._store.count_metric_events(metric_name="llm_parse_failed", since=since)
+        fail_rate = (failed / total) if total else 0.0
+        min_samples = max(1, int(self._limits.llm_degrade_min_samples))
+        active = self._store.is_degradation_active(state_key="nl_command_hint_mode")
+        if total >= min_samples and fail_rate >= float(self._limits.llm_degrade_fail_rate_threshold):
+            if not active:
+                self._store.set_degradation_state(
+                    state_key="nl_command_hint_mode",
+                    status="active",
+                    reason=f"llm_parse_fail_rate={fail_rate:.2%}",
+                )
+            return
+        if active and fail_rate <= float(self._limits.llm_recover_fail_rate_threshold):
+            self._store.set_degradation_state(
+                state_key="nl_command_hint_mode",
+                status="recovered",
+                reason=f"llm_parse_fail_rate={fail_rate:.2%}",
+            )
+
+    async def _parse_nlu_plan(self, *, text: str) -> tuple[NLUPlan | None, str | None]:
+        attempts = max(1, int(self._limits.nl_parse_max_retries) + 1)
+        last_error: str | None = None
+        for _ in range(attempts):
+            started = time.perf_counter()
+            self._store.record_metric(metric_name="llm_parse_total", metric_value=1.0)
+            try:
+                plan = await asyncio.wait_for(
+                    asyncio.to_thread(self._nlu_parser, text),
+                    timeout=float(self._limits.nl_parse_timeout_seconds),
+                )
+                latency_ms = (time.perf_counter() - started) * 1000
+                self._store.record_metric(metric_name="llm_parse_latency_ms", metric_value=latency_ms)
+                self._evaluate_llm_degradation()
+                return plan, None
+            except Exception as exc:  # noqa: BLE001
+                latency_ms = (time.perf_counter() - started) * 1000
+                self._store.record_metric(metric_name="llm_parse_latency_ms", metric_value=latency_ms)
+                self._store.record_metric(metric_name="llm_parse_failed", metric_value=1.0, tags={"reason": str(exc)[:48]})
+                last_error = str(exc)
+        self._evaluate_llm_degradation()
+        return None, last_error
+
+    async def _send_fallback_help(self, *, chat_id: str, reason: str) -> None:
+        self._store.record_metric(metric_name="nl_intent_fallback_help", metric_value=1.0, tags={"reason": reason})
+        await self._actions.send_error_message(
+            chat_id=chat_id,
+            text=(
+                f"已降级为命令提示模式 (Fallback to command hints): {reason}\n"
+                "请使用命令：/analyze <symbol> 或 /monitor <symbol> <interval>"
+            ),
+        )
 
     async def _send_nl_reject(self, *, chat_id: str, reason: str, template: str) -> None:
         await self._actions.send_error_message(
@@ -189,6 +253,20 @@ class TelegramGateway:
                     route_strategy=str(slots.get("route_strategy", "dual_channel")),
                 )
             else:
+                want_chart = bool(slots.get("need_chart", False))
+                fail_before = self._store.count_metric_events(metric_name="chart_render_fail_rate") if want_chart else 0
+                if want_chart:
+                    self._store.record_metric(metric_name="chart_render_attempt_total", metric_value=1.0)
+                    if self._store.is_degradation_active(state_key="chart_text_only"):
+                        slots = dict(slots)
+                        slots["need_chart"] = False
+                        self._store.add_audit_event(
+                            event_type="degrade_skip",
+                            chat_id=record.chat_id,
+                            update_id=update_id,
+                            action="analyze_snapshot_chart",
+                            reason="chart_text_only",
+                        )
                 await self._actions.handle_analyze_snapshot(
                     chat_id=record.chat_id,
                     symbol=str(slots.get("symbol", "")).upper(),
@@ -198,6 +276,11 @@ class TelegramGateway:
                     need_news=bool(slots.get("need_news", False)),
                     request_id=record.request_id,
                 )
+                if want_chart:
+                    fail_after = self._store.count_metric_events(metric_name="chart_render_fail_rate")
+                    if fail_after > fail_before or bool(slots.get("need_chart", False)) is False:
+                        self._store.record_metric(metric_name="chart_render_fail_total", metric_value=1.0)
+                    self._evaluate_chart_degradation()
             self._store.set_nl_request_status(
                 request_id=request_id,
                 to_status="completed",
@@ -228,6 +311,30 @@ class TelegramGateway:
                 error=str(exc),
             )
             raise
+
+    def _evaluate_chart_degradation(self) -> None:
+        now = self._current_ts()
+        since = now - timedelta(minutes=max(1, int(self._limits.chart_degrade_window_minutes)))
+        attempts = self._store.count_metric_events(metric_name="chart_render_attempt_total", since=since)
+        fails = self._store.count_metric_events(metric_name="chart_render_fail_total", since=since)
+        fail_rate = (fails / attempts) if attempts else 0.0
+        active = self._store.is_degradation_active(state_key="chart_text_only")
+        if attempts >= max(1, int(self._limits.chart_degrade_min_samples)) and fail_rate >= float(
+            self._limits.chart_degrade_fail_rate_threshold
+        ):
+            if not active:
+                self._store.set_degradation_state(
+                    state_key="chart_text_only",
+                    status="active",
+                    reason=f"chart_render_fail_rate={fail_rate:.2%}",
+                )
+            return
+        if active and fail_rate <= float(self._limits.chart_recover_fail_rate_threshold):
+            self._store.set_degradation_state(
+                state_key="chart_text_only",
+                status="recovered",
+                reason=f"chart_render_fail_rate={fail_rate:.2%}",
+            )
 
     async def _cancel_pending_confirm(self, *, chat_id: str, update_id: int) -> bool:
         pending = self._store.get_pending_confirm_request(chat_id=chat_id)
@@ -614,10 +721,113 @@ class TelegramGateway:
                 )
                 return True
 
-            plan: NLUPlan = plan_from_text(text)
+            within_nl_limit, _ = self._store.check_and_increment_command_rate_limit(
+                chat_id=chat_id,
+                max_per_minute=self._limits.nl_per_chat_per_minute,
+                rate_scope="nl",
+            )
+            if not within_nl_limit:
+                await self._actions.send_error_message(
+                    chat_id=chat_id,
+                    text=f"NL 限流触发 (NL rate limit exceeded): {self._limits.nl_per_chat_per_minute}/min",
+                )
+                self._store.update_bot_update_status(
+                    update_id=update_id,
+                    status="failed",
+                    command="nl_rate_limited",
+                    error="nl_per_chat_per_minute",
+                )
+                self._store.add_audit_event(
+                    event_type="rate_limited",
+                    chat_id=chat_id,
+                    update_id=update_id,
+                    action="nl",
+                    reason="nl_per_chat_per_minute",
+                )
+                return True
+
+            nl_quota_used = self._store.count_recent_nl_requests(chat_id=chat_id, since=self._current_ts() - timedelta(days=1))
+            if nl_quota_used >= max(1, int(self._limits.nl_per_chat_per_day)):
+                await self._actions.send_error_message(
+                    chat_id=chat_id,
+                    text=f"NL 配额已用尽 (NL quota exceeded): {self._limits.nl_per_chat_per_day}/24h",
+                )
+                self._store.update_bot_update_status(
+                    update_id=update_id,
+                    status="failed",
+                    command="nl_quota_exceeded",
+                    error="nl_per_chat_per_day",
+                )
+                self._store.add_audit_event(
+                    event_type="quota_exceeded",
+                    chat_id=chat_id,
+                    update_id=update_id,
+                    action="nl",
+                    reason="nl_per_chat_per_day",
+                    metadata={"used_24h": nl_quota_used},
+                )
+                return True
+
+            normalized = sanitize_user_text(text)
+            self._store.record_metric(metric_name="nl_intent_total", metric_value=1.0)
+            if self._store.is_degradation_active(state_key="nl_command_hint_mode"):
+                await self._send_fallback_help(chat_id=chat_id, reason="llm_degraded")
+                self._store.update_bot_update_status(
+                    update_id=update_id,
+                    status="processed",
+                    command="nl_fallback_help",
+                    error=None,
+                )
+                self._store.add_audit_event(
+                    event_type="degrade_skip",
+                    chat_id=chat_id,
+                    update_id=update_id,
+                    action="nl",
+                    reason="nl_command_hint_mode",
+                )
+                return True
+
+            injection_reason = detect_prompt_injection_risk(normalized)
+            if injection_reason is not None:
+                self._store.record_metric(metric_name="nl_intent_reject", metric_value=1.0, tags={"reason": injection_reason})
+                await self._send_nl_reject(chat_id=chat_id, reason=injection_reason, template="/help")
+                self._store.update_bot_update_status(
+                    update_id=update_id,
+                    status="processed",
+                    command="nl_rejected",
+                    error=None,
+                )
+                self._store.add_audit_event(
+                    event_type="nl_rejected",
+                    chat_id=chat_id,
+                    update_id=update_id,
+                    action="nl",
+                    reason=injection_reason,
+                    metadata={"raw_text_hash": hash_text(text), "reject_reason": injection_reason, "confidence": 0.0},
+                )
+                return True
+
+            plan, parse_error = await self._parse_nlu_plan(text=normalized)
+            if plan is None:
+                await self._send_fallback_help(chat_id=chat_id, reason="llm_parse_unavailable")
+                self._store.update_bot_update_status(
+                    update_id=update_id,
+                    status="processed",
+                    command="nl_fallback_help",
+                    error=parse_error,
+                )
+                self._store.add_audit_event(
+                    event_type="degrade_skip",
+                    chat_id=chat_id,
+                    update_id=update_id,
+                    action="nl",
+                    reason="llm_parse_unavailable",
+                    metadata={"raw_text_hash": hash_text(text)},
+                )
+                return True
+
             now = self._current_ts()
             request_id = f"nlr-{uuid4().hex[:10]}"
-            normalized = normalize_text(text)
             text_key, intent_key = self._build_dedupe_keys(
                 chat_id=chat_id,
                 normalized_text=normalized,
@@ -636,7 +846,7 @@ class TelegramGateway:
                 status="queued",
                 text_dedupe_key=text_key,
                 intent_dedupe_key=intent_key,
-                normalized_text=normalized,
+                normalized_text=hash_text(normalized),
                 normalized_request=plan.normalized_request,
                 action_version=plan.action_version,
                 risk_level=plan.risk_level,
