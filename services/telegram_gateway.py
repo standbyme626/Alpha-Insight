@@ -158,7 +158,7 @@ class TelegramGateway:
         record = self._store.get_nl_request(request_id=request_id)
         if record is None:
             return False
-        if record.intent != "create_monitor":
+        if record.intent not in {"create_monitor", "analyze_snapshot"}:
             self._store.set_nl_request_status(
                 request_id=request_id,
                 to_status="failed",
@@ -177,16 +177,27 @@ class TelegramGateway:
             return False
         slots = record.slots
         try:
-            await self._actions.handle_monitor(
-                chat_id=record.chat_id,
-                symbol=str(slots.get("symbol", "")),
-                symbols=[str(slots.get("symbol", ""))],
-                interval_sec=int(slots.get("interval_sec", 0)),
-                mode=str(slots.get("mode", "anomaly")),
-                threshold=float(slots.get("threshold", 0.03)),
-                template=str(slots.get("template", "volatility")),
-                route_strategy=str(slots.get("route_strategy", "dual_channel")),
-            )
+            if record.intent == "create_monitor":
+                await self._actions.handle_monitor(
+                    chat_id=record.chat_id,
+                    symbol=str(slots.get("symbol", "")),
+                    symbols=[str(slots.get("symbol", ""))],
+                    interval_sec=int(slots.get("interval_sec", 0)),
+                    mode=str(slots.get("mode", "anomaly")),
+                    threshold=float(slots.get("threshold", 0.03)),
+                    template=str(slots.get("template", "volatility")),
+                    route_strategy=str(slots.get("route_strategy", "dual_channel")),
+                )
+            else:
+                await self._actions.handle_analyze_snapshot(
+                    chat_id=record.chat_id,
+                    symbol=str(slots.get("symbol", "")).upper(),
+                    period=str(slots.get("period", "1mo")).lower(),
+                    interval=str(slots.get("interval", "1d")).lower(),
+                    need_chart=bool(slots.get("need_chart", False)),
+                    need_news=bool(slots.get("need_news", False)),
+                    request_id=record.request_id,
+                )
             self._store.set_nl_request_status(
                 request_id=request_id,
                 to_status="completed",

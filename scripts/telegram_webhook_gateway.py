@@ -12,7 +12,7 @@ from services.runtime_controls import GlobalConcurrencyGate, RuntimeLimits
 from services.telegram_actions import TelegramActions
 from services.telegram_gateway import TelegramGateway
 from services.telegram_store import TelegramTaskStore
-from tools.telegram import send_text
+from tools.telegram import send_photo, send_text
 
 
 class TelegramChatSender:
@@ -21,6 +21,9 @@ class TelegramChatSender:
 
     async def send_text(self, chat_id: str, text: str) -> dict[str, object]:
         return await send_text(self._bot_token, chat_id, text)
+
+    async def send_photo(self, chat_id: str, image_path: str, caption: str = "") -> dict[str, object]:
+        return await send_photo(self._bot_token, chat_id, image_path, caption)
 
 
 def parse_args() -> argparse.Namespace:

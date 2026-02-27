@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -17,9 +18,14 @@ from services.watch_executor import WatchExecutor
 class FakeChatSender:
     def __init__(self) -> None:
         self.messages: list[tuple[str, str]] = []
+        self.photos: list[tuple[str, str, str]] = []
 
     async def send_text(self, chat_id: str, text: str) -> dict[str, object]:
         self.messages.append((chat_id, text))
+        return {"ok": True}
+
+    async def send_photo(self, chat_id: str, image_path: str, caption: str = "") -> dict[str, object]:
+        self.photos.append((chat_id, image_path, caption))
         return {"ok": True}
 
 
@@ -509,3 +515,96 @@ async def test_phase_a_monitor_command_compatibility_no_regression(tmp_path) -> 
     jobs = store.list_watch_jobs(chat_id="chat-a4")
     assert len(jobs) == 1
     assert jobs[0].mode == "rsi_extreme"
+
+
+@pytest.mark.asyncio
+async def test_phase_b_analyze_snapshot_nl_returns_text_and_photo(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+    chart = Path(tmp_path / "chart_week3.png")
+    chart.write_bytes(b"\x89PNG\r\n" + b"A" * 1024)
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {
+            "run_id": "run-b1",
+            "fused_insights": {"summary": "Tencent momentum is positive."},
+            "metrics": {"data_close": 321.0, "technical_rsi_14": 58.3},
+            "sandbox_artifacts": {"stdout": f"ARTIFACT_PNG={chart}\n"},
+            **kwargs,
+        }
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    update = {"update_id": 21001, "message": {"chat": {"id": "chat-b1"}, "text": "我要看腾讯一个月涨跌，发K线图和综合分析"}}
+    assert await gateway.process_update(update)
+
+    latest = sender.messages[-1][1]
+    assert "Snapshot Analysis" in latest
+    assert "run_id=run-b1" in latest
+    assert sender.photos
+    assert sender.photos[-1][0] == "chat-b1"
+    with store._connect() as conn:  # noqa: SLF001
+        row = conn.execute("SELECT request_id FROM bot_updates WHERE update_id = ?", (21001,)).fetchone()
+    assert row is not None and row["request_id"]
+    req = store.get_nl_request(request_id=str(row["request_id"]))
+    assert req is not None
+    assert req.intent == "analyze_snapshot"
+    assert req.slots["symbol"] == "0700.HK"
+
+
+@pytest.mark.asyncio
+async def test_phase_b_analyze_snapshot_chart_failure_degrades_to_text(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+    huge_chart = Path(tmp_path / "huge_chart.png")
+    huge_chart.write_bytes(b"\x89PNG\r\n" + b"B" * (6 * 1024 * 1024))
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {
+            "run_id": "run-b2",
+            "fused_insights": {"summary": "Chart unavailable should fallback."},
+            "metrics": {"data_close": 320.0},
+            "sandbox_artifacts": {"stdout": f"ARTIFACT_PNG={huge_chart}\n"},
+            **kwargs,
+        }
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    update = {"update_id": 21002, "message": {"chat": {"id": "chat-b2"}, "text": "分析腾讯一个月走势并发图"}}
+    assert await gateway.process_update(update)
+    assert sender.messages
+    assert sender.photos == []
+    fail_metrics = store.metric_values(metric_name="chart_render_fail_rate")
+    assert fail_metrics
+
+
+@pytest.mark.asyncio
+async def test_phase_b_analyze_snapshot_dedupe_requires_double_key_hit(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+    calls = {"n": 0}
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        calls["n"] += 1
+        return {
+            "run_id": f"run-b3-{calls['n']}",
+            "fused_insights": {"summary": "ok"},
+            "metrics": {"data_close": 100.0},
+            "sandbox_artifacts": {"stdout": ""},
+            **kwargs,
+        }
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    first = {"update_id": 21003, "message": {"chat": {"id": "chat-b3"}, "text": "腾讯一个月涨跌"}}
+    second = {"update_id": 21004, "message": {"chat": {"id": "chat-b3"}, "text": "分析腾讯一个月走势"}}
+    third = {"update_id": 21005, "message": {"chat": {"id": "chat-b3"}, "text": "腾讯一个月涨跌"}}
+
+    assert await gateway.process_update(first)
+    assert await gateway.process_update(second)
+    assert calls["n"] == 2
+    assert await gateway.process_update(third)
+    assert calls["n"] == 2

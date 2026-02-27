@@ -8,6 +8,7 @@ from typing import Any, Awaitable, Callable, Protocol
 
 from agents.workflow_engine import run_unified_research
 from services.runtime_controls import GlobalConcurrencyGate, RuntimeLimits
+from services.telegram_chart_service import TelegramChartService
 from services.telegram_store import TelegramTaskStore
 
 
@@ -35,6 +36,7 @@ class TelegramActions:
         analysis_timeout_seconds: float = 90.0,
         limits: RuntimeLimits | None = None,
         global_gate: GlobalConcurrencyGate | None = None,
+        chart_service: TelegramChartService | None = None,
     ):
         self._store = store
         self._notifier = notifier
@@ -42,6 +44,7 @@ class TelegramActions:
         self._analysis_timeout_seconds = analysis_timeout_seconds
         self._limits = limits or RuntimeLimits()
         self._global_gate = global_gate or GlobalConcurrencyGate(self._limits.global_concurrency)
+        self._chart_service = chart_service or TelegramChartService()
 
     async def handle_help(self, *, chat_id: str) -> ActionResult:
         await self._notifier.send_text(
@@ -94,6 +97,82 @@ class TelegramActions:
             timeout_retry_count=0,
         )
         return ActionResult(command="analyze", request_id=rid)
+
+    async def handle_analyze_snapshot(
+        self,
+        *,
+        chat_id: str,
+        symbol: str,
+        period: str,
+        interval: str,
+        need_chart: bool,
+        need_news: bool,
+        request_id: str | None = None,
+    ) -> ActionResult:
+        request_text = (
+            f"Analyze snapshot for {symbol} period={period} interval={interval} "
+            f"need_news={str(bool(need_news)).lower()}"
+        )
+        async with self._global_gate.acquire():
+            result = await asyncio.wait_for(
+                self._research_runner(
+                    request=request_text,
+                    symbol=symbol,
+                    period=period,
+                    interval=interval,
+                    news_limit=8 if need_news else 0,
+                ),
+                timeout=self._analysis_timeout_seconds,
+            )
+
+        run_id = str(result.get("run_id", "")).strip()
+        summary = str(((result.get("fused_insights") or {}).get("summary") or "")).strip() or "No summary."
+        metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+        if run_id:
+            self._store.upsert_analysis_report(
+                run_id=run_id,
+                request_id=request_id or run_id,
+                chat_id=chat_id,
+                symbol=symbol,
+                summary=summary,
+                key_metrics=metrics,
+            )
+        close_price = metrics.get("data_close")
+        rsi = metrics.get("technical_rsi_14")
+        metric_parts: list[str] = []
+        if close_price is not None:
+            metric_parts.append(f"close={round(float(close_price), 4)}")
+        if rsi is not None:
+            metric_parts.append(f"rsi14={round(float(rsi), 2)}")
+        metric_line = " ".join(metric_parts) if metric_parts else "N/A"
+        report_text = (
+            f"快照分析 (Snapshot Analysis): {symbol}\n"
+            f"关键指标 (Key metrics): {metric_line}\n"
+            f"结论 (Conclusion): {summary[:300]}\n"
+            f"run_id={run_id or 'N/A'}\n"
+            f"下一步 (Next): /report {run_id or '<run_id>'} full"
+        )
+
+        await self._notifier.send_text(chat_id, report_text)
+
+        if need_chart:
+            chart_candidate = self._chart_service.extract_chart_path(result)
+            chart_path, chart_size, chart_error = self._chart_service.ensure_chart_within_limit(chart_candidate)
+            if chart_size is not None:
+                self._store.record_metric(metric_name="chart_payload_bytes", metric_value=float(chart_size))
+            if chart_path is None:
+                self._store.record_metric(metric_name="chart_render_fail_rate", metric_value=1.0, tags={"reason": chart_error or "unknown"})
+            else:
+                sender = self._notifier
+                if hasattr(sender, "send_photo"):
+                    try:
+                        await sender.send_photo(chat_id, str(chart_path), caption=f"{symbol} {period}/{interval} chart")  # type: ignore[attr-defined]
+                    except Exception as exc:  # noqa: BLE001
+                        self._store.record_metric(metric_name="chart_render_fail_rate", metric_value=1.0, tags={"reason": str(exc)[:64]})
+                else:
+                    self._store.record_metric(metric_name="chart_render_fail_rate", metric_value=1.0, tags={"reason": "send_photo_unavailable"})
+
+        return ActionResult(command="analyze_snapshot", request_id=request_id)
 
     async def handle_monitor(
         self,
