@@ -14,7 +14,9 @@ from agents.telegram_command_router import CommandError, parse_telegram_command
 from agents.telegram_nlu_planner import (
     NLUPlan,
     detect_prompt_injection_risk,
+    extract_clarify_slots,
     hash_text,
+    parse_interval_to_seconds,
     plan_from_text,
     sanitize_user_text,
 )
@@ -30,6 +32,13 @@ def _mask_chat_id(chat_id: str) -> str:
 
 
 class TelegramGateway:
+    _CLARIFY_SLOT_WHITELIST = {"symbol", "period", "interval", "template", "market"}
+    _TEMPLATE_MODE_THRESHOLD = {
+        "volatility": ("anomaly", 0.03),
+        "price": ("price_breakout", 0.02),
+        "rsi": ("rsi_extreme", 70.0),
+    }
+
     def __init__(
         self,
         *,
@@ -253,6 +262,34 @@ class TelegramGateway:
                 return steps
         return TelegramGateway._default_plan_steps(intent)
 
+    def _resolve_clarify_followup(self, *, pending: Any, text: str) -> tuple[dict[str, Any], list[str]]:
+        followup_slots = extract_clarify_slots(text)
+        merged_slots = dict(pending.slots)
+        for key in self._CLARIFY_SLOT_WHITELIST:
+            value = followup_slots.get(key)
+            if value in (None, ""):
+                continue
+            merged_slots[key] = value
+
+        if pending.intent == "create_monitor":
+            interval = str(merged_slots.get("interval", "")).lower()
+            if interval:
+                merged_slots["interval"] = interval
+                merged_slots["interval_sec"] = parse_interval_to_seconds(interval)
+            template = str(merged_slots.get("template", "volatility")).lower()
+            mode, threshold = self._TEMPLATE_MODE_THRESHOLD.get(template, ("anomaly", 0.03))
+            merged_slots["template"] = template
+            merged_slots["mode"] = mode
+            merged_slots["threshold"] = threshold
+        if pending.intent == "stop_job":
+            symbol = str(merged_slots.get("symbol", "")).upper()
+            if symbol:
+                merged_slots["target"] = symbol
+                merged_slots["target_type"] = "symbol"
+
+        unresolved = [slot for slot in pending.missing_slots if not str(merged_slots.get(slot, "")).strip()]
+        return merged_slots, unresolved
+
     def _add_execution_evidence(
         self,
         *,
@@ -330,6 +367,10 @@ class TelegramGateway:
                 if self._store.is_degradation_active(state_key="chart_text_only"):
                     slots = dict(slots)
                     slots["need_chart"] = False
+                    await self._actions.send_error_message(
+                        chat_id=record.chat_id,
+                        text="图表服务降级中，已返回文本替代 (chart_text_only).",
+                    )
                     self._store.add_audit_event(
                         event_type="degrade_skip",
                         chat_id=record.chat_id,
@@ -937,24 +978,90 @@ class TelegramGateway:
                 )
                 return True
 
-            plan, parse_error = await self._parse_nlu_plan(text=normalized)
-            if plan is None:
-                await self._send_fallback_help(chat_id=chat_id, reason="llm_parse_unavailable")
-                self._store.update_bot_update_status(
-                    update_id=update_id,
-                    status="processed",
-                    command="nl_fallback_help",
-                    error=parse_error,
+            clarify_pending, clarify_expired = self._store.get_clarify_pending_state(chat_id=chat_id)
+            plan: NLUPlan | None = None
+            if clarify_pending is not None:
+                merged_slots, unresolved = self._resolve_clarify_followup(pending=clarify_pending, text=normalized)
+                self._store.clear_clarify_pending(chat_id=chat_id)
+                if clarify_expired:
+                    self._store.set_nl_request_status(
+                        request_id=clarify_pending.request_id,
+                        to_status="rejected",
+                        reject_reason="clarify_timeout",
+                        last_error="clarify_pending_expired",
+                    )
+                    self._store.record_metric(metric_name="nl_intent_reject", metric_value=1.0, tags={"reason": "clarify_timeout"})
+                    await self._actions.send_error_message(
+                        chat_id=chat_id,
+                        text=(
+                            "澄清已超时，请重新发起 (Clarify timeout).\n"
+                            f"可复制命令模板 (Command template): {clarify_pending.command_template}"
+                        ),
+                    )
+                    self._store.update_bot_update_status(
+                        update_id=update_id,
+                        status="processed",
+                        command="nl_clarify_timeout",
+                        request_id=clarify_pending.request_id,
+                        error=None,
+                    )
+                    return True
+                if unresolved:
+                    self._store.set_nl_request_status(
+                        request_id=clarify_pending.request_id,
+                        to_status="rejected",
+                        reject_reason="clarify_failed",
+                        last_error=f"missing_slots={','.join(unresolved)}",
+                    )
+                    self._store.record_metric(metric_name="nl_intent_reject", metric_value=1.0, tags={"reason": "clarify_failed"})
+                    await self._actions.send_error_message(
+                        chat_id=chat_id,
+                        text=(
+                            "澄清仍不完整，已拒绝执行 (Clarify incomplete).\n"
+                            f"可复制命令模板 (Command template): {clarify_pending.command_template}"
+                        ),
+                    )
+                    self._store.update_bot_update_status(
+                        update_id=update_id,
+                        status="processed",
+                        command="nl_clarify_failed",
+                        request_id=clarify_pending.request_id,
+                        error=None,
+                    )
+                    return True
+                self._store.record_metric(metric_name="nl_clarify_resolved_total", metric_value=1.0)
+                plan = NLUPlan(
+                    intent=clarify_pending.intent,
+                    slots=merged_slots,
+                    confidence=0.88,
+                    risk_level="high" if self._is_high_risk_intent(clarify_pending.intent) else "low",
+                    needs_confirm=self._is_high_risk_intent(clarify_pending.intent),
+                    normalized_request=f"clarify_followup:{clarify_pending.intent}",
+                    action_version=clarify_pending.action_version,
+                    explain="clarify follow-up resolved",
+                    command_template=clarify_pending.command_template,
+                    schema_version=clarify_pending.schema_version,
+                    plan_steps=self._default_plan_steps(clarify_pending.intent),
                 )
-                self._store.add_audit_event(
-                    event_type="degrade_skip",
-                    chat_id=chat_id,
-                    update_id=update_id,
-                    action="nl",
-                    reason="llm_parse_unavailable",
-                    metadata={"raw_text_hash": hash_text(text)},
-                )
-                return True
+            else:
+                plan, parse_error = await self._parse_nlu_plan(text=normalized)
+                if plan is None:
+                    await self._send_fallback_help(chat_id=chat_id, reason="llm_parse_unavailable")
+                    self._store.update_bot_update_status(
+                        update_id=update_id,
+                        status="processed",
+                        command="nl_fallback_help",
+                        error=parse_error,
+                    )
+                    self._store.add_audit_event(
+                        event_type="degrade_skip",
+                        chat_id=chat_id,
+                        update_id=update_id,
+                        action="nl",
+                        reason="llm_parse_unavailable",
+                        metadata={"raw_text_hash": hash_text(text)},
+                    )
+                    return True
 
             now = self._current_ts()
             request_id = f"nlr-{uuid4().hex[:10]}"
@@ -1021,38 +1128,49 @@ class TelegramGateway:
                 self._store.record_metric(metric_name="nl_clarify_asked_total", metric_value=1.0, tags={"slot": plan.clarify_slot})
                 self._store.set_nl_request_status(
                     request_id=request_id,
-                    to_status="rejected",
-                    reject_reason="clarify_failed",
-                    last_error=plan.explain,
+                    to_status="clarify_pending",
+                    reject_reason="clarify_needed",
+                    last_error=None,
+                )
+                clarify_slots = [slot for slot in (plan.clarify_slots_needed or [plan.clarify_slot]) if slot in self._CLARIFY_SLOT_WHITELIST]
+                self._store.upsert_clarify_pending(
+                    chat_id=chat_id,
+                    request_id=request_id,
+                    intent=plan.intent,
+                    slots=plan.slots,
+                    missing_slots=clarify_slots,
+                    command_template=plan.command_template,
+                    action_version=plan.action_version,
+                    schema_version=plan.schema_version,
+                    ttl_seconds=300,
                 )
                 clarify_question = plan.clarify_question or "请补充必要参数。"
                 await self._actions.send_error_message(
                     chat_id=chat_id,
                     text=(
                         f"{clarify_question}\n"
-                        f"仅支持一次澄清 (single clarify).\n"
+                        "请在 5 分钟内补充一次 (one follow-up within 5 minutes).\n"
                         f"可复制命令模板 (Command template): {plan.command_template}"
                     ),
                 )
                 self._store.add_audit_event(
-                    event_type="nl_rejected",
+                    event_type="nl_clarify_pending",
                     chat_id=chat_id,
                     update_id=update_id,
                     action=plan.intent,
-                    reason="clarify_failed",
+                    reason="clarify_needed",
                     metadata={
                         "raw_text_hash": hash_text(text),
                         "intent_candidate": plan.intent,
-                        "reject_reason": "clarify_failed",
+                        "reject_reason": "clarify_needed",
                         "clarify_slot": plan.clarify_slot,
                         "confidence": plan.confidence,
                     },
                 )
-                self._store.record_metric(metric_name="nl_intent_reject", metric_value=1.0, tags={"reason": "clarify_failed"})
                 self._store.update_bot_update_status(
                     update_id=update_id,
                     status="processed",
-                    command="nl_clarify_once",
+                    command="nl_clarify_pending",
                     request_id=request_id,
                     error=None,
                 )

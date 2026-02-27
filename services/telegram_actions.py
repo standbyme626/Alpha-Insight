@@ -46,6 +46,35 @@ class TelegramActions:
         self._global_gate = global_gate or GlobalConcurrencyGate(self._limits.global_concurrency)
         self._chart_service = chart_service or TelegramChartService()
 
+    @staticmethod
+    def _render_key_metrics(metrics: dict[str, Any]) -> tuple[str, str]:
+        close_price = metrics.get("data_close")
+        rsi = metrics.get("technical_rsi_14")
+        metric_parts: list[str] = []
+        missing: list[str] = []
+        if close_price is not None:
+            metric_parts.append(f"close={round(float(close_price), 4)}")
+        else:
+            missing.append("close")
+        if rsi is not None:
+            metric_parts.append(f"rsi14={round(float(rsi), 2)}")
+        else:
+            missing.append("rsi14")
+        if metric_parts:
+            return " ".join(metric_parts), ""
+        reason = f"缺失原因 (Missing): metrics unavailable ({','.join(missing)})"
+        return reason, reason
+
+    @staticmethod
+    def _chart_reason_text(reason: str) -> str:
+        mapping = {
+            "chart_missing": "chart artifact missing",
+            "chart_oversize": "chart payload too large",
+            "chart_render_error": "chart file invalid or render failed",
+            "send_photo_error": "telegram sendPhoto failed",
+        }
+        return mapping.get(reason, reason or "unknown")
+
     async def handle_help(self, *, chat_id: str) -> ActionResult:
         await self._notifier.send_text(
             chat_id,
@@ -137,14 +166,7 @@ class TelegramActions:
                 summary=summary,
                 key_metrics=metrics,
             )
-        close_price = metrics.get("data_close")
-        rsi = metrics.get("technical_rsi_14")
-        metric_parts: list[str] = []
-        if close_price is not None:
-            metric_parts.append(f"close={round(float(close_price), 4)}")
-        if rsi is not None:
-            metric_parts.append(f"rsi14={round(float(rsi), 2)}")
-        metric_line = " ".join(metric_parts) if metric_parts else "N/A"
+        metric_line, missing_reason = self._render_key_metrics(metrics)
         report_text = (
             f"快照分析 (Snapshot Analysis): {symbol}\n"
             f"关键指标 (Key metrics): {metric_line}\n"
@@ -154,6 +176,11 @@ class TelegramActions:
         )
 
         await self._notifier.send_text(chat_id, report_text)
+        self._store.record_metric(metric_name="analysis_response_total", metric_value=1.0)
+        if missing_reason:
+            self._store.record_metric(metric_name="analysis_explainable_total", metric_value=1.0)
+        elif metric_line:
+            self._store.record_metric(metric_name="analysis_explainable_total", metric_value=1.0)
 
         if need_chart:
             chart_candidate = self._chart_service.extract_chart_path(result)
@@ -161,16 +188,40 @@ class TelegramActions:
             if chart_size is not None:
                 self._store.record_metric(metric_name="chart_payload_bytes", metric_value=float(chart_size))
             if chart_path is None:
-                self._store.record_metric(metric_name="chart_render_fail_rate", metric_value=1.0, tags={"reason": chart_error or "unknown"})
+                reason = chart_error or "chart_render_error"
+                self._store.record_metric(metric_name="chart_render_fail_rate", metric_value=1.0, tags={"reason": reason})
+                await self._notifier.send_text(
+                    chat_id,
+                    (
+                        "图表降级为文本 (Chart downgraded to text): "
+                        f"{reason} ({self._chart_reason_text(reason)})."
+                    ),
+                )
             else:
                 sender = self._notifier
                 if hasattr(sender, "send_photo"):
                     try:
                         await sender.send_photo(chat_id, str(chart_path), caption=f"{symbol} {period}/{interval} chart")  # type: ignore[attr-defined]
                     except Exception as exc:  # noqa: BLE001
-                        self._store.record_metric(metric_name="chart_render_fail_rate", metric_value=1.0, tags={"reason": str(exc)[:64]})
+                        reason = "send_photo_error"
+                        self._store.record_metric(metric_name="chart_render_fail_rate", metric_value=1.0, tags={"reason": reason})
+                        await self._notifier.send_text(
+                            chat_id,
+                            (
+                                "图表降级为文本 (Chart downgraded to text): "
+                                f"{reason} ({self._chart_reason_text(reason)}). error={str(exc)[:80]}"
+                            ),
+                        )
                 else:
-                    self._store.record_metric(metric_name="chart_render_fail_rate", metric_value=1.0, tags={"reason": "send_photo_unavailable"})
+                    reason = "send_photo_error"
+                    self._store.record_metric(metric_name="chart_render_fail_rate", metric_value=1.0, tags={"reason": reason})
+                    await self._notifier.send_text(
+                        chat_id,
+                        (
+                            "图表降级为文本 (Chart downgraded to text): "
+                            f"{reason} ({self._chart_reason_text(reason)})."
+                        ),
+                    )
 
         return ActionResult(command="analyze_snapshot", request_id=request_id)
 
@@ -245,20 +296,27 @@ class TelegramActions:
             await self._notifier.send_text(chat_id, f"未找到报告 (No report found) `{target_id}`。")
             return ActionResult(command="report")
 
-        close_price = report.key_metrics.get("data_close")
-        rsi = report.key_metrics.get("technical_rsi_14")
-        metrics_text = []
-        if close_price is not None:
-            metrics_text.append(f"close={round(float(close_price), 4)}")
-        if rsi is not None:
-            metrics_text.append(f"rsi14={round(float(rsi), 2)}")
-        metrics_suffix = f"\n关键指标 (Key metrics): {' '.join(metrics_text)}" if metrics_text else ""
+        metrics_line, _ = self._render_key_metrics(report.key_metrics)
+        metrics_suffix = f"\n关键指标 (Key metrics): {metrics_line}" if metrics_line else ""
         summary = report.summary[:220] if detail == "short" else report.summary[:1200]
         help_suffix = "" if detail == "full" else f"\n查看完整摘要请用 (Use) `/report {target_id} full`."
+        evidence_suffix = ""
+        if detail == "full":
+            evidence = self._store.list_nl_execution_evidence(request_id=report.request_id, limit=10)
+            latest = evidence[0] if evidence else {}
+            confidence = "high" if metrics_line and "Missing" not in metrics_line else "medium"
+            evidence_suffix = (
+                "\n证据块 (Evidence):\n"
+                f"- data_window={report.created_at} -> {report.updated_at}\n"
+                f"- source=request_id:{report.request_id}\n"
+                f"- confidence_label={confidence}\n"
+                f"- schema_version={latest.get('schema_version', 'unknown')}\n"
+                f"- action_version={latest.get('action_version', 'unknown')}"
+            )
         await self._notifier.send_text(
             chat_id,
             f"报告摘要 (Report summary)\nrun_id={report.run_id}\nrequest_id={report.request_id}\n"
-            f"symbol={report.symbol}\nsummary={summary}{metrics_suffix}{help_suffix}",
+            f"symbol={report.symbol}\nsummary={summary}{metrics_suffix}{evidence_suffix}{help_suffix}",
         )
         self._store.record_metric(metric_name="report_lookup_success", metric_value=1.0)
         return ActionResult(command="report")

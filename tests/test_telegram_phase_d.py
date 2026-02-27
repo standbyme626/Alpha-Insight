@@ -709,6 +709,9 @@ async def test_phase_d_plan_steps_and_evidence_trace_versions(tmp_path) -> None:
     assert report["nl_execution_evidence_total"] >= 1
     assert report["nl_plan_step_total"] >= 1
     assert report["nl_evidence_mapped_total"] >= 1
+    assert "clarify_followup_success_rate" in report
+    assert "analysis_explainability_rate" in report
+    assert "chart_fail_reason_topk" in report
 
 
 @pytest.mark.asyncio
@@ -767,15 +770,15 @@ async def test_phase_d_clarify_once_returns_command_template(tmp_path) -> None: 
     gateway = TelegramGateway(store=store, actions=actions)
 
     assert await gateway.process_update({"update_id": 30041, "message": {"chat": {"id": "chat-dn5"}, "text": "帮我盯 每小时"}})
-    assert "single clarify" in sender.messages[-1][1]
+    assert "one follow-up within 5 minutes" in sender.messages[-1][1]
     assert "/monitor <symbol> <interval>" in sender.messages[-1][1]
     with store._connect() as conn:  # noqa: SLF001
         row = conn.execute("SELECT request_id FROM bot_updates WHERE update_id = 30041").fetchone()
     assert row is not None
     req = store.get_nl_request(request_id=str(row["request_id"]))
     assert req is not None
-    assert req.status == "rejected"
-    assert req.reject_reason == "clarify_failed"
+    assert req.status == "clarify_pending"
+    assert req.reject_reason == "clarify_needed"
     assert store.count_metric_events(metric_name="nl_clarify_asked_total") == 1
 
 
@@ -827,5 +830,96 @@ async def test_phase_d_chart_like_text_without_symbol_returns_clarify_template(t
     gateway = TelegramGateway(store=store, actions=actions)
 
     assert await gateway.process_update({"update_id": 30053, "message": {"chat": {"id": "chat-chart"}, "text": "看看k线图"}})
-    assert "single clarify" in sender.messages[-1][1]
+    assert "one follow-up within 5 minutes" in sender.messages[-1][1]
     assert "/analyze <symbol>" in sender.messages[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_phase_s_clarify_followup_success_executes_analysis(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {
+            "run_id": "run-s-followup",
+            "fused_insights": {"summary": "Follow-up resolved."},
+            "metrics": {"data_close": 100.0, "technical_rsi_14": 55.0},
+            **kwargs,
+        }
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 30101, "message": {"chat": {"id": "chat-s1"}, "text": "看看k线图"}})
+    assert await gateway.process_update({"update_id": 30102, "message": {"chat": {"id": "chat-s1"}, "text": "腾讯的"}})
+    assert any("Snapshot Analysis" in item[1] for item in sender.messages)
+    assert store.count_metric_events(metric_name="nl_clarify_resolved_total") == 1
+    assert store.get_clarify_pending(chat_id="chat-s1") is None
+
+
+@pytest.mark.asyncio
+async def test_phase_s_clarify_timeout_returns_template(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": "run-s-timeout", **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 30111, "message": {"chat": {"id": "chat-s2"}, "text": "看看k线图"}})
+    with store._connect() as conn:  # noqa: SLF001
+        conn.execute(
+            "UPDATE clarify_pending SET expires_at = ? WHERE chat_id = ?",
+            ("2000-01-01T00:00:00+00:00", "chat-s2"),
+        )
+    assert await gateway.process_update({"update_id": 30112, "message": {"chat": {"id": "chat-s2"}, "text": "腾讯的"}})
+    assert "Clarify timeout" in sender.messages[-1][1]
+    assert "/analyze <symbol>" in sender.messages[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_phase_s_chart_failure_reason_is_explainable(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+    huge_chart = Path(tmp_path / "huge_chart_phase_s.png")
+    huge_chart.write_bytes(b"\x89PNG\r\n" + b"C" * (6 * 1024 * 1024))
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {
+            "run_id": "run-s-chart",
+            "fused_insights": {"summary": "Chart fallback explainable."},
+            "metrics": {"data_close": 320.0},
+            "sandbox_artifacts": {"stdout": f"ARTIFACT_PNG={huge_chart}\n"},
+            **kwargs,
+        }
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 30121, "message": {"chat": {"id": "chat-s3"}, "text": "分析腾讯一个月走势并发图"}})
+    assert any("chart_oversize" in item[1] for item in sender.messages)
+    assert sender.photos == []
+
+
+@pytest.mark.asyncio
+async def test_phase_s_report_full_contains_evidence_block(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {
+            "run_id": "run-s-report",
+            "fused_insights": {"summary": "Report full evidence block."},
+            "metrics": {"data_close": 210.0, "technical_rsi_14": 61.0},
+            **kwargs,
+        }
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 30131, "message": {"chat": {"id": "chat-s4"}, "text": "分析腾讯一个月走势"}})
+    assert await gateway.process_update({"update_id": 30132, "message": {"chat": {"id": "chat-s4"}, "text": "/report run-s-report full"}})
+    assert "证据块 (Evidence)" in sender.messages[-1][1]
+    assert "schema_version=" in sender.messages[-1][1]

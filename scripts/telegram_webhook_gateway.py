@@ -109,12 +109,14 @@ async def _build_app(args: argparse.Namespace) -> web.Application:
     store = TelegramTaskStore(Path(args.db_path))
     notifier = TelegramChatSender(bot_token)
     actions = TelegramActions(store=store, notifier=notifier, limits=limits, global_gate=gate)
+    allowed_chat_ids_raw = os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "").strip() or os.getenv("TELEGRAM_CHAT_IDS", "").strip()
+    access_mode = os.getenv("TELEGRAM_ACCESS_MODE", "").strip().lower() or ("allowlist" if allowed_chat_ids_raw else "blacklist")
     gateway = TelegramGateway(
         store=store,
         actions=actions,
         limits=limits,
-        access_mode=os.getenv("TELEGRAM_ACCESS_MODE", "blacklist"),
-        allowed_chat_ids=_parse_csv_set(os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "")),
+        access_mode=access_mode,
+        allowed_chat_ids=_parse_csv_set(allowed_chat_ids_raw),
         blocked_chat_ids=_parse_csv_set(os.getenv("TELEGRAM_BLOCKED_CHAT_IDS", "")),
         allowed_commands=_parse_csv_set(
             os.getenv(

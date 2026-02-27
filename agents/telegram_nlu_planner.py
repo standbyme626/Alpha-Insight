@@ -47,6 +47,7 @@ class NLUPlan:
     plan_steps: list[dict[str, Any]] | None = None
     clarify_slot: str | None = None
     clarify_question: str | None = None
+    clarify_slots_needed: list[str] | None = None
 
 
 def normalize_text(text: str) -> str:
@@ -207,8 +208,38 @@ def _clarify(plan: NLUPlan, *, slot: str, question: str) -> NLUPlan:
     plan.reject_reason = "clarify_needed"
     plan.clarify_slot = slot
     plan.clarify_question = question
+    plan.clarify_slots_needed = [slot]
     plan.explain = f"clarify {slot}"
     return plan
+
+
+def extract_clarify_slots(text: str) -> dict[str, Any]:
+    normalized = normalize_text(text)
+    slots: dict[str, Any] = {}
+
+    symbol = _extract_symbol(normalized)
+    if symbol:
+        slots["symbol"] = symbol
+
+    interval = _extract_interval(normalized)
+    if interval:
+        slots["interval"] = interval.lower()
+
+    period = _extract_period(normalized)
+    if period:
+        slots["period"] = period.lower()
+
+    template = _extract_template(normalized)
+    if template in _ALLOWED_TEMPLATES:
+        slots["template"] = template
+
+    market_match = re.search(r"\b(us|hk|cn|a股|港股|美股)\b", normalized.lower())
+    if market_match:
+        raw_market = market_match.group(1)
+        market = {"a股": "cn", "港股": "hk", "美股": "us"}.get(raw_market, raw_market)
+        slots["market"] = market
+
+    return {key: value for key, value in slots.items() if key in _ALLOWED_CLARIFY_SLOTS}
 
 
 def _build_plan_steps(intent: str, *, need_chart: bool = False) -> list[dict[str, Any]]:

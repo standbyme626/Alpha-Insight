@@ -32,9 +32,9 @@ class TelegramChartService:
         if chart_path is None:
             return None, None, "chart_missing"
         if not chart_path.exists() or not chart_path.is_file():
-            return None, None, "chart_not_found"
+            return None, None, "chart_render_error"
 
         size = int(chart_path.stat().st_size)
         if size > self._max_payload_bytes:
-            return None, size, "chart_payload_too_large"
+            return None, size, "chart_oversize"
         return chart_path, size, None

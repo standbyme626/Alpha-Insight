@@ -149,6 +149,21 @@ class NLRequestRecord:
 
 
 @dataclass
+class ClarifyPendingRecord:
+    chat_id: str
+    request_id: str
+    intent: str
+    slots: dict[str, Any]
+    missing_slots: list[str]
+    command_template: str
+    action_version: str
+    schema_version: str
+    expires_at: str
+    created_at: str
+    updated_at: str
+
+
+@dataclass
 class NotificationRoute:
     chat_id: str
     channel: str
@@ -464,6 +479,23 @@ class TelegramTaskStore:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS clarify_pending (
+                    chat_id TEXT PRIMARY KEY,
+                    request_id TEXT NOT NULL,
+                    intent TEXT NOT NULL,
+                    slots TEXT NOT NULL,
+                    missing_slots TEXT NOT NULL,
+                    command_template TEXT NOT NULL,
+                    action_version TEXT NOT NULL,
+                    schema_version TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS degradation_states (
                     state_key TEXT PRIMARY KEY,
                     status TEXT NOT NULL,
@@ -534,6 +566,7 @@ class TelegramTaskStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_watch_events_created ON watch_events(created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_outbound_webhooks_chat_enabled ON outbound_webhooks(chat_id, enabled)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_metric_events_name_ts ON metric_events(metric_name, created_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_clarify_pending_expires ON clarify_pending(expires_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_ts ON audit_events(created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_analysis_reports_chat_created ON analysis_reports(chat_id, created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_notification_routes_chat_enabled ON notification_routes(chat_id, enabled)")
@@ -967,6 +1000,104 @@ class TelegramTaskStore:
                 (str(chat_id),),
             ).fetchone()
         return int(row["c"]) > 0
+
+    def upsert_clarify_pending(
+        self,
+        *,
+        chat_id: str,
+        request_id: str,
+        intent: str,
+        slots: dict[str, Any],
+        missing_slots: list[str],
+        command_template: str,
+        action_version: str,
+        schema_version: str,
+        ttl_seconds: int = 300,
+    ) -> None:
+        now = _utc_now_dt()
+        now_iso = _isoformat(now)
+        expires_at = _isoformat(now + timedelta(seconds=max(1, int(ttl_seconds))))
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO clarify_pending(
+                    chat_id, request_id, intent, slots, missing_slots, command_template,
+                    action_version, schema_version, expires_at, created_at, updated_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(chat_id) DO UPDATE SET
+                    request_id = excluded.request_id,
+                    intent = excluded.intent,
+                    slots = excluded.slots,
+                    missing_slots = excluded.missing_slots,
+                    command_template = excluded.command_template,
+                    action_version = excluded.action_version,
+                    schema_version = excluded.schema_version,
+                    expires_at = excluded.expires_at,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    str(chat_id),
+                    request_id,
+                    intent,
+                    _json_dumps(slots),
+                    _json_dumps({"slots": missing_slots}),
+                    command_template,
+                    action_version,
+                    schema_version,
+                    expires_at,
+                    now_iso,
+                    now_iso,
+                ),
+            )
+
+    @staticmethod
+    def _row_to_clarify_pending(row: sqlite3.Row) -> ClarifyPendingRecord:
+        payload = json.loads(str(row["missing_slots"]))
+        missing_slots = payload.get("slots") if isinstance(payload, dict) else []
+        return ClarifyPendingRecord(
+            chat_id=str(row["chat_id"]),
+            request_id=str(row["request_id"]),
+            intent=str(row["intent"]),
+            slots=json.loads(str(row["slots"])),
+            missing_slots=[str(item) for item in missing_slots if isinstance(item, str)],
+            command_template=str(row["command_template"]),
+            action_version=str(row["action_version"]),
+            schema_version=str(row["schema_version"]),
+            expires_at=str(row["expires_at"]),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+
+    def get_clarify_pending(self, *, chat_id: str) -> ClarifyPendingRecord | None:
+        record, expired = self.get_clarify_pending_state(chat_id=chat_id)
+        if expired:
+            self.clear_clarify_pending(chat_id=chat_id)
+            return None
+        return record
+
+    def get_clarify_pending_state(self, *, chat_id: str) -> tuple[ClarifyPendingRecord | None, bool]:
+        now_iso = _isoformat(_utc_now_dt())
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT chat_id, request_id, intent, slots, missing_slots, command_template,
+                       action_version, schema_version, expires_at, created_at, updated_at
+                FROM clarify_pending
+                WHERE chat_id = ?
+                LIMIT 1
+                """,
+                (str(chat_id),),
+            ).fetchone()
+        if row is None:
+            return None, False
+        record = self._row_to_clarify_pending(row)
+        return record, str(record.expires_at) <= now_iso
+
+    def clear_clarify_pending(self, *, chat_id: str) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute("DELETE FROM clarify_pending WHERE chat_id = ?", (str(chat_id),))
+        return cursor.rowcount > 0
 
     def find_recent_nl_duplicates(
         self,
@@ -2223,6 +2354,34 @@ class TelegramTaskStore:
             row = conn.execute(query, tuple(params)).fetchone()
         return int(row["c"])
 
+    def metric_tag_topk(self, *, metric_name: str, tag_key: str, limit: int = 3) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT tags
+                FROM metric_events
+                WHERE metric_name = ?
+                ORDER BY created_at DESC
+                LIMIT 2000
+                """,
+                (metric_name,),
+            ).fetchall()
+        counter: dict[str, int] = {}
+        for row in rows:
+            raw = row["tags"]
+            if not raw:
+                continue
+            try:
+                tags = json.loads(str(raw))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(tags, dict):
+                continue
+            value = str(tags.get(tag_key, "")).strip() or "unknown"
+            counter[value] = counter.get(value, 0) + 1
+        ranked = sorted(counter.items(), key=lambda item: (-item[1], item[0]))
+        return [{"reason": reason, "count": count} for reason, count in ranked[: max(1, int(limit))]]
+
     def get_degradation_state(self, *, state_key: str) -> DegradationState | None:
         with self._connect() as conn:
             row = conn.execute(
@@ -2591,6 +2750,20 @@ class TelegramTaskStore:
             1
             for row in evidence_rows
             if row.get("request_id") and row.get("schema_version") and row.get("action_version")
+        )
+        asked = self.count_metric_events(metric_name="nl_clarify_asked_total")
+        resolved = self.count_metric_events(metric_name="nl_clarify_resolved_total")
+        report["clarify_followup_success_rate"] = round((resolved / asked) if asked else 1.0, 4)
+        analysis_total = self.count_metric_events(metric_name="analysis_response_total")
+        explainable_total = self.count_metric_events(metric_name="analysis_explainable_total")
+        report["analysis_explainability_rate"] = round(
+            (explainable_total / analysis_total) if analysis_total else 1.0,
+            4,
+        )
+        report["chart_fail_reason_topk"] = self.metric_tag_topk(
+            metric_name="chart_render_fail_rate",
+            tag_key="reason",
+            limit=3,
         )
         return report
 
