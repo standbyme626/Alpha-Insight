@@ -129,11 +129,13 @@ def parse_telegram_command(text: str) -> CommandRoute | CommandError:
         return CommandRoute(name="list", args={})
 
     if command == "/stop":
+        if len(parts) == 1:
+            return CommandRoute(name="stop", args={"target": "", "target_type": "execution"})
         if len(parts) != 2:
-            return CommandError("用法 (Usage): /stop <job_id|symbol>. 示例 (Example): /stop TSLA")
+            return CommandError("用法 (Usage): /stop [job_id|symbol]. 示例 (Example): /stop TSLA 或 /stop 取消当前任务")
         target = parts[1].strip()
         if not target:
-            return CommandError("用法 (Usage): /stop <job_id|symbol>. 示例 (Example): /stop TSLA")
+            return CommandError("用法 (Usage): /stop [job_id|symbol]. 示例 (Example): /stop TSLA")
         if _JOB_ID_PATTERN.fullmatch(target.lower()):
             return CommandRoute(name="stop", args={"target": target.lower(), "target_type": "job_id"})
         symbol = normalize_market_symbol(target, market="auto")

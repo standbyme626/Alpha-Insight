@@ -92,6 +92,7 @@ class TelegramGateway:
         self._gray_release_enabled = gray_release_enabled
         self._nlu_parser = nlu_parser
         self._offset = max(0, self._store.get_latest_update_id() + 1)
+        self._cancel_events_by_chat: dict[str, asyncio.Event] = {}
 
     def _is_chat_denied(self, *, chat_id: str) -> bool:
         if self._access_mode == "allowlist":
@@ -378,6 +379,58 @@ class TelegramGateway:
     def _is_conversation_intent(cls, intent: str) -> bool:
         return intent in cls._GENERAL_CONVERSATION_INTENTS
 
+    def _get_chat_cancel_event(self, *, chat_id: str) -> asyncio.Event:
+        event = self._cancel_events_by_chat.get(chat_id)
+        if event is None:
+            event = asyncio.Event()
+            self._cancel_events_by_chat[chat_id] = event
+        return event
+
+    async def _cancel_executing_request(self, *, chat_id: str, update_id: int) -> bool:
+        running = self._store.get_executing_nl_request(chat_id=chat_id)
+        if running is None:
+            return False
+        event = self._get_chat_cancel_event(chat_id=chat_id)
+        event.set()
+        await self._actions.send_error_message(
+            chat_id=chat_id,
+            text=f"已发送取消信号，处理中。request_id(short)={self._short_request_id(running.request_id)}",
+        )
+        self._store.update_bot_update_status(
+            update_id=update_id,
+            status="processed",
+            command="cancel_execution_requested",
+            request_id=running.request_id,
+            error=None,
+        )
+        self._store.record_metric(metric_name="nl_cancel_execution_requested", metric_value=1.0)
+        return True
+
+    def _compact_conversation_history_if_needed(
+        self,
+        *,
+        chat_id: str,
+        scope_key: str,
+        update_id: int,
+    ) -> None:
+        compacted = self._store.compact_conversation_history(
+            chat_id=chat_id,
+            scope_key=scope_key,
+            keep_recent=int(self._limits.conversation_archive_keep_recent),
+            min_batch=int(self._limits.conversation_archive_min_batch),
+        )
+        if not compacted:
+            return
+        self._store.record_metric(metric_name="conversation_archive_total", metric_value=1.0)
+        self._store.add_audit_event(
+            event_type="conversation_archived",
+            chat_id=chat_id,
+            update_id=update_id,
+            action="compact_conversation",
+            reason="history_compacted",
+            metadata=compacted,
+        )
+
     async def _maybe_handle_snapshot_singleflight(
         self,
         *,
@@ -553,6 +606,7 @@ class TelegramGateway:
 
     async def _execute_nl_intent(self, *, record: Any, update_id: int) -> str | None:
         slots = record.slots
+        cancel_event = self._get_chat_cancel_event(chat_id=record.chat_id)
         if self._is_conversation_intent(record.intent):
             await self._actions.handle_general_conversation(chat_id=record.chat_id, intent=record.intent)
             return None
@@ -616,6 +670,7 @@ class TelegramGateway:
                 need_chart=bool(slots.get("need_chart", False)),
                 need_news=bool(slots.get("need_news", False)),
                 request_id=record.request_id,
+                cancel_event=cancel_event,
             )
             if want_chart:
                 fail_after = self._store.count_metric_events(metric_name="chart_render_fail_rate")
@@ -667,6 +722,8 @@ class TelegramGateway:
         )
         if not moved:
             return False
+        cancel_event = self._get_chat_cancel_event(chat_id=record.chat_id)
+        cancel_event.clear()
         if record.intent == "analyze_snapshot":
             await self._actions.send_analysis_ack(chat_id=record.chat_id, request_id=record.request_id)
         plan_steps = self._extract_plan_steps(record.slots, record.intent)
@@ -718,6 +775,33 @@ class TelegramGateway:
             )
             return True
         except Exception as exc:
+            if str(exc) == "analysis_cancelled":
+                self._store.set_nl_request_status(
+                    request_id=request_id,
+                    to_status="rejected",
+                    reject_reason="cancelled",
+                    last_error=str(exc),
+                )
+                await self._actions.send_error_message(
+                    chat_id=record.chat_id,
+                    text=f"任务已取消。request_id(short)={self._short_request_id(record.request_id)}",
+                )
+                self._add_execution_evidence(
+                    record=record,
+                    update_id=update_id,
+                    result="cancelled",
+                    run_id=run_id,
+                    error=str(exc),
+                )
+                self._store.update_bot_update_status(
+                    update_id=update_id,
+                    status="processed",
+                    command=f"nl_{record.intent}_cancelled",
+                    request_id=request_id,
+                    error=None,
+                )
+                self._store.record_metric(metric_name="nl_cancel_execution_effective", metric_value=1.0)
+                return True
             self._store.set_nl_request_status(
                 request_id=request_id,
                 to_status="failed",
@@ -732,6 +816,8 @@ class TelegramGateway:
                 error=str(exc),
             )
             raise
+        finally:
+            cancel_event.clear()
 
     def _evaluate_chart_degradation(self) -> None:
         now = self._current_ts()
@@ -1287,6 +1373,8 @@ class TelegramGateway:
                     )
                     return True
                 if text.split()[0].lower() == "/cancel":
+                    if await self._cancel_executing_request(chat_id=chat_id, update_id=update_id):
+                        return True
                     return await self._cancel_pending_confirm(chat_id=chat_id, update_id=update_id)
                 parsed = parse_telegram_command(text)
                 if isinstance(parsed, CommandError):
@@ -1351,6 +1439,18 @@ class TelegramGateway:
                 elif parsed.name == "list":
                     result = await self._actions.handle_list(chat_id=chat_id)
                 elif parsed.name == "stop":
+                    if str(parsed.args.get("target_type", "")) == "execution":
+                        if await self._cancel_executing_request(chat_id=chat_id, update_id=update_id):
+                            return True
+                        await self._actions.send_error_message(chat_id=chat_id, text="当前无可取消的执行任务。")
+                        self._store.update_bot_update_status(
+                            update_id=update_id,
+                            status="processed",
+                            command="stop_execution_noop",
+                            request_id=None,
+                            error=None,
+                        )
+                        return True
                     result = await self._actions.handle_stop(
                         chat_id=chat_id,
                         target=parsed.args["target"],
@@ -1898,6 +1998,12 @@ class TelegramGateway:
         finally:
             latency_ms = (time.perf_counter() - started_at) * 1000
             self._store.record_metric(metric_name="command_latency_ms", metric_value=latency_ms)
+            if chat_id:
+                scope_key = self._conversation_scope_key(chat_id=chat_id, chat_type=chat_type, user_id=user_id)
+                try:
+                    self._compact_conversation_history_if_needed(chat_id=chat_id, scope_key=scope_key, update_id=update_id)
+                except Exception:
+                    self._store.record_metric(metric_name="conversation_archive_failed_total", metric_value=1.0)
 
     async def process_pending_updates(self, *, limit: int = 100) -> int:
         pending_update_ids = self._store.list_pending_bot_update_ids(limit=limit)

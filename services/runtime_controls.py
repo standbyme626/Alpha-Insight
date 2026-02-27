@@ -28,6 +28,8 @@ class RuntimeLimits:
     typing_heartbeat_seconds: float = 4.0
     session_singleflight_ttl_seconds: int = 120
     send_progress_updates: bool = True
+    conversation_archive_keep_recent: int = 8
+    conversation_archive_min_batch: int = 8
     max_watch_jobs_per_chat: int = 10
     global_concurrency: int = 8
     notification_max_retry: int = 3

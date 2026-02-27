@@ -63,12 +63,15 @@ class SlowPhotoChatSender(FakeChatSender):
         ("/report run-abc123", "report"),
         ("/digest daily", "digest"),
         ("/monitor TSLA 1h rsi", "monitor"),
+        ("/stop", "stop"),
     ],
 )
 def test_parse_phase_d_commands(raw: str, name: str) -> None:
     parsed = parse_telegram_command(raw)
     assert not isinstance(parsed, CommandError)
     assert parsed.name == name
+    if raw == "/stop":
+        assert parsed.args["target_type"] == "execution"
 
 
 def test_extract_news_from_fused_raw_news_items() -> None:
@@ -1541,6 +1544,83 @@ async def test_phase_p2_explain_buttons_callback_reply(tmp_path) -> None:  # noq
     )
     assert "为什么不给RSI" in sender.messages[-1][1]
     assert "证据:" in sender.messages[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_phase_p2_stop_without_target_cancels_executing_snapshot(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+    started = asyncio.Event()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        started.set()
+        await asyncio.sleep(30)
+        return {"run_id": "run-p2-cancel", "metrics": {"data_close": 1.0}, **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=10)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    analyze_task = asyncio.create_task(
+        gateway.process_update({"update_id": 30341, "message": {"chat": {"id": "chat-p2e"}, "text": "分析 TSLA 一个月走势"}})
+    )
+    await asyncio.wait_for(started.wait(), timeout=1.5)
+    await asyncio.sleep(0.05)
+
+    assert await gateway.process_update({"update_id": 30342, "message": {"chat": {"id": "chat-p2e"}, "text": "/stop"}})
+    assert await analyze_task
+
+    with store._connect() as conn:  # noqa: SLF001
+        row = conn.execute(
+            "SELECT request_id FROM bot_updates WHERE update_id = 30341",
+        ).fetchone()
+    assert row is not None and row["request_id"]
+    request_id = str(row["request_id"])
+    req = store.get_nl_request(request_id=request_id)
+    assert req is not None
+    assert req.status == "rejected"
+    assert req.reject_reason == "cancelled"
+    merged = "\n".join(text for _, text in sender.messages)
+    assert "已发送取消信号" in merged
+    assert "任务已取消" in merged
+
+
+@pytest.mark.asyncio
+async def test_phase_p2_conversation_history_compaction_archives_old_requests(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+    limits = RuntimeLimits(
+        session_singleflight_ttl_seconds=0,
+        conversation_archive_keep_recent=2,
+        conversation_archive_min_batch=2,
+    )
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": f"run-{kwargs['symbol']}", "metrics": {"data_close": 1.0}, **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, limits=limits, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions, limits=limits)
+
+    symbols = ["TSLA", "AAPL", "MSFT", "NVDA", "AMZN"]
+    for index, symbol in enumerate(symbols, start=1):
+        assert await gateway.process_update(
+            {"update_id": 30400 + index, "message": {"chat": {"id": "chat-p2f"}, "text": f"分析 {symbol} 一个月走势"}}
+        )
+
+    archives = store.list_conversation_archives(scope_key="chat:chat-p2f", limit=5)
+    assert archives
+    assert archives[0].request_count >= 2
+    assert int(archives[0].summary.get("request_count", 0)) >= 2
+    with store._connect() as conn:  # noqa: SLF001
+        archived = conn.execute(
+            "SELECT COUNT(*) AS c FROM nl_requests WHERE chat_id = ? AND archived_at IS NOT NULL",
+            ("chat-p2f",),
+        ).fetchone()
+        active = conn.execute(
+            "SELECT COUNT(*) AS c FROM nl_requests WHERE chat_id = ? AND archived_at IS NULL",
+            ("chat-p2f",),
+        ).fetchone()
+    assert archived is not None and int(archived["c"]) >= 2
+    assert active is not None and int(active["c"]) >= 2
 
 
 def test_phase_p2_run_report_contains_operational_metrics(tmp_path) -> None:  # noqa: ANN001

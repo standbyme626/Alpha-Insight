@@ -146,6 +146,7 @@ class NLRequestRecord:
     last_error: str | None
     created_at: str
     updated_at: str
+    archived_at: str | None = None
 
 
 @dataclass
@@ -190,6 +191,18 @@ class RequestChartStateRecord:
     request_id: str
     chart_state: str
     chart_updated_at: str
+
+
+@dataclass
+class ConversationArchiveRecord:
+    archive_id: int
+    scope_key: str
+    chat_id: str
+    from_request_id: str
+    to_request_id: str
+    request_count: int
+    summary: dict[str, Any]
+    created_at: str
 
 
 @dataclass
@@ -605,6 +618,20 @@ class TelegramTaskStore:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS conversation_archives (
+                    archive_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scope_key TEXT NOT NULL,
+                    chat_id TEXT NOT NULL,
+                    from_request_id TEXT NOT NULL,
+                    to_request_id TEXT NOT NULL,
+                    request_count INTEGER NOT NULL,
+                    summary TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS allowlist_chats (
                     chat_id TEXT PRIMARY KEY,
                     can_monitor INTEGER NOT NULL
@@ -639,12 +666,14 @@ class TelegramTaskStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_nl_requests_intent_dedupe ON nl_requests(chat_id, intent_dedupe_key)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_candidate_chat_status ON pending_candidate_selection(chat_id, status)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_candidate_expires ON pending_candidate_selection(expires_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_conversation_archives_scope_created ON conversation_archives(scope_key, created_at)")
             self._ensure_column(conn, "watch_jobs", "scope", "TEXT NOT NULL DEFAULT 'single'")
             self._ensure_column(conn, "watch_jobs", "group_id", "TEXT")
             self._ensure_column(conn, "watch_jobs", "route_strategy", "TEXT NOT NULL DEFAULT 'dual_channel'")
             self._ensure_column(conn, "watch_jobs", "template_id", "TEXT")
             self._ensure_column(conn, "watch_events", "priority", "TEXT NOT NULL DEFAULT 'medium'")
             self._ensure_column(conn, "notifications", "suppressed_reason", "TEXT")
+            self._ensure_column(conn, "nl_requests", "archived_at", "TEXT")
 
     @staticmethod
     def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl_type: str) -> None:
@@ -1067,6 +1096,46 @@ class TelegramTaskStore:
             ).fetchone()
         return int(row["c"]) > 0
 
+    def get_executing_nl_request(self, *, chat_id: str) -> NLRequestRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT request_id, update_id, chat_id, intent, slots, confidence, needs_confirm, status,
+                       text_dedupe_key, intent_dedupe_key, normalized_text, normalized_request, action_version, risk_level,
+                       raw_text_hash, intent_candidate, reject_reason, confirm_deadline_at, last_error, created_at, updated_at
+                FROM nl_requests
+                WHERE chat_id = ? AND status = 'executing'
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (str(chat_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        return NLRequestRecord(
+            request_id=str(row["request_id"]),
+            update_id=int(row["update_id"]),
+            chat_id=str(row["chat_id"]),
+            intent=str(row["intent"]),
+            slots=json.loads(str(row["slots"])),
+            confidence=float(row["confidence"]),
+            needs_confirm=bool(int(row["needs_confirm"])),
+            status=str(row["status"]),
+            text_dedupe_key=str(row["text_dedupe_key"]),
+            intent_dedupe_key=str(row["intent_dedupe_key"]),
+            normalized_text=str(row["normalized_text"]),
+            normalized_request=str(row["normalized_request"]),
+            action_version=str(row["action_version"]),
+            risk_level=str(row["risk_level"]),
+            raw_text_hash=str(row["raw_text_hash"]),
+            intent_candidate=str(row["intent_candidate"]),
+            reject_reason=str(row["reject_reason"]) if row["reject_reason"] else None,
+            confirm_deadline_at=str(row["confirm_deadline_at"]) if row["confirm_deadline_at"] else None,
+            last_error=str(row["last_error"]) if row["last_error"] else None,
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+
     def find_recent_snapshot_singleflight(
         self,
         *,
@@ -1107,6 +1176,113 @@ class TelegramTaskStore:
             if slot_symbol == str(symbol).strip().upper() and slot_period == str(period).strip().lower() and slot_interval == str(interval).strip().lower():
                 return record
         return None
+
+    def compact_conversation_history(
+        self,
+        *,
+        chat_id: str,
+        scope_key: str,
+        keep_recent: int = 8,
+        min_batch: int = 8,
+    ) -> dict[str, Any] | None:
+        keep_recent_count = max(1, int(keep_recent))
+        min_batch_count = max(1, int(min_batch))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT request_id, intent, slots, status, created_at
+                FROM nl_requests
+                WHERE chat_id = ?
+                  AND archived_at IS NULL
+                  AND status IN ('completed', 'rejected', 'failed')
+                ORDER BY created_at DESC
+                """,
+                (str(chat_id),),
+            ).fetchall()
+            if len(rows) <= keep_recent_count + min_batch_count:
+                return None
+            archive_candidates = rows[keep_recent_count:]
+            if len(archive_candidates) < min_batch_count:
+                return None
+
+            oldest_to_newest = list(reversed(archive_candidates))
+            from_request_id = str(oldest_to_newest[0]["request_id"])
+            to_request_id = str(oldest_to_newest[-1]["request_id"])
+            intents: dict[str, int] = {}
+            symbols: dict[str, int] = {}
+            for item in oldest_to_newest:
+                intent = str(item["intent"])
+                intents[intent] = intents.get(intent, 0) + 1
+                slots = json.loads(str(item["slots"]))
+                if isinstance(slots, dict):
+                    symbol = str(slots.get("symbol", "")).strip().upper()
+                    if symbol:
+                        symbols[symbol] = symbols.get(symbol, 0) + 1
+
+            summary_payload = {
+                "scope_key": str(scope_key),
+                "chat_id": str(chat_id),
+                "from_request_id": from_request_id,
+                "to_request_id": to_request_id,
+                "request_count": len(oldest_to_newest),
+                "intent_distribution": intents,
+                "symbol_topk": sorted(symbols.items(), key=lambda item: item[1], reverse=True)[:5],
+            }
+            now = _utc_now()
+            conn.execute(
+                """
+                INSERT INTO conversation_archives(
+                    scope_key, chat_id, from_request_id, to_request_id, request_count, summary, created_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(scope_key),
+                    str(chat_id),
+                    from_request_id,
+                    to_request_id,
+                    len(oldest_to_newest),
+                    _json_dumps(summary_payload),
+                    now,
+                ),
+            )
+            ids = [str(item["request_id"]) for item in oldest_to_newest]
+            placeholders = ",".join("?" for _ in ids)
+            conn.execute(
+                f"""
+                UPDATE nl_requests
+                SET archived_at = ?
+                WHERE request_id IN ({placeholders})
+                """,
+                (now, *ids),
+            )
+        return summary_payload
+
+    def list_conversation_archives(self, *, scope_key: str, limit: int = 20) -> list[ConversationArchiveRecord]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT archive_id, scope_key, chat_id, from_request_id, to_request_id, request_count, summary, created_at
+                FROM conversation_archives
+                WHERE scope_key = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (str(scope_key), max(1, int(limit))),
+            ).fetchall()
+        return [
+            ConversationArchiveRecord(
+                archive_id=int(row["archive_id"]),
+                scope_key=str(row["scope_key"]),
+                chat_id=str(row["chat_id"]),
+                from_request_id=str(row["from_request_id"]),
+                to_request_id=str(row["to_request_id"]),
+                request_count=int(row["request_count"]),
+                summary=json.loads(str(row["summary"])),
+                created_at=str(row["created_at"]),
+            )
+            for row in rows
+        ]
 
     def upsert_clarify_pending(
         self,

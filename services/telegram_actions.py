@@ -384,6 +384,7 @@ class TelegramActions:
             "/monitor <symbol> <interval> [volatility|price|rsi] - 创建监控任务 (create monitor job, legacy format)\n"
             "/monitor <symbol|sym1,sym2> <interval> [volatility|price|rsi] [telegram_only|webhook_only|dual_channel]\n"
             "/list - 查看监控任务列表 (list monitor jobs)\n"
+            "/stop - 取消当前分析任务 (cancel current analysis task)\n"
             "/stop <job_id|symbol> - 停止监控任务 (disable monitor job)\n"
             "/report <run_id|request_id> [short|full] - 查询报告摘要 (query report summary)\n"
             "/digest daily - 获取近24小时摘要 (last-24h summary)\n"
@@ -440,6 +441,7 @@ class TelegramActions:
         need_news: bool,
         news_window_days: int = 7,
         request_id: str | None = None,
+        cancel_event: asyncio.Event | None = None,
     ) -> ActionResult:
         request_text = (
             f"Analyze snapshot for {symbol} period={period} interval={interval} "
@@ -447,16 +449,15 @@ class TelegramActions:
         )
         async with self._typing_heartbeat(chat_id=chat_id):
             async with self._global_gate.acquire():
-                result = await asyncio.wait_for(
-                    self._research_runner(
-                        request=request_text,
-                        symbol=symbol,
-                        period=period,
-                        interval=interval,
-                        news_limit=(8 if news_window_days <= 7 else 20) if need_news else 0,
-                        need_chart=need_chart,
-                    ),
-                    timeout=self._analysis_snapshot_timeout_seconds,
+                result = await self._run_research_with_cancel(
+                    cancel_event=cancel_event,
+                    timeout_seconds=self._analysis_snapshot_timeout_seconds,
+                    request=request_text,
+                    symbol=symbol,
+                    period=period,
+                    interval=interval,
+                    news_limit=(8 if news_window_days <= 7 else 20) if need_news else 0,
+                    need_chart=need_chart,
                 )
 
         run_id = str(result.get("run_id", "")).strip()
@@ -564,16 +565,15 @@ class TelegramActions:
                 self._store.record_metric(metric_name="chart_retry_attempted", metric_value=1.0)
                 await self._send_text(chat_id=chat_id, text="首次未取到图表产物，已自动重试一次。\n证据: 图表状态=重试中")
                 async with self._global_gate.acquire():
-                    retry_result = await asyncio.wait_for(
-                        self._research_runner(
-                            request=request_text,
-                            symbol=symbol,
-                            period=period,
-                            interval=interval,
-                            news_limit=(8 if news_window_days <= 7 else 20) if need_news else 0,
-                            need_chart=need_chart,
-                        ),
-                        timeout=self._analysis_snapshot_timeout_seconds,
+                    retry_result = await self._run_research_with_cancel(
+                        cancel_event=cancel_event,
+                        timeout_seconds=self._analysis_snapshot_timeout_seconds,
+                        request=request_text,
+                        symbol=symbol,
+                        period=period,
+                        interval=interval,
+                        news_limit=(8 if news_window_days <= 7 else 20) if need_news else 0,
+                        need_chart=need_chart,
                     )
                 retry_candidate = self._chart_service.extract_chart_path(retry_result)
                 retry_path, retry_size, retry_error = self._chart_service.ensure_chart_within_limit(retry_candidate)
@@ -894,6 +894,7 @@ class TelegramActions:
         chat_id: str,
         timeout_seconds: float,
         timeout_retry_count: int,
+        cancel_event: asyncio.Event | None = None,
     ) -> None:
         transitioned = self._store.transition_analysis_request_status(
             request_id=request_id,
@@ -906,9 +907,11 @@ class TelegramActions:
         try:
             async with self._typing_heartbeat(chat_id=chat_id):
                 async with self._global_gate.acquire():
-                    result = await asyncio.wait_for(
-                        self._research_runner(request=request_text, symbol=symbol),
-                        timeout=timeout_seconds,
+                    result = await self._run_research_with_cancel(
+                        cancel_event=cancel_event,
+                        timeout_seconds=timeout_seconds,
+                        request=request_text,
+                        symbol=symbol,
                     )
             run_id = str(result.get("run_id", ""))
             summary = str(((result.get("fused_insights") or {}).get("summary") or "")).strip()
@@ -961,3 +964,41 @@ class TelegramActions:
         finally:
             latency_ms = (time.perf_counter() - start) * 1000
             self._store.record_metric(metric_name="analysis_latency_ms", metric_value=latency_ms, tags={"chat_id": chat_id})
+
+    async def _run_research_with_cancel(
+        self,
+        *,
+        cancel_event: asyncio.Event | None,
+        timeout_seconds: float,
+        **runner_kwargs: Any,
+    ) -> dict[str, Any]:
+        runner_task = asyncio.create_task(self._research_runner(**runner_kwargs))
+        cancel_task: asyncio.Task[bool] | None = None
+        try:
+            if cancel_event is None:
+                return await asyncio.wait_for(runner_task, timeout=timeout_seconds)
+
+            cancel_task = asyncio.create_task(cancel_event.wait())
+            done, pending = await asyncio.wait(
+                {runner_task, cancel_task},
+                timeout=timeout_seconds,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+
+            if runner_task in done:
+                return runner_task.result()
+            if cancel_task in done and cancel_task.result():
+                runner_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await runner_task
+                raise RuntimeError("analysis_cancelled")
+
+            runner_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await runner_task
+            raise TimeoutError("analysis_timeout")
+        finally:
+            if cancel_task is not None:
+                cancel_task.cancel()
