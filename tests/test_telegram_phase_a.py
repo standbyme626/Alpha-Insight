@@ -11,9 +11,12 @@ from services.telegram_store import TelegramTaskStore
 class FakeSender:
     def __init__(self) -> None:
         self.messages: list[tuple[str, str]] = []
+        self.keyboards: list[tuple[str, dict[str, object]]] = []
 
-    async def send_text(self, chat_id: str, text: str) -> dict[str, object]:
+    async def send_text(self, chat_id: str, text: str, reply_markup: dict[str, object] | None = None) -> dict[str, object]:
         self.messages.append((chat_id, text))
+        if reply_markup is not None:
+            self.keyboards.append((chat_id, reply_markup))
         return {"ok": True}
 
 
@@ -89,4 +92,3 @@ async def test_request_id_idempotency_does_not_rerun_research(tmp_path) -> None:
     assert calls["n"] == 1
     stats = store.verification_counts()
     assert stats["duplicate_running_or_completed"] == 0
-

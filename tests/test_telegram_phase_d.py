@@ -19,9 +19,12 @@ class FakeChatSender:
     def __init__(self) -> None:
         self.messages: list[tuple[str, str]] = []
         self.photos: list[tuple[str, str, str]] = []
+        self.keyboards: list[tuple[str, dict[str, object]]] = []
 
-    async def send_text(self, chat_id: str, text: str) -> dict[str, object]:
+    async def send_text(self, chat_id: str, text: str, reply_markup: dict[str, object] | None = None) -> dict[str, object]:
         self.messages.append((chat_id, text))
+        if reply_markup is not None:
+            self.keyboards.append((chat_id, reply_markup))
         return {"ok": True}
 
     async def send_photo(self, chat_id: str, image_path: str, caption: str = "") -> dict[str, object]:
@@ -1002,3 +1005,80 @@ async def test_phase_t_group_context_isolation_by_user(tmp_path) -> None:  # noq
         }
     )
     assert "one follow-up within 5 minutes" in sender.messages[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_phase_p1_candidate_selection_uses_inline_keyboard_buttons(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": "run-p1-candidate", "metrics": {"data_close": 10.0}, **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 30231, "message": {"chat": {"id": "chat-p1a"}, "text": "分析腾讯走势"}})
+    with store._connect() as conn:  # noqa: SLF001
+        row = conn.execute("SELECT request_id FROM bot_updates WHERE update_id = 30231").fetchone()
+    assert row is not None
+    req_id = str(row["request_id"])
+    assert sender.keyboards
+    inline = sender.keyboards[-1][1].get("inline_keyboard")
+    assert isinstance(inline, list) and inline
+    first_button = inline[0][0]
+    assert str(first_button["callback_data"]).startswith(f"pick|{req_id[-6:]}|")
+
+
+@pytest.mark.asyncio
+async def test_phase_p1_news_window_toggle_30_days_via_callback(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {
+            "run_id": "run-p1-news",
+            "fused_insights": {"summary": "news window toggle"},
+            "metrics": {"data_close": 99.0, "window_low": 90.0, "window_high": 110.0},
+            "news": [{"title": "headline", "source": "wire"}],
+            **kwargs,
+        }
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 30241, "message": {"chat": {"id": "chat-p1b"}, "text": "分析 TSLA 一个月走势"}})
+    with store._connect() as conn:  # noqa: SLF001
+        row = conn.execute("SELECT request_id FROM bot_updates WHERE update_id = 30241").fetchone()
+    assert row is not None
+    req_id = str(row["request_id"])
+    assert await gateway.process_update(
+        {"update_id": 30242, "callback_query": {"id": "cb-p1-news", "data": f"act|{req_id[-6:]}|news30", "message": {"chat": {"id": "chat-p1b"}}}}
+    )
+    assert any("时间窗=近30天" in text for _, text in sender.messages)
+
+
+@pytest.mark.asyncio
+async def test_phase_p1_dedupe_echoes_ready_state_and_run_id(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+    calls = {"n": 0}
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        calls["n"] += 1
+        return {
+            "run_id": f"run-p1-dedupe-{calls['n']}",
+            "fused_insights": {"summary": "dedupe"},
+            "metrics": {"data_close": 101.0},
+            **kwargs,
+        }
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+    gateway._build_bucket = staticmethod(lambda now, seconds=30: 123456)  # type: ignore[method-assign]  # noqa: SLF001
+
+    assert await gateway.process_update({"update_id": 30251, "message": {"chat": {"id": "chat-p1c"}, "text": "分析 TSLA 一个月走势"}})
+    assert await gateway.process_update({"update_id": 30252, "message": {"chat": {"id": "chat-p1c"}, "text": "分析 TSLA 一个月走势"}})
+    assert calls["n"] == 1
+    assert "30秒内重复请求已合并：已生成。" in sender.messages[-1][1]
+    assert "run_id=run-p1-dedupe-1" in sender.messages[-1][1]

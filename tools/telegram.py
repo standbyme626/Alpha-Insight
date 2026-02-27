@@ -27,11 +27,18 @@ class NotificationChannel(Protocol):
         ...
 
 
-async def send_text(bot_token: str, chat_id: str, text: str) -> dict:
+async def send_text(
+    bot_token: str,
+    chat_id: str,
+    text: str,
+    reply_markup: dict[str, Any] | None = None,
+) -> dict:
     print("[DEBUG] QuantNode send_text Start")
     base_url = os.getenv("TELEGRAM_API_BASE_URL", "https://api.telegram.org").rstrip("/")
     url = f"{base_url}/bot{bot_token}/sendMessage"
     payload = {"chat_id": chat_id, "text": text}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, timeout=30) as response:
             data = await response.json(content_type=None)

@@ -19,8 +19,8 @@ class TelegramChatSender:
     def __init__(self, bot_token: str):
         self._bot_token = bot_token
 
-    async def send_text(self, chat_id: str, text: str) -> dict[str, object]:
-        return await send_text(self._bot_token, chat_id, text)
+    async def send_text(self, chat_id: str, text: str, reply_markup: dict[str, object] | None = None) -> dict[str, object]:
+        return await send_text(self._bot_token, chat_id, text, reply_markup=reply_markup)
 
     async def send_photo(self, chat_id: str, image_path: str, caption: str = "") -> dict[str, object]:
         return await send_photo(self._bot_token, chat_id, image_path, caption)

@@ -13,7 +13,12 @@ from services.telegram_store import TelegramTaskStore
 
 
 class MessageSender(Protocol):
-    async def send_text(self, chat_id: str, text: str) -> dict[str, Any]:
+    async def send_text(
+        self,
+        chat_id: str,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         ...
 
 
@@ -45,6 +50,35 @@ class TelegramActions:
         self._limits = limits or RuntimeLimits()
         self._global_gate = global_gate or GlobalConcurrencyGate(self._limits.global_concurrency)
         self._chart_service = chart_service or TelegramChartService()
+
+    async def _send_text(
+        self,
+        *,
+        chat_id: str,
+        text: str,
+        buttons: list[list[tuple[str, str]]] | None = None,
+    ) -> None:
+        reply_markup = self._build_inline_keyboard(buttons) if buttons else None
+        await self._notifier.send_text(chat_id, text, reply_markup=reply_markup)
+
+    @staticmethod
+    def _build_inline_keyboard(buttons: list[list[tuple[str, str]]] | None) -> dict[str, Any] | None:
+        if not buttons:
+            return None
+        rows: list[list[dict[str, str]]] = []
+        for row in buttons:
+            items: list[dict[str, str]] = []
+            for label, callback_data in row:
+                label_text = str(label).strip()
+                callback_text = str(callback_data).strip()
+                if not label_text or not callback_text:
+                    continue
+                items.append({"text": label_text, "callback_data": callback_text[:64]})
+            if items:
+                rows.append(items)
+        if not rows:
+            return None
+        return {"inline_keyboard": rows}
 
     @staticmethod
     def _render_key_metrics(metrics: dict[str, Any]) -> tuple[str, str]:
@@ -95,6 +129,44 @@ class TelegramActions:
         return f"{start.isoformat()} ~ {now.isoformat()}"
 
     @staticmethod
+    def _chart_state_label(state: str) -> str:
+        value = str(state or "none").strip().lower()
+        if value == "rendering":
+            return "📈K线(生成中…)"
+        if value == "ready":
+            return "📈K线(已生成)"
+        return "📈K线"
+
+    def _snapshot_buttons(
+        self,
+        *,
+        request_id: str | None,
+        chart_state: str,
+    ) -> list[list[tuple[str, str]]]:
+        if not request_id:
+            return []
+        ref = request_id[-6:]
+        return [
+            [
+                (self._chart_state_label(chart_state), f"act|{ref}|chart"),
+                ("📰新闻(7天)", f"act|{ref}|news7"),
+                ("📰新闻(30天)", f"act|{ref}|news30"),
+            ],
+            [
+                ("🔁重试", f"act|{ref}|retry"),
+                ("📄报告", f"act|{ref}|report"),
+            ],
+        ]
+
+    def build_snapshot_buttons(
+        self,
+        *,
+        request_id: str | None,
+        chart_state: str,
+    ) -> list[list[tuple[str, str]]]:
+        return self._snapshot_buttons(request_id=request_id, chart_state=chart_state)
+
+    @staticmethod
     def _extract_news(result: dict[str, Any], *, default_days: int = 7) -> tuple[int, str, str]:
         news = result.get("news")
         count = 0
@@ -105,9 +177,19 @@ class TelegramActions:
                 source = str(news[0].get("source") or source)
         return count, f"近{default_days}天", source
 
+    async def send_inline_buttons(
+        self,
+        *,
+        chat_id: str,
+        text: str,
+        buttons: list[list[tuple[str, str]]],
+    ) -> None:
+        await self._send_text(chat_id=chat_id, text=text, buttons=buttons)
+
     async def handle_help(self, *, chat_id: str) -> ActionResult:
-        await self._notifier.send_text(
-            chat_id,
+        await self._send_text(
+            chat_id=chat_id,
+            text=(
             "可用命令 (Available commands):\n"
             "/analyze <symbol> - 运行统一研究并返回 run_id (run unified research)\n"
             "/monitor <symbol> <interval> [volatility|price|rsi] - 创建监控任务 (create monitor job, legacy format)\n"
@@ -121,12 +203,13 @@ class TelegramActions:
             "/webhook <set|disable|list> ... - 管理 webhook 路由 (manage webhook route)\n"
             "/pref <summary|quiet|priority> <value> - 通知偏好设置 (notification preferences)\n"
             "合规提示 (Compliance): 仅用于研究与提醒，不支持自动交易 (no auto-trading).\n"
-            "/help - 显示帮助 (show this help)",
+            "/help - 显示帮助 (show this help)"
+            ),
         )
         return ActionResult(command="help")
 
     async def send_error_message(self, *, chat_id: str, text: str) -> None:
-        await self._notifier.send_text(chat_id, text)
+        await self._send_text(chat_id=chat_id, text=text)
 
     async def handle_analyze(
         self,
@@ -166,6 +249,7 @@ class TelegramActions:
         interval: str,
         need_chart: bool,
         need_news: bool,
+        news_window_days: int = 7,
         request_id: str | None = None,
     ) -> ActionResult:
         request_text = (
@@ -179,7 +263,7 @@ class TelegramActions:
                     symbol=symbol,
                     period=period,
                     interval=interval,
-                    news_limit=8 if need_news else 0,
+                    news_limit=(8 if news_window_days <= 7 else 20) if need_news else 0,
                 ),
                 timeout=self._analysis_timeout_seconds,
             )
@@ -194,7 +278,7 @@ class TelegramActions:
         high = self._metric_float(metrics, "window_high", "period_high")
         low = self._metric_float(metrics, "window_low", "period_low")
         ret30 = self._metric_float(metrics, "return_30d", "change_30d")
-        news_count, news_window, news_source = self._extract_news(result)
+        news_count, news_window, news_source = self._extract_news(result, default_days=news_window_days)
         has_technical = latest_close is not None and bool(data_window) and (rsi is not None or ma is not None)
         has_range = (high is not None and low is not None) or (ret30 is not None)
         has_news = news_count >= 1
@@ -208,6 +292,10 @@ class TelegramActions:
                 summary=summary,
                 key_metrics=metrics,
             )
+        target_request_id = request_id or run_id
+        chart_state = "none"
+        if target_request_id:
+            self._store.upsert_request_chart_state(request_id=target_request_id, chart_state="none")
         metric_line, missing_reason = self._render_key_metrics(metrics)
         evidence_lines: list[str] = []
         if latest_close is not None:
@@ -217,20 +305,31 @@ class TelegramActions:
         elif has_range and ret30 is not None:
             evidence_lines.append(f"近30天涨跌={round(ret30 * 100, 2)}%")
         evidence_lines.append(f"news_count={news_count} 时间窗={news_window} 来源={news_source}")
+        level_hint = ""
+        if latest_close is not None and high is not None and low is not None and high > low:
+            ratio = (latest_close - low) / (high - low)
+            if ratio >= 0.8:
+                level_hint = "当前价接近上沿"
+            elif ratio <= 0.2:
+                level_hint = "当前价接近下沿"
+            else:
+                level_hint = "当前价位于区间中部"
+            evidence_lines.append(f"近30天Low/High={round(low,4)}/{round(high,4)} {level_hint}")
         if not evidence_lines:
             evidence_lines.append("图表状态=未生成")
+        menu_buttons = self._snapshot_buttons(request_id=target_request_id, chart_state=chart_state)
         report_text = (
             f"快照分析 (Snapshot Analysis): {symbol}\n"
             f"分析区间={data_window}\n"
             f"关键指标 (Key metrics): {metric_line}\n"
             f"结论 (Conclusion): {safe_summary[:300]}\n"
             f"证据 (Evidence): {' | '.join(evidence_lines[:3])}\n"
-            f"request_id(short)={(request_id or run_id or 'n/a')[-6:]}\n"
+            f"request_id(short)={(target_request_id or 'n/a')[-6:]}\n"
             f"run_id={run_id or 'N/A'}\n"
-            f"下一步: 📈K线 📰新闻 🗓️1个月 🔁重试 📄报告"
+            f"下一步: {self._chart_state_label(chart_state)} / 📰新闻(7天|30天) / 🔁重试 / 📄报告"
         )
 
-        await self._notifier.send_text(chat_id, report_text)
+        await self._send_text(chat_id=chat_id, text=report_text, buttons=menu_buttons)
         self._store.record_metric(metric_name="analysis_response_total", metric_value=1.0)
         if missing_reason:
             self._store.record_metric(metric_name="analysis_explainable_total", metric_value=1.0)
@@ -238,6 +337,14 @@ class TelegramActions:
             self._store.record_metric(metric_name="analysis_explainable_total", metric_value=1.0)
 
         if need_chart:
+            chart_state = "rendering"
+            if target_request_id:
+                self._store.upsert_request_chart_state(request_id=target_request_id, chart_state=chart_state)
+            await self._send_text(
+                chat_id=chat_id,
+                text=f"图表生成中，请稍候。request_id(short)={(target_request_id or 'n/a')[-6:]}",
+                buttons=self._snapshot_buttons(request_id=target_request_id, chart_state=chart_state),
+            )
             chart_candidate = self._chart_service.extract_chart_path(result)
             chart_path, chart_size, chart_error = self._chart_service.ensure_chart_within_limit(chart_candidate)
             if chart_size is not None:
@@ -245,7 +352,7 @@ class TelegramActions:
             chart_reason = "data_empty" if latest_close is None else ("artifact_missing" if chart_error else "")
             if chart_path is None and chart_reason == "artifact_missing":
                 self._store.record_metric(metric_name="chart_retry_attempted", metric_value=1.0)
-                await self._notifier.send_text(chat_id, "首次未取到图表产物，已自动重试一次。")
+                await self._send_text(chat_id=chat_id, text="首次未取到图表产物，已自动重试一次。")
                 async with self._global_gate.acquire():
                     retry_result = await asyncio.wait_for(
                         self._research_runner(
@@ -253,7 +360,7 @@ class TelegramActions:
                             symbol=symbol,
                             period=period,
                             interval=interval,
-                            news_limit=8 if need_news else 0,
+                            news_limit=(8 if news_window_days <= 7 else 20) if need_news else 0,
                         ),
                         timeout=self._analysis_timeout_seconds,
                     )
@@ -264,50 +371,77 @@ class TelegramActions:
                 if retry_path is not None:
                     chart_path = retry_path
                     chart_error = None
+                    chart_state = "ready"
+                    if target_request_id:
+                        self._store.upsert_request_chart_state(request_id=target_request_id, chart_state=chart_state)
                     self._store.record_metric(metric_name="chart_retry_success", metric_value=1.0)
                 else:
                     chart_error = retry_error
             if chart_path is None:
                 reason = "data_empty" if latest_close is None else "artifact_missing"
+                chart_state = "failed"
+                if target_request_id:
+                    self._store.upsert_request_chart_state(request_id=target_request_id, chart_state=chart_state)
                 self._store.record_metric(metric_name="chart_render_fail_rate", metric_value=1.0, tags={"reason": reason})
-                await self._notifier.send_text(
-                    chat_id,
-                    (
+                await self._send_text(
+                    chat_id=chat_id,
+                    text=(
                         "这次没能生成价格图表，我可以重试图表或只做新闻解读。\n"
                         f"原因: {self._chart_reason_text(reason)}\n"
-                        "可选: 📈K线 📰新闻 🗓️1个月 🔁重试 📄报告"
+                        f"可选: {self._chart_state_label(chart_state)} 📰新闻(7天|30天) 🔁重试 📄报告"
                     ),
+                    buttons=self._snapshot_buttons(request_id=target_request_id, chart_state=chart_state),
                 )
             else:
                 sender = self._notifier
                 if hasattr(sender, "send_photo"):
                     try:
                         await sender.send_photo(chat_id, str(chart_path), caption=f"{symbol} {period}/{interval} chart")  # type: ignore[attr-defined]
+                        chart_state = "ready"
+                        if target_request_id:
+                            self._store.upsert_request_chart_state(request_id=target_request_id, chart_state=chart_state)
+                        await self._send_text(
+                            chat_id=chat_id,
+                            text=f"图表已生成，可继续查看新闻或报告。request_id(short)={(target_request_id or 'n/a')[-6:]}",
+                            buttons=self._snapshot_buttons(request_id=target_request_id, chart_state=chart_state),
+                        )
                     except Exception:  # noqa: BLE001
                         reason = "send_photo_error"
+                        chart_state = "failed"
+                        if target_request_id:
+                            self._store.upsert_request_chart_state(request_id=target_request_id, chart_state=chart_state)
                         self._store.record_metric(metric_name="chart_render_fail_rate", metric_value=1.0, tags={"reason": reason})
-                        await self._notifier.send_text(
-                            chat_id,
-                            (
+                        await self._send_text(
+                            chat_id=chat_id,
+                            text=(
                                 "图表发送失败，已降级为文本说明。\n"
                                 f"原因: {self._chart_reason_text(reason)}\n"
-                                f"request_id(short)={(request_id or run_id or 'n/a')[-6:]}"
+                                f"request_id(short)={(target_request_id or 'n/a')[-6:]}"
                             ),
+                            buttons=self._snapshot_buttons(request_id=target_request_id, chart_state=chart_state),
                         )
                 else:
                     reason = "send_photo_error"
+                    chart_state = "failed"
+                    if target_request_id:
+                        self._store.upsert_request_chart_state(request_id=target_request_id, chart_state=chart_state)
                     self._store.record_metric(metric_name="chart_render_fail_rate", metric_value=1.0, tags={"reason": reason})
-                    await self._notifier.send_text(
-                        chat_id,
-                        (
+                    await self._send_text(
+                        chat_id=chat_id,
+                        text=(
                             "图表发送能力不可用，已降级为文本说明。\n"
                             f"原因: {self._chart_reason_text(reason)}"
                         ),
+                        buttons=self._snapshot_buttons(request_id=target_request_id, chart_state=chart_state),
                     )
             if not has_news:
-                await self._notifier.send_text(
-                    chat_id,
-                    "新闻回显: news_count=0 时间窗=近7天 来源=aggregated_news\n近7天未抓到新闻，可选：扩到30天 / 重试。",
+                await self._send_text(
+                    chat_id=chat_id,
+                    text=(
+                        f"新闻回显: news_count=0 时间窗={news_window} 来源=aggregated_news\n"
+                        "近7天未抓到新闻，可选：扩到30天 / 重试。"
+                    ),
+                    buttons=self._snapshot_buttons(request_id=target_request_id, chart_state=chart_state),
                 )
 
         return ActionResult(command="analyze_snapshot", request_id=request_id)
@@ -368,11 +502,13 @@ class TelegramActions:
             threshold=threshold,
             mode=mode,
         )
-        await self._notifier.send_text(
-            chat_id,
+        await self._send_text(
+            chat_id=chat_id,
+            text=(
             f"监控已创建 (Monitor created): scope={scope} symbols={','.join(symbol_list)} every {job.interval_sec}s template={template} "
             f"mode={job.mode} threshold={job.threshold} route={route_strategy} "
-            f"job_id={job.job_id} next_run_at={job.next_run_at}",
+            f"job_id={job.job_id} next_run_at={job.next_run_at}"
+            ),
         )
         return ActionResult(command="monitor")
 
@@ -393,19 +529,25 @@ class TelegramActions:
             latest = evidence[0] if evidence else {}
             confidence = "high" if metrics_line and "Missing" not in metrics_line else "medium"
             metric_source_keys = sorted([str(key) for key in report.key_metrics.keys()])
+            data_window = str(report.key_metrics.get("data_window") or "unknown")
+            fallback_reason = str(report.key_metrics.get("fallback_reason") or "").strip()
+            fallback_line = f"\n- fallback_reason={fallback_reason}" if fallback_reason else ""
             evidence_suffix = (
                 "\n证据块 (Evidence):\n"
-                f"- data_window={report.created_at} -> {report.updated_at}\n"
+                f"- data_window={data_window}\n"
                 f"- source=request_id:{report.request_id}\n"
                 f"- metric_source_keys={','.join(metric_source_keys)}\n"
                 f"- confidence_label={confidence}\n"
                 f"- schema_version={latest.get('schema_version', 'unknown')}\n"
                 f"- action_version={latest.get('action_version', 'unknown')}"
+                f"{fallback_line}"
             )
-        await self._notifier.send_text(
-            chat_id,
+        await self._send_text(
+            chat_id=chat_id,
+            text=(
             f"报告摘要 (Report summary)\nrun_id={report.run_id}\nrequest_id={report.request_id}\n"
-            f"symbol={report.symbol}\nsummary={summary}{metrics_suffix}{evidence_suffix}{help_suffix}",
+            f"symbol={report.symbol}\nsummary={summary}{metrics_suffix}{evidence_suffix}{help_suffix}"
+            ),
         )
         self._store.record_metric(metric_name="report_lookup_success", metric_value=1.0)
         return ActionResult(command="report")
@@ -413,7 +555,7 @@ class TelegramActions:
     async def handle_digest(self, *, chat_id: str, period: str) -> ActionResult:
         digest = self._store.build_daily_digest(chat_id=chat_id) if period == "daily" else {}
         if not digest:
-            await self._notifier.send_text(chat_id, "摘要周期不支持 (Digest period is not supported).")
+            await self._send_text(chat_id=chat_id, text="摘要周期不支持 (Digest period is not supported).")
             return ActionResult(command="digest")
 
         latest = digest.get("latest_reports") or []
@@ -428,14 +570,14 @@ class TelegramActions:
             lines.append("最新报告 (latest_reports):")
             for item in latest:
                 lines.append(f"- {item['symbol']} run_id={item['run_id']}")
-        await self._notifier.send_text(chat_id, "\n".join(lines))
+        await self._send_text(chat_id=chat_id, text="\n".join(lines))
         self._store.record_metric(metric_name="digest_generated", metric_value=1.0)
         return ActionResult(command="digest")
 
     async def handle_list(self, *, chat_id: str) -> ActionResult:
         jobs = self._store.list_watch_jobs(chat_id=chat_id, include_disabled=False)
         if not jobs:
-            await self._notifier.send_text(chat_id, "当前无活跃监控任务 (No active monitor jobs)。可用 /monitor <symbol> <interval> 创建。")
+            await self._send_text(chat_id=chat_id, text="当前无活跃监控任务 (No active monitor jobs)。可用 /monitor <symbol> <interval> 创建。")
             return ActionResult(command="list")
 
         lines = ["活跃监控任务 (Active monitor jobs):"]
@@ -448,13 +590,13 @@ class TelegramActions:
                 f"- {job.job_id} {job.symbol} every {job.interval_sec}s "
                 f"next={job.next_run_at} last_triggered={recent}"
             )
-        await self._notifier.send_text(chat_id, "\n".join(lines))
+        await self._send_text(chat_id=chat_id, text="\n".join(lines))
         return ActionResult(command="list")
 
     async def handle_alerts(self, *, chat_id: str, view: str, limit: int) -> ActionResult:
         rows = self._store.list_alert_hub(chat_id=chat_id, view=view, limit=limit)
         if not rows:
-            await self._notifier.send_text(chat_id, f"视图 {view} 暂无告警记录 (No alert records).")
+            await self._send_text(chat_id=chat_id, text=f"视图 {view} 暂无告警记录 (No alert records).")
             return ActionResult(command="alerts")
         lines = [f"告警中心 (Alert Hub) view={view} (latest {limit})"]
         for row in rows:
@@ -464,7 +606,7 @@ class TelegramActions:
             elif row.last_error:
                 extra = f" error={row.last_error[:80]}"
             lines.append(f"- {row.event_id} {row.symbol} {row.priority} {row.channel}:{row.status}{extra}")
-        await self._notifier.send_text(chat_id, "\n".join(lines))
+        await self._send_text(chat_id=chat_id, text="\n".join(lines))
         return ActionResult(command="alerts")
 
     async def handle_bulk(self, *, chat_id: str, action: str, target: str, value: str = "") -> ActionResult:

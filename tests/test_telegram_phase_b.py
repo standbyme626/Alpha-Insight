@@ -17,9 +17,12 @@ from services.watch_executor import WatchExecutor
 class FakeSender:
     def __init__(self) -> None:
         self.messages: list[tuple[str, str]] = []
+        self.keyboards: list[tuple[str, dict[str, object]]] = []
 
-    async def send_text(self, chat_id: str, text: str) -> dict[str, object]:
+    async def send_text(self, chat_id: str, text: str, reply_markup: dict[str, object] | None = None) -> dict[str, object]:
         self.messages.append((chat_id, text))
+        if reply_markup is not None:
+            self.keyboards.append((chat_id, reply_markup))
         return {"ok": True}
 
 

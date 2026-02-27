@@ -21,7 +21,7 @@ class FakeSender:
         self.messages: list[tuple[str, str]] = []
         self._fail_times = fail_times
 
-    async def send_text(self, chat_id: str, text: str) -> dict[str, object]:
+    async def send_text(self, chat_id: str, text: str, reply_markup: dict[str, object] | None = None) -> dict[str, object]:  # noqa: ARG002
         self.messages.append((chat_id, text))
         if self._fail_times > 0:
             self._fail_times -= 1

@@ -186,6 +186,13 @@ class PendingCandidateSelectionRecord:
 
 
 @dataclass
+class RequestChartStateRecord:
+    request_id: str
+    chart_state: str
+    chart_updated_at: str
+
+
+@dataclass
 class NotificationRoute:
     chat_id: str
     channel: str
@@ -584,6 +591,15 @@ class TelegramTaskStore:
                     expires_at TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS request_chart_states (
+                    request_id TEXT PRIMARY KEY,
+                    chart_state TEXT NOT NULL,
+                    chart_updated_at TEXT NOT NULL
                 )
                 """
             )
@@ -1302,6 +1318,42 @@ class TelegramTaskStore:
             return None
         return record
 
+    def upsert_request_chart_state(self, *, request_id: str, chart_state: str) -> None:
+        state = str(chart_state or "none").strip().lower()
+        if state not in {"none", "rendering", "ready", "failed"}:
+            state = "none"
+        now_iso = _utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO request_chart_states(request_id, chart_state, chart_updated_at)
+                VALUES(?, ?, ?)
+                ON CONFLICT(request_id) DO UPDATE SET
+                    chart_state = excluded.chart_state,
+                    chart_updated_at = excluded.chart_updated_at
+                """,
+                (request_id, state, now_iso),
+            )
+
+    def get_request_chart_state(self, *, request_id: str) -> RequestChartStateRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT request_id, chart_state, chart_updated_at
+                FROM request_chart_states
+                WHERE request_id = ?
+                LIMIT 1
+                """,
+                (request_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return RequestChartStateRecord(
+            request_id=str(row["request_id"]),
+            chart_state=str(row["chart_state"]),
+            chart_updated_at=str(row["chart_updated_at"]),
+        )
+
     def mark_pending_candidate_selection(self, *, request_id: str, status: str) -> bool:
         with self._connect() as conn:
             cursor = conn.execute(
@@ -1383,6 +1435,50 @@ class TelegramTaskStore:
                 return True, intent_req
             return False, None
         return False, None
+
+    def get_nl_request_by_ref(self, *, chat_id: str, request_ref: str) -> NLRequestRecord | None:
+        ref = (request_ref or "").strip()
+        if not ref:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT request_id, update_id, chat_id, intent, slots, confidence, needs_confirm, status,
+                       text_dedupe_key, intent_dedupe_key, normalized_text, normalized_request, action_version, risk_level,
+                       raw_text_hash, intent_candidate, reject_reason, confirm_deadline_at, last_error, created_at, updated_at
+                FROM nl_requests
+                WHERE chat_id = ?
+                  AND (request_id = ? OR substr(request_id, -6) = ?)
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (str(chat_id), ref, ref[-6:]),
+            ).fetchone()
+        if row is None:
+            return None
+        return NLRequestRecord(
+            request_id=str(row["request_id"]),
+            update_id=int(row["update_id"]),
+            chat_id=str(row["chat_id"]),
+            intent=str(row["intent"]),
+            slots=json.loads(str(row["slots"])),
+            confidence=float(row["confidence"]),
+            needs_confirm=bool(int(row["needs_confirm"])),
+            status=str(row["status"]),
+            text_dedupe_key=str(row["text_dedupe_key"]),
+            intent_dedupe_key=str(row["intent_dedupe_key"]),
+            normalized_text=str(row["normalized_text"]),
+            normalized_request=str(row["normalized_request"]),
+            action_version=str(row["action_version"]),
+            risk_level=str(row["risk_level"]),
+            raw_text_hash=str(row["raw_text_hash"]),
+            intent_candidate=str(row["intent_candidate"]),
+            reject_reason=str(row["reject_reason"]) if row["reject_reason"] is not None else None,
+            confirm_deadline_at=str(row["confirm_deadline_at"]) if row["confirm_deadline_at"] is not None else None,
+            last_error=str(row["last_error"]) if row["last_error"] is not None else None,
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
 
     def upsert_analysis_report(
         self,

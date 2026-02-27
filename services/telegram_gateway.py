@@ -712,6 +712,20 @@ class TelegramGateway:
         return request_ref, chosen_symbol
 
     @staticmethod
+    def _parse_callback_action(data: str) -> tuple[str, str] | None:
+        raw = (data or "").strip()
+        if not raw.startswith("act|"):
+            return None
+        parts = raw.split("|", 2)
+        if len(parts) != 3:
+            return None
+        request_ref = parts[1].strip()
+        action = parts[2].strip().lower()
+        if not request_ref or action not in {"chart", "news7", "news30", "retry", "report"}:
+            return None
+        return request_ref, action
+
+    @staticmethod
     def _parse_text_confirm(text: str) -> tuple[str, str] | None:
         raw = (text or "").strip()
         match = re.match(r"^(yes|no|cancel|是|否)\s+([A-Za-z0-9\-]+)$", raw, flags=re.IGNORECASE)
@@ -849,6 +863,80 @@ class TelegramGateway:
         await self._execute_nl_request(update_id=update_id, request_id=record.request_id)
         return True
 
+    async def _handle_request_action(
+        self,
+        *,
+        chat_id: str,
+        update_id: int,
+        request_ref: str,
+        action: str,
+    ) -> bool:
+        record = self._store.get_nl_request_by_ref(chat_id=chat_id, request_ref=request_ref)
+        if record is None:
+            await self._actions.send_error_message(chat_id=chat_id, text="该请求不存在或已过期，请重发分析请求。")
+            self._store.update_bot_update_status(
+                update_id=update_id,
+                status="processed",
+                command="request_action_expired",
+                error=None,
+            )
+            return True
+        if record.intent != "analyze_snapshot":
+            await self._actions.send_error_message(chat_id=chat_id, text="该请求不支持该操作。")
+            self._store.update_bot_update_status(
+                update_id=update_id,
+                status="failed",
+                command="request_action_rejected",
+                request_id=record.request_id,
+                error="unsupported_action_intent",
+            )
+            return True
+        if record.status in {"executing", "pending_confirm", "clarify_pending"}:
+            await self._actions.send_error_message(
+                chat_id=chat_id,
+                text=f"请求正在生成中，请稍候。request_id(short)={self._short_request_id(record.request_id)}",
+            )
+            self._store.update_bot_update_status(
+                update_id=update_id,
+                status="processed",
+                command="request_action_pending",
+                request_id=record.request_id,
+                error=None,
+            )
+            return True
+        if action == "report":
+            await self._actions.handle_report(chat_id=chat_id, target_id=record.request_id, detail="full")
+            self._store.update_bot_update_status(
+                update_id=update_id,
+                status="processed",
+                command="request_action_report",
+                request_id=record.request_id,
+                error=None,
+            )
+            return True
+        slots = dict(record.slots)
+        need_chart = action in {"chart", "retry"}
+        need_news = action in {"news7", "news30", "retry"} or bool(slots.get("need_news", False))
+        news_window_days = 30 if action == "news30" else 7
+        await self._actions.handle_analyze_snapshot(
+            chat_id=chat_id,
+            symbol=str(slots.get("symbol", "")).upper(),
+            period=str(slots.get("period", "1mo")).lower(),
+            interval=str(slots.get("interval", "1d")).lower(),
+            need_chart=need_chart,
+            need_news=need_news,
+            news_window_days=news_window_days,
+            request_id=record.request_id,
+        )
+        self._store.update_bot_update_status(
+            update_id=update_id,
+            status="processed",
+            command=f"request_action_{action}",
+            request_id=record.request_id,
+            error=None,
+        )
+        return True
+
     async def process_enqueued_update(self, *, update_id: int) -> bool:
         started_at = time.perf_counter()
         payload = self._store.get_bot_update_payload(update_id=update_id)
@@ -919,6 +1007,15 @@ class TelegramGateway:
                         update_id=update_id,
                         request_ref=request_ref,
                         chosen_symbol=chosen_symbol,
+                    )
+                action_payload = self._parse_callback_action(callback_data)
+                if action_payload is not None:
+                    request_ref, action = action_payload
+                    return await self._handle_request_action(
+                        chat_id=chat_id,
+                        update_id=update_id,
+                        request_ref=request_ref,
+                        action=action,
                     )
                 confirm = self._parse_callback_confirm(callback_data)
                 if confirm is None:
@@ -1357,10 +1454,33 @@ class TelegramGateway:
                     last_error=f"duplicate_of={duplicate_request_id}",
                 )
                 self._store.record_metric(metric_name="nl_dedupe_suppressed_count", metric_value=1.0, tags={"intent": plan.intent})
-                await self._actions.send_error_message(
-                    chat_id=chat_id,
-                    text=f"重复请求已抑制 (Deduped). existing_request_id={duplicate_request_id}",
+                duplicate_record = (
+                    self._store.get_nl_request(request_id=duplicate_request_id)
+                    if duplicate_request_id
+                    else None
                 )
+                if duplicate_record is not None and duplicate_record.status == "completed":
+                    report = self._store.get_analysis_report(report_id=duplicate_record.request_id, chat_id=chat_id)
+                    run_hint = f"run_id={report.run_id}" if report else "run_id=N/A"
+                    chart_state_record = self._store.get_request_chart_state(request_id=duplicate_record.request_id)
+                    chart_state = chart_state_record.chart_state if chart_state_record else "none"
+                    await self._actions.send_inline_buttons(
+                        chat_id=chat_id,
+                        text=(
+                            "30秒内重复请求已合并：已生成。\n"
+                            f"request_id(short)={self._short_request_id(duplicate_record.request_id)} {run_hint}"
+                        ),
+                        buttons=self._actions.build_snapshot_buttons(
+                            request_id=duplicate_record.request_id,
+                            chart_state=chart_state,
+                        ),
+                    )
+                else:
+                    pending_hint = duplicate_request_id or "n/a"
+                    await self._actions.send_error_message(
+                        chat_id=chat_id,
+                        text=f"30秒内重复请求已合并：生成中。request_id(short)={self._short_request_id(pending_hint)}",
+                    )
                 self._store.update_bot_update_status(
                     update_id=update_id,
                     status="processed",
@@ -1439,13 +1559,14 @@ class TelegramGateway:
                     ttl_seconds=300,
                 )
                 alias = str(plan.slots.get("_candidate_alias", "该标的")).strip()
-                tips = "\n".join([f"- {item} -> 回调: pick|{request_id}|{item}" for item in candidates[:4]])
-                await self._actions.send_error_message(
+                buttons = [[(item, f"pick|{request_id[-6:]}|{item}")] for item in candidates[:4]]
+                await self._actions.send_inline_buttons(
                     chat_id=chat_id,
                     text=(
-                        f"标的 `{alias}` 命中多个候选，请在 5 分钟内点选：\n{tips}\n"
+                        f"标的 `{alias}` 命中多个候选，请在 5 分钟内点选按钮：\n"
                         f"request_id(short)={self._short_request_id(request_id)}"
                     ),
+                    buttons=buttons,
                 )
                 self._store.update_bot_update_status(
                     update_id=update_id,
