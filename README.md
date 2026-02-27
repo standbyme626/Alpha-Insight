@@ -14,6 +14,7 @@ Alpha-Insight 是一个基于 LangGraph 的多 Agent 量化投研系统，支持
 - 三市场监控：A 股 / 港股 / 美股，支持 Top100 监控池
 - 公司名展示：前端与告警统一展示公司名，支持 `代码(公司名)` 与 `代码 | 公司名`
 - Telegram 告警：分级告警文案中英双语，字段统一（价格/涨跌幅/RSI/原因/时间）
+- Telegram 命令增强（Phase D）：`/report <run_id|request_id>`、`/digest daily`、`/monitor <symbol> <interval> [volatility|price|rsi]`
 - 双前端页面：
   - `8501` 实时驾驶舱（扫描、信号、流水线、告警）
   - `8502` Planner 控制台（规划）+ Full Analysis（完整分析产物）
@@ -185,6 +186,7 @@ docker stop alpha-insight-ui-cockpit alpha-insight-ui-llm
 ## 运维 Runbook
 
 - 详细冷启动与应急流程见：[docs/runbook.md](docs/runbook.md)
+- Telegram 网关/Worker 容器化模板见：`docker-compose.telegram.yml`
 
 ## 常见问题
 

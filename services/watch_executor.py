@@ -5,8 +5,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Protocol
 
 from agents.scanner_engine import ScanConfig, WatchlistRunResult, build_scan_trigger, format_signal_message, run_watchlist_cycle
+from services.notification_channels import MultiChannelNotifier
 from services.runtime_controls import GlobalConcurrencyGate, RuntimeLimits
-from services.telegram_store import DueNotification, DueWatchJob, TelegramTaskStore
+from services.telegram_store import DueWatchJob, TelegramTaskStore
 
 
 class ChatSender(Protocol):
@@ -37,19 +38,22 @@ class WatchExecutor:
         enable_triggered_research: bool = True,
         limits: RuntimeLimits | None = None,
         global_gate: GlobalConcurrencyGate | None = None,
+        multi_channel_notifier: MultiChannelNotifier | None = None,
     ):
         self._store = store
-        self._notifier = notifier
         self._scan_runner = scan_runner
         self._dedupe_bucket_minutes = dedupe_bucket_minutes
         self._enable_triggered_research = enable_triggered_research
         self._limits = limits or RuntimeLimits()
         self._global_gate = global_gate or GlobalConcurrencyGate(self._limits.global_concurrency)
+        self._multi_channel = multi_channel_notifier or MultiChannelNotifier(telegram=_TelegramTargetedSender(notifier))
 
     async def execute_job(self, job: DueWatchJob) -> WatchExecutionResult:
         self._store.record_metric(metric_name="monitor_executed", metric_value=1.0, tags={"job_id": job.job_id})
 
-        enable_research = self._enable_triggered_research and (not self._store.is_degradation_active(state_key="disable_critical_research"))
+        enable_research = self._enable_triggered_research and (
+            not self._store.is_degradation_active(state_key="disable_critical_research")
+        )
         if not enable_research:
             self._store.add_audit_event(
                 event_type="degrade_skip",
@@ -103,7 +107,7 @@ class WatchExecutor:
             notification_payload = self._store.get_watch_event(event_id=event_id)
             if not notification_payload:
                 continue
-            delivered = await self._dispatch_notification(notification_payload, retry_count=0)
+            delivered = await self._dispatch_notification(notification_payload, retry_count=0, channel_filter=None)
             if delivered:
                 self._store.mark_watch_job_triggered(job_id=job.job_id)
                 pushed_count += 1
@@ -123,24 +127,32 @@ class WatchExecutor:
             payload = self._store.get_watch_event(event_id=item.event_id)
             if not payload:
                 continue
-            if await self._dispatch_notification(payload, retry_count=item.retry_count):
+            if await self._dispatch_notification(payload, retry_count=item.retry_count, channel_filter=item.channel):
                 delivered += 1
         return delivered
 
-    async def _dispatch_notification(self, payload: dict[str, Any], *, retry_count: int) -> bool:
+    async def _dispatch_notification(
+        self,
+        payload: dict[str, Any],
+        *,
+        retry_count: int,
+        channel_filter: str | None,
+    ) -> bool:
         event_id = str(payload["event_id"])
         chat_id = str(payload["chat_id"])
         job_id = str(payload["job_id"])
         symbol = str(payload["symbol"])
+        routes = self._resolve_routes(chat_id=chat_id, channel_filter=channel_filter)
 
         if self._store.is_degradation_active(state_key="no_monitor_push"):
-            self._store.upsert_notification_state(
-                event_id=event_id,
-                channel="telegram",
-                state="suppressed",
-                retry_count=retry_count,
-                reason="no_monitor_push",
-            )
+            for channel, _target in routes:
+                self._store.upsert_notification_state(
+                    event_id=event_id,
+                    channel=channel,
+                    state="suppressed",
+                    retry_count=retry_count,
+                    reason="no_monitor_push",
+                )
             self._store.add_audit_event(
                 event_type="degrade_skip",
                 chat_id=chat_id,
@@ -153,13 +165,14 @@ class WatchExecutor:
 
         summary_mode = self._store.is_degradation_active(state_key="summary_mode")
         if summary_mode and self._is_throttled(job_id=job_id, interval_sec=900):
-            self._store.upsert_notification_state(
-                event_id=event_id,
-                channel="telegram",
-                state="suppressed",
-                retry_count=retry_count,
-                reason="summary_mode_throttle",
-            )
+            for channel, _target in routes:
+                self._store.upsert_notification_state(
+                    event_id=event_id,
+                    channel=channel,
+                    state="suppressed",
+                    retry_count=retry_count,
+                    reason="summary_mode_throttle",
+                )
             self._store.add_audit_event(
                 event_type="degrade_skip",
                 chat_id=chat_id,
@@ -171,53 +184,90 @@ class WatchExecutor:
             return False
 
         text = self._build_message(payload, summary_mode=summary_mode)
-        self._store.record_metric(metric_name="push_attempt", metric_value=1.0, tags={"job_id": job_id})
+        delivered_any = False
+        for channel, target in routes:
+            self._store.record_metric(metric_name="push_attempt", metric_value=1.0, tags={"job_id": job_id, "channel": channel})
+            self._store.record_metric(metric_name="channel_dispatch_attempt", metric_value=1.0, tags={"job_id": job_id, "channel": channel})
 
-        try:
-            await self._notifier.send_text(chat_id, text)
-            self._store.mark_watch_event_pushed(event_id=event_id)
-            self._store.upsert_notification_state(
-                event_id=event_id,
-                channel="telegram",
-                state="delivered",
-                retry_count=retry_count,
-                delivered_at=datetime.now(timezone.utc).isoformat(),
-                reason="delivery_success",
-            )
-            self._store.record_metric(metric_name="push_success", metric_value=1.0, tags={"job_id": job_id})
-            return True
-        except Exception as exc:  # pragma: no cover
-            next_retry = retry_count + 1
-            if next_retry >= self._limits.notification_max_retry:
+            result = await self._multi_channel.dispatch(channel=channel, target=target, text=text)
+            if result.delivered:
                 self._store.upsert_notification_state(
                     event_id=event_id,
-                    channel="telegram",
-                    state="dlq",
-                    retry_count=next_retry,
-                    last_error=str(exc),
-                    reason="max_retry_exceeded",
+                    channel=channel,
+                    state="delivered",
+                    retry_count=retry_count,
+                    delivered_at=datetime.now(timezone.utc).isoformat(),
+                    reason="delivery_success",
                 )
-                self._store.add_audit_event(
-                    event_type="notification_dlq",
-                    chat_id=chat_id,
-                    update_id=None,
-                    action="push",
-                    reason=str(exc),
-                    metadata={"event_id": event_id, "retries": next_retry},
-                )
-                return False
+                self._store.record_metric(metric_name="push_success", metric_value=1.0, tags={"job_id": job_id, "channel": channel})
+                self._store.record_metric(metric_name="channel_dispatch_success", metric_value=1.0, tags={"job_id": job_id, "channel": channel})
+                delivered_any = True
+                continue
+            self._record_channel_failure(
+                event_id=event_id,
+                chat_id=chat_id,
+                channel=channel,
+                retry_count=retry_count,
+                error=result.error or "delivery_failed",
+            )
 
-            backoff_seconds = min(300, 15 * (2 ** max(0, next_retry - 1)))
+        if delivered_any:
+            self._store.mark_watch_event_pushed(event_id=event_id)
+        return delivered_any
+
+    def _resolve_routes(self, *, chat_id: str, channel_filter: str | None) -> list[tuple[str, str]]:
+        routes = self._store.list_notification_routes(chat_id=chat_id, enabled_only=True)
+        selected = [(item.channel, item.target) for item in routes]
+        if not selected:
+            selected = [("telegram", chat_id)]
+        if channel_filter:
+            selected = [item for item in selected if item[0] == channel_filter]
+            if not selected:
+                fallback = self._store.get_notification_route_target(chat_id=chat_id, channel=channel_filter)
+                if fallback:
+                    selected = [(channel_filter, fallback)]
+                elif channel_filter == "telegram":
+                    selected = [("telegram", chat_id)]
+        return selected
+
+    def _record_channel_failure(
+        self,
+        *,
+        event_id: str,
+        chat_id: str,
+        channel: str,
+        retry_count: int,
+        error: str,
+    ) -> None:
+        next_retry = retry_count + 1
+        if next_retry >= self._limits.notification_max_retry:
             self._store.upsert_notification_state(
                 event_id=event_id,
-                channel="telegram",
-                state="retry_pending",
+                channel=channel,
+                state="dlq",
                 retry_count=next_retry,
-                next_retry_at=(datetime.now(timezone.utc) + timedelta(seconds=backoff_seconds)).isoformat(),
-                last_error=str(exc),
-                reason="delivery_failed",
+                last_error=error,
+                reason="max_retry_exceeded",
             )
-            return False
+            self._store.add_audit_event(
+                event_type="notification_dlq",
+                chat_id=chat_id,
+                update_id=None,
+                action=f"push:{channel}",
+                reason=error,
+                metadata={"event_id": event_id, "retries": next_retry, "channel": channel},
+            )
+            return
+        backoff_seconds = min(300, 15 * (2 ** max(0, next_retry - 1)))
+        self._store.upsert_notification_state(
+            event_id=event_id,
+            channel=channel,
+            state="retry_pending",
+            retry_count=next_retry,
+            next_retry_at=(datetime.now(timezone.utc) + timedelta(seconds=backoff_seconds)).isoformat(),
+            last_error=error,
+            reason="delivery_failed",
+        )
 
     def _is_throttled(self, *, job_id: str, interval_sec: int) -> bool:
         job = self._store.get_watch_job(job_id=job_id)
@@ -259,3 +309,12 @@ class WatchExecutor:
         if interval_sec <= 3600:
             return "60m"
         return "1d"
+
+
+class _TelegramTargetedSender:
+    def __init__(self, sender: ChatSender):
+        self._sender = sender
+
+    async def send_text(self, target: str, text: str) -> dict[str, Any]:
+        return await self._sender.send_text(target, text)
+

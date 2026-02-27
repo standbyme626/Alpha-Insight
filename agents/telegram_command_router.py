@@ -57,17 +57,39 @@ def parse_telegram_command(text: str) -> CommandRoute | CommandError:
         return CommandRoute(name="analyze", args={"symbol": symbol})
 
     if command == "/monitor":
-        if len(parts) != 3:
-            return CommandError("Usage: /monitor <symbol> <interval>. Example: /monitor TSLA 1h")
+        if len(parts) not in {3, 4}:
+            return CommandError("Usage: /monitor <symbol> <interval> [volatility|price|rsi]. Example: /monitor TSLA 1h rsi")
         symbol = normalize_market_symbol(parts[1], market="auto")
         if not symbol or not _SYMBOL_PATTERN.fullmatch(symbol):
             return CommandError(f"Invalid symbol: {parts[1]}. Example: /monitor TSLA 1h")
         interval_seconds = _parse_interval_to_seconds(parts[2])
         if interval_seconds is None:
             return CommandError("Invalid interval. Use 1m-24h, e.g. 5m, 1h, 4h.")
+        template = "volatility"
+        mode = "anomaly"
+        threshold = 0.03
+        if len(parts) == 4:
+            raw_template = parts[3].lower()
+            template_map = {
+                "volatility": ("anomaly", 0.03),
+                "price": ("price_breakout", 0.02),
+                "rsi": ("rsi_extreme", 70.0),
+            }
+            picked = template_map.get(raw_template)
+            if picked is None:
+                return CommandError("Invalid monitor template. Use volatility|price|rsi.")
+            mode, threshold = picked
+            template = raw_template
         return CommandRoute(
             name="monitor",
-            args={"symbol": symbol, "interval": parts[2].lower(), "interval_sec": str(interval_seconds)},
+            args={
+                "symbol": symbol,
+                "interval": parts[2].lower(),
+                "interval_sec": str(interval_seconds),
+                "template": template,
+                "mode": mode,
+                "threshold": str(threshold),
+            },
         )
 
     if command == "/list":
@@ -87,5 +109,21 @@ def parse_telegram_command(text: str) -> CommandRoute | CommandError:
         if not symbol or not _SYMBOL_PATTERN.fullmatch(symbol):
             return CommandError("Stop target must be a valid symbol or job_id, e.g. /stop TSLA or /stop job-deadbeef")
         return CommandRoute(name="stop", args={"target": symbol, "target_type": "symbol"})
+
+    if command == "/report":
+        if len(parts) != 2:
+            return CommandError("Usage: /report <run_id|request_id>. Example: /report run-123abc")
+        target = parts[1].strip()
+        if not target:
+            return CommandError("Usage: /report <run_id|request_id>. Example: /report run-123abc")
+        return CommandRoute(name="report", args={"target_id": target})
+
+    if command == "/digest":
+        if len(parts) != 2:
+            return CommandError("Usage: /digest daily")
+        period = parts[1].strip().lower()
+        if period != "daily":
+            return CommandError("Only `/digest daily` is supported right now.")
+        return CommandRoute(name="digest", args={"period": period})
 
     return CommandError(f"Unsupported command: {parts[0]}. Use /help to see available commands.")

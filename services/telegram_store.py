@@ -104,6 +104,28 @@ class DegradationState:
     updated_at: str
 
 
+@dataclass
+class AnalysisReportRecord:
+    run_id: str
+    request_id: str
+    chat_id: str
+    symbol: str
+    summary: str
+    key_metrics: dict[str, Any]
+    created_at: str
+    updated_at: str
+
+
+@dataclass
+class NotificationRoute:
+    chat_id: str
+    channel: str
+    target: str
+    enabled: bool
+    created_at: str
+    updated_at: str
+
+
 class TelegramTaskStore:
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)
@@ -148,6 +170,20 @@ class TelegramTaskStore:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     last_error TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS analysis_reports (
+                    run_id TEXT PRIMARY KEY,
+                    request_id TEXT NOT NULL UNIQUE,
+                    chat_id TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    key_metrics TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
                 )
                 """
             )
@@ -322,11 +358,26 @@ class TelegramTaskStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS notification_routes (
+                    chat_id TEXT NOT NULL,
+                    channel TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    enabled INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(chat_id, channel, target)
+                )
+                """
+            )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_watch_jobs_chat_enabled ON watch_jobs(chat_id, enabled)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_watch_jobs_next_run_at ON watch_jobs(next_run_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_notifications_state_next_retry ON notifications(state, next_retry_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_metric_events_name_ts ON metric_events(metric_name, created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_ts ON audit_events(created_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_analysis_reports_chat_created ON analysis_reports(chat_id, created_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_notification_routes_chat_enabled ON notification_routes(chat_id, enabled)")
 
     def insert_bot_update_if_new(self, *, update_id: int, chat_id: str, payload: dict[str, Any]) -> bool:
         now = _utc_now()
@@ -484,6 +535,82 @@ class TelegramTaskStore:
             last_error=str(row["last_error"]) if row["last_error"] is not None else None,
         )
 
+    def upsert_analysis_report(
+        self,
+        *,
+        run_id: str,
+        request_id: str,
+        chat_id: str,
+        symbol: str,
+        summary: str,
+        key_metrics: dict[str, Any] | None = None,
+    ) -> None:
+        now = _utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO analysis_reports(run_id, request_id, chat_id, symbol, summary, key_metrics, created_at, updated_at)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id) DO UPDATE SET
+                    request_id = excluded.request_id,
+                    chat_id = excluded.chat_id,
+                    symbol = excluded.symbol,
+                    summary = excluded.summary,
+                    key_metrics = excluded.key_metrics,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    run_id,
+                    request_id,
+                    str(chat_id),
+                    symbol.upper(),
+                    summary.strip(),
+                    _json_dumps(key_metrics or {}),
+                    now,
+                    now,
+                ),
+            )
+
+    def get_analysis_report(self, *, report_id: str, chat_id: str | None = None) -> AnalysisReportRecord | None:
+        report_id_str = report_id.strip()
+        if not report_id_str:
+            return None
+        with self._connect() as conn:
+            if chat_id is None:
+                row = conn.execute(
+                    """
+                    SELECT run_id, request_id, chat_id, symbol, summary, key_metrics, created_at, updated_at
+                    FROM analysis_reports
+                    WHERE run_id = ? OR request_id = ?
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """,
+                    (report_id_str, report_id_str),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT run_id, request_id, chat_id, symbol, summary, key_metrics, created_at, updated_at
+                    FROM analysis_reports
+                    WHERE (run_id = ? OR request_id = ?) AND chat_id = ?
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """,
+                    (report_id_str, report_id_str, str(chat_id)),
+                ).fetchone()
+        if row is None:
+            return None
+        return AnalysisReportRecord(
+            run_id=str(row["run_id"]),
+            request_id=str(row["request_id"]),
+            chat_id=str(row["chat_id"]),
+            symbol=str(row["symbol"]),
+            summary=str(row["summary"]),
+            key_metrics=json.loads(str(row["key_metrics"])),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+
     def enqueue_analysis_recovery(
         self,
         *,
@@ -549,6 +676,7 @@ class TelegramTaskStore:
 
     def upsert_telegram_chat(self, *, chat_id: str, user_id: str | None, username: str | None, status: str = "active") -> None:
         now = _utc_now()
+        chat_str = str(chat_id)
         with self._connect() as conn:
             conn.execute(
                 """
@@ -559,7 +687,17 @@ class TelegramTaskStore:
                     username = COALESCE(excluded.username, telegram_chats.username),
                     status = excluded.status
                 """,
-                (str(chat_id), str(user_id) if user_id else None, username, now, status),
+                (chat_str, str(user_id) if user_id else None, username, now, status),
+            )
+            conn.execute(
+                """
+                INSERT INTO notification_routes(chat_id, channel, target, enabled, created_at, updated_at)
+                VALUES(?, 'telegram', ?, 1, ?, ?)
+                ON CONFLICT(chat_id, channel, target) DO UPDATE SET
+                    enabled = 1,
+                    updated_at = excluded.updated_at
+                """,
+                (chat_str, chat_str, now, now),
             )
 
     def set_allowlist_chat(self, *, chat_id: str, can_monitor: bool) -> None:
@@ -583,6 +721,68 @@ class TelegramTaskStore:
                 (str(chat_id),),
             ).fetchone()
         return bool(row and int(row["can_monitor"]) == 1)
+
+    def is_chat_allowlisted(self, *, chat_id: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT can_monitor FROM allowlist_chats WHERE chat_id = ?",
+                (str(chat_id),),
+            ).fetchone()
+        return bool(row and int(row["can_monitor"]) == 1)
+
+    def upsert_notification_route(self, *, chat_id: str, channel: str, target: str, enabled: bool = True) -> None:
+        now = _utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO notification_routes(chat_id, channel, target, enabled, created_at, updated_at)
+                VALUES(?, ?, ?, ?, ?, ?)
+                ON CONFLICT(chat_id, channel, target) DO UPDATE SET
+                    enabled = excluded.enabled,
+                    updated_at = excluded.updated_at
+                """,
+                (str(chat_id), channel, target, 1 if enabled else 0, now, now),
+            )
+
+    def list_notification_routes(self, *, chat_id: str, enabled_only: bool = True) -> list[NotificationRoute]:
+        where = "chat_id = ? AND enabled = 1" if enabled_only else "chat_id = ?"
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT chat_id, channel, target, enabled, created_at, updated_at
+                FROM notification_routes
+                WHERE {where}
+                ORDER BY channel ASC, created_at ASC
+                """,
+                (str(chat_id),),
+            ).fetchall()
+        return [
+            NotificationRoute(
+                chat_id=str(row["chat_id"]),
+                channel=str(row["channel"]),
+                target=str(row["target"]),
+                enabled=bool(int(row["enabled"])),
+                created_at=str(row["created_at"]),
+                updated_at=str(row["updated_at"]),
+            )
+            for row in rows
+        ]
+
+    def get_notification_route_target(self, *, chat_id: str, channel: str) -> str | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT target
+                FROM notification_routes
+                WHERE chat_id = ? AND channel = ? AND enabled = 1
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (str(chat_id), channel),
+            ).fetchone()
+        if row is None:
+            return None
+        return str(row["target"])
 
     def check_and_increment_command_rate_limit(
         self,
@@ -1242,6 +1442,79 @@ class TelegramTaskStore:
             row = conn.execute("SELECT COUNT(*) AS c FROM notification_state_transitions").fetchone()
         return int(row["c"])
 
+    def build_daily_digest(self, *, chat_id: str, now: datetime | None = None) -> dict[str, Any]:
+        current = now or _utc_now_dt()
+        since = current - timedelta(days=1)
+        since_iso = _isoformat(since)
+        with self._connect() as conn:
+            active_jobs = int(
+                conn.execute(
+                    "SELECT COUNT(*) AS c FROM watch_jobs WHERE chat_id = ? AND enabled = 1",
+                    (str(chat_id),),
+                ).fetchone()["c"]
+            )
+            alerts_triggered = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) AS c
+                    FROM watch_events we
+                    JOIN watch_jobs wj ON wj.job_id = we.job_id
+                    WHERE wj.chat_id = ? AND we.created_at >= ?
+                    """,
+                    (str(chat_id), since_iso),
+                ).fetchone()["c"]
+            )
+            delivered = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) AS c
+                    FROM notifications n
+                    JOIN watch_events we ON we.event_id = n.event_id
+                    JOIN watch_jobs wj ON wj.job_id = we.job_id
+                    WHERE wj.chat_id = ? AND n.state = 'delivered' AND n.updated_at >= ?
+                    """,
+                    (str(chat_id), since_iso),
+                ).fetchone()["c"]
+            )
+            completed_analyses = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) AS c
+                    FROM analysis_requests
+                    WHERE chat_id = ? AND status = 'completed' AND updated_at >= ?
+                    """,
+                    (str(chat_id), since_iso),
+                ).fetchone()["c"]
+            )
+            rows = conn.execute(
+                """
+                SELECT run_id, symbol, summary
+                FROM analysis_reports
+                WHERE chat_id = ? AND updated_at >= ?
+                ORDER BY updated_at DESC
+                LIMIT 3
+                """,
+                (str(chat_id), since_iso),
+            ).fetchall()
+        latest_reports = [
+            {
+                "run_id": str(row["run_id"]),
+                "symbol": str(row["symbol"]),
+                "summary": str(row["summary"]),
+            }
+            for row in rows
+        ]
+        return {
+            "chat_id": str(chat_id),
+            "window_start": since_iso,
+            "window_end": _isoformat(current),
+            "active_jobs": active_jobs,
+            "alerts_triggered": alerts_triggered,
+            "delivered_notifications": delivered,
+            "completed_analyses": completed_analyses,
+            "latest_reports": latest_reports,
+        }
+
     def verification_counts(self) -> dict[str, int]:
         with self._connect() as conn:
             processed_updates = int(
@@ -1332,3 +1605,32 @@ class TelegramTaskStore:
             "dlq_count": self.count_dlq(),
             "notification_state_transition_total": self.count_notification_state_transitions(),
         }
+
+    def build_phase_d_run_report(self) -> dict[str, float | int]:
+        report = dict(self.build_phase_c_run_report())
+        report_lookup_success = self.count_metric_events(metric_name="report_lookup_success")
+        report_lookup_total = self.count_metric_events(metric_name="report_lookup_total")
+        digest_generated = self.count_metric_events(metric_name="digest_generated")
+        channel_attempt = self.count_metric_events(metric_name="channel_dispatch_attempt")
+        channel_success = self.count_metric_events(metric_name="channel_dispatch_success")
+        gray_denied = self.count_audit_events(event_type="gray_release_denied")
+
+        report["report_lookup_success_rate"] = round(
+            (report_lookup_success / report_lookup_total) if report_lookup_total else 1.0,
+            4,
+        )
+        report["digest_generated_total"] = digest_generated
+        report["channel_dispatch_success_rate"] = round(
+            (channel_success / channel_attempt) if channel_attempt else 1.0,
+            4,
+        )
+        report["gray_release_denied_total"] = gray_denied
+        report["enabled_notification_routes"] = self._count_enabled_notification_routes()
+        return report
+
+    def _count_enabled_notification_routes(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS c FROM notification_routes WHERE enabled = 1"
+            ).fetchone()
+        return int(row["c"])

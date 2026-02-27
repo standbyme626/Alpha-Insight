@@ -28,12 +28,14 @@ class TelegramGateway:
         limits: RuntimeLimits | None = None,
         allowed_chat_ids: set[str] | None = None,
         allowed_commands: set[str] | None = None,
+        gray_release_enabled: bool = False,
     ):
         self._store = store
         self._actions = actions
         self._limits = limits or RuntimeLimits()
         self._allowed_chat_ids = allowed_chat_ids or set()
-        self._allowed_commands = allowed_commands or {"help", "analyze", "monitor", "list", "stop"}
+        self._allowed_commands = allowed_commands or {"help", "analyze", "monitor", "list", "stop", "report", "digest"}
+        self._gray_release_enabled = gray_release_enabled
         self._offset = max(0, self._store.get_latest_update_id() + 1)
 
     @staticmethod
@@ -102,6 +104,24 @@ class TelegramGateway:
                 )
                 self._store.add_audit_event(
                     event_type="source_denied",
+                    chat_id=chat_id,
+                    update_id=update_id,
+                    action="reject",
+                    reason=denied,
+                )
+                return True
+
+            if self._gray_release_enabled and (not self._store.is_chat_allowlisted(chat_id=chat_id)):
+                denied = "gray release active: chat not allowlisted"
+                await self._actions.send_error_message(chat_id=chat_id, text=f"Permission denied: {denied}")
+                self._store.update_bot_update_status(
+                    update_id=update_id,
+                    status="failed",
+                    command="gray_release_denied",
+                    error=denied,
+                )
+                self._store.add_audit_event(
+                    event_type="gray_release_denied",
                     chat_id=chat_id,
                     update_id=update_id,
                     action="reject",
@@ -187,6 +207,9 @@ class TelegramGateway:
                         chat_id=chat_id,
                         symbol=parsed.args["symbol"],
                         interval_sec=int(parsed.args["interval_sec"]),
+                        mode=str(parsed.args.get("mode", "anomaly")),
+                        threshold=float(parsed.args.get("threshold", "0.03")),
+                        template=str(parsed.args.get("template", "volatility")),
                     )
             elif parsed.name == "list":
                 result = await self._actions.handle_list(chat_id=chat_id)
@@ -196,6 +219,10 @@ class TelegramGateway:
                     target=parsed.args["target"],
                     target_type=parsed.args["target_type"],
                 )
+            elif parsed.name == "report":
+                result = await self._actions.handle_report(chat_id=chat_id, target_id=parsed.args["target_id"])
+            elif parsed.name == "digest":
+                result = await self._actions.handle_digest(chat_id=chat_id, period=parsed.args["period"])
             else:
                 raise ValueError(f"Unsupported route: {parsed.name}")
 

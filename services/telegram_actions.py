@@ -48,9 +48,12 @@ class TelegramActions:
             chat_id,
             "Available commands:\n"
             "/analyze <symbol> - run unified research and return run_id\n"
-            "/monitor <symbol> <interval> - create monitor job (e.g. 1h)\n"
+            "/monitor <symbol> <interval> [volatility|price|rsi] - create monitor job (e.g. 1h rsi)\n"
             "/list - list monitor jobs\n"
             "/stop <job_id|symbol> - disable monitor job\n"
+            "/report <run_id|request_id> - query historical report summary\n"
+            "/digest daily - get last-24h summary\n"
+            "Compliance: for research and alerts only, no auto-trading.\n"
             "/help - show this help",
         )
         return ActionResult(command="help")
@@ -87,7 +90,16 @@ class TelegramActions:
         )
         return ActionResult(command="analyze", request_id=rid)
 
-    async def handle_monitor(self, *, chat_id: str, symbol: str, interval_sec: int) -> ActionResult:
+    async def handle_monitor(
+        self,
+        *,
+        chat_id: str,
+        symbol: str,
+        interval_sec: int,
+        mode: str = "anomaly",
+        threshold: float = 0.03,
+        template: str = "volatility",
+    ) -> ActionResult:
         if not self._store.can_chat_monitor(chat_id=chat_id):
             await self._notifier.send_text(
                 chat_id,
@@ -116,14 +128,60 @@ class TelegramActions:
             symbol=symbol,
             interval_sec=interval_sec,
             market="auto",
-            threshold=0.03,
-            mode="anomaly",
+            threshold=threshold,
+            mode=mode,
         )
         await self._notifier.send_text(
             chat_id,
-            f"Monitor created: {job.symbol} every {job.interval_sec}s, job_id={job.job_id}, next_run_at={job.next_run_at}",
+            f"Monitor created: {job.symbol} every {job.interval_sec}s template={template} "
+            f"mode={job.mode} threshold={job.threshold} job_id={job.job_id} next_run_at={job.next_run_at}",
         )
         return ActionResult(command="monitor")
+
+    async def handle_report(self, *, chat_id: str, target_id: str) -> ActionResult:
+        self._store.record_metric(metric_name="report_lookup_total", metric_value=1.0)
+        report = self._store.get_analysis_report(report_id=target_id, chat_id=chat_id)
+        if report is None:
+            await self._notifier.send_text(chat_id, f"No report found for `{target_id}`.")
+            return ActionResult(command="report")
+
+        close_price = report.key_metrics.get("data_close")
+        rsi = report.key_metrics.get("technical_rsi_14")
+        metrics_text = []
+        if close_price is not None:
+            metrics_text.append(f"close={round(float(close_price), 4)}")
+        if rsi is not None:
+            metrics_text.append(f"rsi14={round(float(rsi), 2)}")
+        metrics_suffix = f"\nKey metrics: {' '.join(metrics_text)}" if metrics_text else ""
+        await self._notifier.send_text(
+            chat_id,
+            f"Report summary\nrun_id={report.run_id}\nrequest_id={report.request_id}\n"
+            f"symbol={report.symbol}\nsummary={report.summary[:500]}{metrics_suffix}",
+        )
+        self._store.record_metric(metric_name="report_lookup_success", metric_value=1.0)
+        return ActionResult(command="report")
+
+    async def handle_digest(self, *, chat_id: str, period: str) -> ActionResult:
+        digest = self._store.build_daily_digest(chat_id=chat_id) if period == "daily" else {}
+        if not digest:
+            await self._notifier.send_text(chat_id, "Digest period is not supported.")
+            return ActionResult(command="digest")
+
+        latest = digest.get("latest_reports") or []
+        lines = [
+            "Daily digest (last 24h)",
+            f"active_jobs={digest['active_jobs']}",
+            f"alerts_triggered={digest['alerts_triggered']}",
+            f"delivered_notifications={digest['delivered_notifications']}",
+            f"completed_analyses={digest['completed_analyses']}",
+        ]
+        if latest:
+            lines.append("latest_reports:")
+            for item in latest:
+                lines.append(f"- {item['symbol']} run_id={item['run_id']}")
+        await self._notifier.send_text(chat_id, "\n".join(lines))
+        self._store.record_metric(metric_name="digest_generated", metric_value=1.0)
+        return ActionResult(command="digest")
 
     async def handle_list(self, *, chat_id: str) -> ActionResult:
         jobs = self._store.list_watch_jobs(chat_id=chat_id, include_disabled=False)
@@ -200,6 +258,8 @@ class TelegramActions:
                     timeout=timeout_seconds,
                 )
             run_id = str(result.get("run_id", ""))
+            summary = str(((result.get("fused_insights") or {}).get("summary") or "")).strip()
+            key_metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
             self._store.transition_analysis_request_status(
                 request_id=request_id,
                 from_statuses=("running",),
@@ -207,6 +267,15 @@ class TelegramActions:
                 run_id=run_id,
                 last_error=None,
             )
+            if run_id:
+                self._store.upsert_analysis_report(
+                    run_id=run_id,
+                    request_id=request_id,
+                    chat_id=chat_id,
+                    symbol=symbol,
+                    summary=summary or "No summary",
+                    key_metrics=key_metrics,
+                )
             await self._notifier.send_text(chat_id, f"Analysis completed. request_id={request_id}, run_id={run_id}")
         except TimeoutError:
             self._store.transition_analysis_request_status(

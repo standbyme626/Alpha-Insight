@@ -5,6 +5,9 @@ import asyncio
 import os
 from pathlib import Path
 
+import aiohttp
+
+from services.notification_channels import MultiChannelNotifier
 from services.reliability_governor import GovernorConfig, ReliabilityGovernor
 from services.runtime_controls import GlobalConcurrencyGate, RuntimeLimits
 from services.scheduler import TelegramWatchScheduler
@@ -19,6 +22,28 @@ class TelegramChatSender:
 
     async def send_text(self, chat_id: str, text: str) -> dict[str, object]:
         return await send_text(self._bot_token, chat_id, text)
+
+
+class TelegramTargetSender:
+    def __init__(self, bot_token: str):
+        self._bot_token = bot_token
+
+    async def send_text(self, target: str, text: str) -> dict[str, object]:
+        return await send_text(self._bot_token, target, text)
+
+
+class WebhookTextSender:
+    def __init__(self, webhook_url: str):
+        self._webhook_url = webhook_url
+
+    async def send_text(self, target: str, text: str) -> dict[str, object]:
+        payload = {"target": target, "text": text}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(self._webhook_url, json=payload, timeout=20) as response:
+                data = await response.json(content_type=None)
+                if response.status >= 400:
+                    raise RuntimeError(f"webhook send failed status={response.status} payload={data}")
+                return {"ok": True, "response": data}
 
 
 def parse_args() -> argparse.Namespace:
@@ -45,7 +70,20 @@ async def _main() -> int:
 
     store = TelegramTaskStore(Path(args.db_path))
     notifier = TelegramChatSender(bot_token)
-    executor = WatchExecutor(store=store, notifier=notifier, limits=limits, global_gate=gate)
+    email_webhook = os.getenv("TELEGRAM_EMAIL_WEBHOOK_URL", "").strip()
+    wecom_webhook = os.getenv("TELEGRAM_WECOM_WEBHOOK_URL", "").strip()
+    multi_channel = MultiChannelNotifier(
+        telegram=TelegramTargetSender(bot_token),
+        email=WebhookTextSender(email_webhook) if email_webhook else None,
+        wecom=WebhookTextSender(wecom_webhook) if wecom_webhook else None,
+    )
+    executor = WatchExecutor(
+        store=store,
+        notifier=notifier,
+        limits=limits,
+        global_gate=gate,
+        multi_channel_notifier=multi_channel,
+    )
     governor = ReliabilityGovernor(
         store=store,
         config=GovernorConfig(

@@ -1,0 +1,65 @@
+services:
+  telegram-db:
+    image: postgres:16-alpine
+    container_name: alpha-insight-telegram-db
+    environment:
+      POSTGRES_USER: ${TELEGRAM_DB_USER:-alpha}
+      POSTGRES_PASSWORD: ${TELEGRAM_DB_PASSWORD:-alpha}
+      POSTGRES_DB: ${TELEGRAM_DB_NAME:-alpha_telegram}
+    volumes:
+      - telegram-db-data:/var/lib/postgresql/data
+    ports:
+      - "${TELEGRAM_DB_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TELEGRAM_DB_USER:-alpha} -d ${TELEGRAM_DB_NAME:-alpha_telegram}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  telegram-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: alpha-insight-telegram-gateway
+    depends_on:
+      telegram-db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /workspace
+      TELEGRAM_GATEWAY_DB: ${TELEGRAM_GATEWAY_DB:-storage/telegram_gateway.db}
+      TELEGRAM_GRAY_RELEASE_ENABLED: ${TELEGRAM_GRAY_RELEASE_ENABLED:-true}
+    working_dir: /workspace
+    volumes:
+      - ./:/workspace
+      - telegram-data:/workspace/storage
+    command: python scripts/telegram_webhook_gateway.py --host 0.0.0.0 --port 8081
+    ports:
+      - "8081:8081"
+    restart: unless-stopped
+
+  telegram-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: alpha-insight-telegram-worker
+    depends_on:
+      telegram-gateway:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      PYTHONPATH: /workspace
+      TELEGRAM_GATEWAY_DB: ${TELEGRAM_GATEWAY_DB:-storage/telegram_gateway.db}
+    working_dir: /workspace
+    volumes:
+      - ./:/workspace
+      - telegram-data:/workspace/storage
+    command: python scripts/telegram_watch_scheduler.py --poll-interval-seconds 1 --batch-size 20
+    restart: unless-stopped
+
+volumes:
+  telegram-db-data:
+  telegram-data:
+

@@ -98,3 +98,43 @@
 4. 若 `latency_anomaly`：
    - 降低 watchlist 数量，缩短周期，或拆分调度批次。
 5. 保留 `artifacts/alerts/watchlist_alert_snapshots.jsonl` 作为审计记录。
+
+## 9. Telegram Phase D（Gateway + Worker + Multi-Channel）
+
+### 9.1 启动模板（容器化）
+
+- 使用 `docker-compose.telegram.yml`：
+  - `docker compose -f docker-compose.telegram.yml --env-file .env up -d telegram-db telegram-gateway telegram-worker`
+- 检查服务：
+  - `docker compose -f docker-compose.telegram.yml ps`
+
+### 9.2 灰度发布（白名单 chat）
+
+1. 开启灰度：
+   - `TELEGRAM_GRAY_RELEASE_ENABLED=true`
+2. 仅放行白名单 chat（写入 `allowlist_chats`）：
+   - 对目标 chat 执行 `set_allowlist_chat(chat_id, can_monitor=1)`（可通过运维脚本或临时 Python shell）。
+3. 验证：
+   - 白名单 chat 命令可执行；
+   - 非白名单 chat 返回 `gray release active: chat not allowlisted`。
+
+### 9.3 故障切换与回滚
+
+- 网关异常：
+  1. `docker compose -f docker-compose.telegram.yml restart telegram-gateway`
+  2. 观察 `bot_updates` 中 `processing` 是否持续下降。
+- Worker 异常：
+  1. `docker compose -f docker-compose.telegram.yml restart telegram-worker`
+  2. 检查 `notifications` 的 `retry_pending/dlq` 是否持续增加。
+- 快速回滚：
+  1. 关闭灰度：`TELEGRAM_GRAY_RELEASE_ENABLED=false`
+  2. 回滚镜像或代码后重启 gateway/worker。
+
+### 9.4 数据修复
+
+- 卡住的 update 恢复：
+  - 将 `bot_updates.status='processing'` 的记录交由 `process_pending_updates` 重新消费。
+- 重推失败修复：
+  - 将 `notifications.state='retry_pending'` 且 `next_retry_at<=now`，由 worker 自动重试。
+- 报告查询修复：
+  - 如 `analysis_requests.status='completed'` 但 `analysis_reports` 缺失，可依据 `request_id/run_id` 回填摘要。
