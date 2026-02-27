@@ -216,6 +216,44 @@ class TelegramTaskStore:
             )
             return cursor.rowcount > 0
 
+    def get_bot_update_payload(self, *, update_id: int) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT payload
+                FROM bot_updates
+                WHERE update_id = ?
+                """,
+                (update_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return json.loads(str(row["payload"]))
+
+    def get_latest_update_id(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COALESCE(MAX(update_id), 0) AS max_update_id
+                FROM bot_updates
+                """
+            ).fetchone()
+        return int(row["max_update_id"])
+
+    def list_pending_bot_update_ids(self, *, limit: int = 100) -> list[int]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT update_id
+                FROM bot_updates
+                WHERE status = 'processing'
+                ORDER BY update_id ASC
+                LIMIT ?
+                """,
+                (max(1, int(limit)),),
+            ).fetchall()
+        return [int(row["update_id"]) for row in rows]
+
     def update_bot_update_status(
         self,
         *,

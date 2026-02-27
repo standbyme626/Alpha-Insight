@@ -190,3 +190,85 @@ async def test_watch_executor_dedupes_events_within_bucket(tmp_path) -> None:  #
     assert len(sender.messages) == 1
     assert store.count_watch_events() == 1
     assert store.count_delivered_notifications() == 1
+
+
+@pytest.mark.asyncio
+async def test_long_polling_backlog_replay_consumes_without_duplicate_execution(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeSender()
+    calls = {"n": 0}
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        calls["n"] += 1
+        return {"run_id": f"run-{calls['n']}", **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    def _u(update_id: int, symbol: str) -> dict[str, object]:
+        return {
+            "update_id": update_id,
+            "message": {
+                "chat": {"id": "chat-b4"},
+                "from": {"id": 10, "username": "delta"},
+                "text": f"/analyze {symbol}",
+            },
+        }
+
+    first_batch = [_u(4101, "AAPL"), _u(4102, "TSLA")]
+    backlog_batch = [_u(4101, "AAPL"), _u(4102, "TSLA"), _u(4103, "MSFT")]
+
+    handled_first = await gateway.process_updates(first_batch)
+    handled_backlog = await gateway.process_updates(backlog_batch)
+
+    assert handled_first == 2
+    assert handled_backlog == 1
+    assert calls["n"] == 3
+    stats = store.verification_counts()
+    assert stats["processed_updates"] == 3
+    assert stats["distinct_updates"] == 3
+
+
+@pytest.mark.asyncio
+async def test_webhook_durable_insert_supports_restart_recovery_without_duplicate(tmp_path) -> None:  # noqa: ANN001
+    db_path = tmp_path / "telegram.db"
+    store_1 = TelegramTaskStore(db_path)
+    sender_1 = FakeSender()
+    calls = {"n": 0}
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        calls["n"] += 1
+        return {"run_id": f"run-webhook-{calls['n']}", **kwargs}
+
+    actions_1 = TelegramActions(store=store_1, notifier=sender_1, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway_1 = TelegramGateway(store=store_1, actions=actions_1)
+
+    update = {
+        "update_id": 5101,
+        "message": {
+            "chat": {"id": "chat-b5"},
+            "from": {"id": 11, "username": "echo"},
+            "text": "/analyze NVDA",
+        },
+    }
+
+    inserted_id = await gateway_1.enqueue_update(update)
+    duplicated = await gateway_1.enqueue_update(update)
+    assert inserted_id == 5101
+    assert duplicated is None
+
+    # Simulate crash/restart: new gateway instance restores from durable pending rows.
+    store_2 = TelegramTaskStore(db_path)
+    sender_2 = FakeSender()
+    actions_2 = TelegramActions(store=store_2, notifier=sender_2, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway_2 = TelegramGateway(store=store_2, actions=actions_2)
+
+    handled = await gateway_2.process_pending_updates(limit=10)
+    handled_again = await gateway_2.process_pending_updates(limit=10)
+
+    assert handled == 1
+    assert handled_again == 0
+    assert calls["n"] == 1
+    stats = store_2.verification_counts()
+    assert stats["processed_updates"] == 1
+    assert stats["distinct_updates"] == 1
