@@ -33,6 +33,7 @@ class RuntimeLimits:
     max_watch_jobs_per_chat: int = 10
     global_concurrency: int = 8
     notification_max_retry: int = 3
+    critical_fast_lane_immediate_retries: int = 1
 
 
 class GlobalConcurrencyGate:

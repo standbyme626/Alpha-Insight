@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Protocol
@@ -95,7 +96,8 @@ class WatchExecutor:
         pushed_count = 0
         dedupe_suppressed_count = 0
 
-        for signal in result.selected_alerts:
+        ordered_alerts = self._sort_signals_for_dispatch(result.selected_alerts)
+        for signal in ordered_alerts:
             self._store.record_metric(metric_name="monitor_trigger", metric_value=1.0, tags={"job_id": job.job_id})
             snapshot = snapshot_by_symbol.get(signal.symbol)
             run_id = snapshot.research_run_id if snapshot is not None else None
@@ -134,11 +136,16 @@ class WatchExecutor:
 
     async def process_retry_queue(self, *, limit: int = 20) -> int:
         due = self._store.claim_due_notification_retries(limit=limit)
-        delivered = 0
+        pending: list[tuple[int, DueNotification, dict[str, Any]]] = []
         for item in due:
             payload = self._store.get_watch_event(event_id=item.event_id)
             if not payload:
                 continue
+            pending.append((self._priority_rank(str(payload.get("priority", "medium"))), item, payload))
+        pending.sort(key=lambda item: item[0])
+
+        delivered = 0
+        for _rank, item, payload in pending:
             if await self._dispatch_notification(payload, retry_count=item.retry_count, channel_filter=item.channel):
                 delivered += 1
         return delivered
@@ -157,6 +164,8 @@ class WatchExecutor:
         routes = self._resolve_routes(chat_id=chat_id, payload=payload, channel_filter=channel_filter)
         prefs = self._store.get_chat_preferences(chat_id=chat_id)
         priority = str(payload.get("priority", "medium")).lower()
+        lane = self._lane_for_priority(priority)
+        routes = self._sort_routes_for_priority(routes=routes, priority=priority)
 
         if self._store.is_degradation_active(state_key="no_monitor_push"):
             for channel, _target in routes:
@@ -227,11 +236,36 @@ class WatchExecutor:
         webhook_body = self._build_webhook_payload(payload)
         delivered_any = False
         for channel, target in routes:
-            self._store.record_metric(metric_name="push_attempt", metric_value=1.0, tags={"job_id": job_id, "channel": channel})
-            self._store.record_metric(metric_name="channel_dispatch_attempt", metric_value=1.0, tags={"job_id": job_id, "channel": channel})
+            self._record_dispatch_attempt(job_id=job_id, channel=channel, lane=lane)
 
             dispatch_text = webhook_body if channel == "webhook" else text
+            dispatch_started = time.perf_counter()
             result = await self._multi_channel.dispatch(channel=channel, target=target, text=dispatch_text)
+            immediate_retry_budget = 0
+            if retry_count == 0 and lane == "fast":
+                immediate_retry_budget = max(0, int(self._limits.critical_fast_lane_immediate_retries))
+
+            while (not result.delivered) and immediate_retry_budget > 0:
+                immediate_retry_budget -= 1
+                self._store.record_metric(
+                    metric_name="fast_lane_immediate_retry_total",
+                    metric_value=1.0,
+                    tags={"job_id": job_id, "channel": channel},
+                )
+                self._record_dispatch_attempt(job_id=job_id, channel=channel, lane=lane)
+                result = await self._multi_channel.dispatch(channel=channel, target=target, text=dispatch_text)
+                if result.delivered:
+                    self._store.record_metric(
+                        metric_name="fast_lane_immediate_retry_recovered_total",
+                        metric_value=1.0,
+                        tags={"job_id": job_id, "channel": channel},
+                    )
+
+            self._store.record_metric(
+                metric_name="lane_dispatch_latency_ms",
+                metric_value=(time.perf_counter() - dispatch_started) * 1000,
+                tags={"job_id": job_id, "channel": channel, "lane": lane},
+            )
             if result.delivered:
                 self._store.upsert_notification_state(
                     event_id=event_id,
@@ -241,8 +275,7 @@ class WatchExecutor:
                     delivered_at=datetime.now(timezone.utc).isoformat(),
                     reason="delivery_success",
                 )
-                self._store.record_metric(metric_name="push_success", metric_value=1.0, tags={"job_id": job_id, "channel": channel})
-                self._store.record_metric(metric_name="channel_dispatch_success", metric_value=1.0, tags={"job_id": job_id, "channel": channel})
+                self._record_dispatch_success(job_id=job_id, channel=channel, lane=lane)
                 delivered_any = True
                 continue
             self._record_channel_failure(
@@ -250,6 +283,7 @@ class WatchExecutor:
                 chat_id=chat_id,
                 channel=channel,
                 retry_count=retry_count,
+                priority=priority,
                 error=result.error or "delivery_failed",
             )
 
@@ -289,6 +323,7 @@ class WatchExecutor:
         chat_id: str,
         channel: str,
         retry_count: int,
+        priority: str,
         error: str,
     ) -> None:
         next_retry = retry_count + 1
@@ -310,7 +345,11 @@ class WatchExecutor:
                 metadata={"event_id": event_id, "retries": next_retry, "channel": channel},
             )
             return
-        backoff_seconds = min(300, 15 * (2 ** max(0, next_retry - 1)))
+        lane = self._lane_for_priority(priority)
+        if lane == "fast":
+            backoff_seconds = min(120, 5 * (2 ** max(0, next_retry - 1)))
+        else:
+            backoff_seconds = min(300, 15 * (2 ** max(0, next_retry - 1)))
         self._store.upsert_notification_state(
             event_id=event_id,
             channel=channel,
@@ -320,6 +359,11 @@ class WatchExecutor:
             last_error=error,
             reason="delivery_failed",
         )
+        if lane == "fast":
+            self._store.record_metric(
+                metric_name="fast_lane_retry_queue_depth",
+                metric_value=float(self._store.count_retry_queue_depth()),
+            )
 
     def _is_throttled(self, *, job_id: str, interval_sec: int) -> bool:
         job = self._store.get_watch_job(job_id=job_id)
@@ -410,6 +454,44 @@ class WatchExecutor:
         if interval_sec <= 3600:
             return "60m"
         return "1d"
+
+    @staticmethod
+    def _lane_for_priority(priority: str) -> str:
+        return "fast" if str(priority).lower() == "critical" else "batch"
+
+    @staticmethod
+    def _priority_rank(priority: str) -> int:
+        ranking = {"critical": 0, "high": 1, "medium": 2, "normal": 3, "low": 4}
+        return ranking.get(str(priority).lower(), 9)
+
+    @classmethod
+    def _sort_signals_for_dispatch(cls, signals: list[Any]) -> list[Any]:
+        return sorted(signals, key=lambda signal: cls._priority_rank(str(getattr(signal, "priority", "medium"))))
+
+    @staticmethod
+    def _sort_routes_for_priority(*, routes: list[tuple[str, str]], priority: str) -> list[tuple[str, str]]:
+        if str(priority).lower() != "critical":
+            return routes
+        channel_order = {"telegram": 0, "wecom": 1, "email": 2, "webhook": 3}
+        return sorted(routes, key=lambda item: channel_order.get(item[0], 9))
+
+    def _record_dispatch_attempt(self, *, job_id: str, channel: str, lane: str) -> None:
+        self._store.record_metric(metric_name="push_attempt", metric_value=1.0, tags={"job_id": job_id, "channel": channel})
+        self._store.record_metric(metric_name="channel_dispatch_attempt", metric_value=1.0, tags={"job_id": job_id, "channel": channel})
+        self._store.record_metric(
+            metric_name="lane_dispatch_attempt",
+            metric_value=1.0,
+            tags={"job_id": job_id, "channel": channel, "lane": lane},
+        )
+
+    def _record_dispatch_success(self, *, job_id: str, channel: str, lane: str) -> None:
+        self._store.record_metric(metric_name="push_success", metric_value=1.0, tags={"job_id": job_id, "channel": channel})
+        self._store.record_metric(metric_name="channel_dispatch_success", metric_value=1.0, tags={"job_id": job_id, "channel": channel})
+        self._store.record_metric(
+            metric_name="lane_dispatch_success",
+            metric_value=1.0,
+            tags={"job_id": job_id, "channel": channel, "lane": lane},
+        )
 
 
 class _TelegramTargetedSender:

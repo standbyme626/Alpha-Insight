@@ -51,6 +51,19 @@ class FakeTargetSender:
         return {"ok": True}
 
 
+class FlakyTargetSender:
+    def __init__(self, *, fail_times: int = 0) -> None:
+        self.messages: list[tuple[str, str]] = []
+        self._fail_times = fail_times
+
+    async def send_text(self, target: str, text: str) -> dict[str, object]:
+        self.messages.append((target, text))
+        if self._fail_times > 0:
+            self._fail_times -= 1
+            raise RuntimeError("channel down")
+        return {"ok": True}
+
+
 class SlowPhotoChatSender(FakeChatSender):
     async def send_photo(self, chat_id: str, image_path: str, caption: str = "") -> dict[str, object]:
         await asyncio.sleep(0.05)
@@ -236,6 +249,328 @@ async def test_multi_channel_routing_keeps_single_channel_failure_isolated(tmp_p
     assert len(telegram_sender.messages) == 1
     assert len(email_sender.messages) == 1
     assert store.count_retry_queue_depth() == 1
+
+
+@pytest.mark.asyncio
+async def test_phase_d_critical_fast_lane_dispatches_before_high(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    store.upsert_telegram_chat(chat_id="chat-fast-1", user_id="31", username="u31")
+    store.upsert_chat_preferences(chat_id="chat-fast-1", summary_mode="full")
+
+    base_time = datetime(2026, 2, 27, 0, 0, tzinfo=timezone.utc)
+    store.create_watch_job(chat_id="chat-fast-1", symbol="AAPL", interval_sec=300, now=base_time)
+    due_job = store.claim_due_watch_jobs(now=base_time + timedelta(minutes=10), limit=1)[0]
+
+    async def fake_scan_runner(config, **kwargs):  # noqa: ANN001, ANN003
+        signal_ts = base_time + timedelta(minutes=10)
+        high_signal = WatchSignal(
+            symbol=config.watchlist[0],
+            timestamp=signal_ts,
+            price=100.0,
+            pct_change=0.04,
+            rsi=67.0,
+            priority="high",
+            reason="price_or_rsi",
+            company_name="Apple",
+        )
+        critical_signal = WatchSignal(
+            symbol="TSLA",
+            timestamp=signal_ts,
+            price=210.0,
+            pct_change=0.09,
+            rsi=76.0,
+            priority="critical",
+            reason="price_move",
+            company_name="Tesla",
+        )
+        high_snapshot = AlertSnapshot(
+            snapshot_id="snap-fast-1-high",
+            trigger_type="scheduled",
+            trigger_id="t-fast-1-high",
+            trigger_time=signal_ts,
+            mode="anomaly",
+            signal=AlertSignalSnapshot(
+                symbol=high_signal.symbol,
+                company_name=high_signal.company_name,
+                timestamp=high_signal.timestamp,
+                price=high_signal.price,
+                pct_change=high_signal.pct_change,
+                rsi=high_signal.rsi,
+                priority=high_signal.priority,
+                reason=high_signal.reason,
+            ),
+            notification_channels=[],
+            notification_dispatched=False,
+            research_status="skipped",
+        )
+        critical_snapshot = AlertSnapshot(
+            snapshot_id="snap-fast-1-critical",
+            trigger_type="scheduled",
+            trigger_id="t-fast-1-critical",
+            trigger_time=signal_ts,
+            mode="anomaly",
+            signal=AlertSignalSnapshot(
+                symbol=critical_signal.symbol,
+                company_name=critical_signal.company_name,
+                timestamp=critical_signal.timestamp,
+                price=critical_signal.price,
+                pct_change=critical_signal.pct_change,
+                rsi=critical_signal.rsi,
+                priority=critical_signal.priority,
+                reason=critical_signal.reason,
+            ),
+            notification_channels=[],
+            notification_dispatched=False,
+            research_status="skipped",
+        )
+        return type("RunOut", (), {
+            "trigger": build_scan_trigger(trigger_time=signal_ts),
+            "signals": [high_signal, critical_signal],
+            "selected_alerts": [high_signal, critical_signal],
+            "snapshots": [high_snapshot, critical_snapshot],
+            "notifications": [],
+            "runtime_metrics": {},
+            "failure_events": [],
+            "failure_clusters": {},
+            "alarms": [],
+        })()
+
+    telegram_sender = FakeTargetSender()
+    multi = MultiChannelNotifier(telegram=telegram_sender)
+    executor = WatchExecutor(store=store, notifier=FakeChatSender(), scan_runner=fake_scan_runner, multi_channel_notifier=multi)
+
+    out = await executor.execute_job(due_job)
+    assert out.pushed_count == 2
+    assert len(telegram_sender.messages) == 2
+    with store._connect() as conn:  # noqa: SLF001
+        rows = conn.execute(
+            """
+            SELECT we.priority
+            FROM notifications n
+            JOIN watch_events we ON we.event_id = n.event_id
+            WHERE n.state = 'delivered'
+            ORDER BY n.updated_at ASC
+            """
+        ).fetchall()
+    assert [str(item["priority"]) for item in rows] == ["critical", "high"]
+    assert store.count_metric_events(metric_name="lane_dispatch_attempt") == 2
+
+
+@pytest.mark.asyncio
+async def test_phase_d_critical_fast_lane_immediate_retry_recovers_without_queue(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    store.upsert_telegram_chat(chat_id="chat-fast-2", user_id="32", username="u32")
+
+    base_time = datetime(2026, 2, 27, 0, 0, tzinfo=timezone.utc)
+    store.create_watch_job(chat_id="chat-fast-2", symbol="TSLA", interval_sec=300, now=base_time)
+    due_job = store.claim_due_watch_jobs(now=base_time + timedelta(minutes=10), limit=1)[0]
+
+    async def fake_scan_runner(config, **kwargs):  # noqa: ANN001, ANN003
+        signal_ts = base_time + timedelta(minutes=10)
+        signal = WatchSignal(
+            symbol=config.watchlist[0],
+            timestamp=signal_ts,
+            price=210.0,
+            pct_change=0.08,
+            rsi=75.0,
+            priority="critical",
+            reason="price_move",
+            company_name="Tesla",
+        )
+        snapshot = AlertSnapshot(
+            snapshot_id="snap-fast-2",
+            trigger_type="scheduled",
+            trigger_id="t-fast-2",
+            trigger_time=signal_ts,
+            mode="anomaly",
+            signal=AlertSignalSnapshot(
+                symbol=signal.symbol,
+                company_name=signal.company_name,
+                timestamp=signal.timestamp,
+                price=signal.price,
+                pct_change=signal.pct_change,
+                rsi=signal.rsi,
+                priority=signal.priority,
+                reason=signal.reason,
+            ),
+            notification_channels=[],
+            notification_dispatched=False,
+            research_status="skipped",
+        )
+        return type("RunOut", (), {
+            "trigger": build_scan_trigger(trigger_time=signal_ts),
+            "signals": [signal],
+            "selected_alerts": [signal],
+            "snapshots": [snapshot],
+            "notifications": [],
+            "runtime_metrics": {},
+            "failure_events": [],
+            "failure_clusters": {},
+            "alarms": [],
+        })()
+
+    telegram_sender = FlakyTargetSender(fail_times=1)
+    multi = MultiChannelNotifier(telegram=telegram_sender)
+    executor = WatchExecutor(
+        store=store,
+        notifier=FakeChatSender(),
+        scan_runner=fake_scan_runner,
+        multi_channel_notifier=multi,
+        limits=RuntimeLimits(critical_fast_lane_immediate_retries=1, notification_max_retry=3),
+    )
+
+    out = await executor.execute_job(due_job)
+    assert out.pushed_count == 1
+    assert len(telegram_sender.messages) == 2
+    assert store.count_retry_queue_depth() == 0
+    assert store.count_metric_events(metric_name="fast_lane_immediate_retry_total") == 1
+    assert store.count_metric_events(metric_name="fast_lane_immediate_retry_recovered_total") == 1
+
+
+@pytest.mark.asyncio
+async def test_phase_d_retry_queue_prioritizes_critical_fast_lane(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    store.upsert_telegram_chat(chat_id="chat-fast-3", user_id="33", username="u33")
+    store.upsert_chat_preferences(chat_id="chat-fast-3", summary_mode="full")
+
+    base_time = datetime(2026, 2, 27, 0, 0, tzinfo=timezone.utc)
+    store.create_watch_job(chat_id="chat-fast-3", symbol="AAPL", interval_sec=300, now=base_time)
+    due_job = store.claim_due_watch_jobs(now=base_time + timedelta(minutes=10), limit=1)[0]
+
+    async def fake_scan_runner(config, **kwargs):  # noqa: ANN001, ANN003
+        signal_ts = base_time + timedelta(minutes=10)
+        high_signal = WatchSignal(
+            symbol=config.watchlist[0],
+            timestamp=signal_ts,
+            price=100.0,
+            pct_change=0.04,
+            rsi=67.0,
+            priority="high",
+            reason="price_or_rsi",
+            company_name="Apple",
+        )
+        critical_signal = WatchSignal(
+            symbol="TSLA",
+            timestamp=signal_ts,
+            price=210.0,
+            pct_change=0.09,
+            rsi=76.0,
+            priority="critical",
+            reason="price_move",
+            company_name="Tesla",
+        )
+        high_snapshot = AlertSnapshot(
+            snapshot_id="snap-fast-3-high",
+            trigger_type="scheduled",
+            trigger_id="t-fast-3-high",
+            trigger_time=signal_ts,
+            mode="anomaly",
+            signal=AlertSignalSnapshot(
+                symbol=high_signal.symbol,
+                company_name=high_signal.company_name,
+                timestamp=high_signal.timestamp,
+                price=high_signal.price,
+                pct_change=high_signal.pct_change,
+                rsi=high_signal.rsi,
+                priority=high_signal.priority,
+                reason=high_signal.reason,
+            ),
+            notification_channels=[],
+            notification_dispatched=False,
+            research_status="skipped",
+        )
+        critical_snapshot = AlertSnapshot(
+            snapshot_id="snap-fast-3-critical",
+            trigger_type="scheduled",
+            trigger_id="t-fast-3-critical",
+            trigger_time=signal_ts,
+            mode="anomaly",
+            signal=AlertSignalSnapshot(
+                symbol=critical_signal.symbol,
+                company_name=critical_signal.company_name,
+                timestamp=critical_signal.timestamp,
+                price=critical_signal.price,
+                pct_change=critical_signal.pct_change,
+                rsi=critical_signal.rsi,
+                priority=critical_signal.priority,
+                reason=critical_signal.reason,
+            ),
+            notification_channels=[],
+            notification_dispatched=False,
+            research_status="skipped",
+        )
+        return type("RunOut", (), {
+            "trigger": build_scan_trigger(trigger_time=signal_ts),
+            "signals": [high_signal, critical_signal],
+            "selected_alerts": [high_signal, critical_signal],
+            "snapshots": [high_snapshot, critical_snapshot],
+            "notifications": [],
+            "runtime_metrics": {},
+            "failure_events": [],
+            "failure_clusters": {},
+            "alarms": [],
+        })()
+
+    telegram_sender = FlakyTargetSender(fail_times=2)
+    multi = MultiChannelNotifier(telegram=telegram_sender)
+    executor = WatchExecutor(
+        store=store,
+        notifier=FakeChatSender(),
+        scan_runner=fake_scan_runner,
+        multi_channel_notifier=multi,
+        limits=RuntimeLimits(critical_fast_lane_immediate_retries=0, notification_max_retry=3),
+    )
+
+    out = await executor.execute_job(due_job)
+    assert out.pushed_count == 0
+    assert store.count_retry_queue_depth() == 2
+
+    with store._connect() as conn:  # noqa: SLF001
+        critical_row = conn.execute(
+            """
+            SELECT n.notification_id
+            FROM notifications n
+            JOIN watch_events we ON we.event_id = n.event_id
+            WHERE we.job_id = ? AND we.priority = 'critical'
+            LIMIT 1
+            """,
+            (due_job.job_id,),
+        ).fetchone()
+        high_row = conn.execute(
+            """
+            SELECT n.notification_id
+            FROM notifications n
+            JOIN watch_events we ON we.event_id = n.event_id
+            WHERE we.job_id = ? AND we.priority <> 'critical'
+            LIMIT 1
+            """,
+            (due_job.job_id,),
+        ).fetchone()
+        assert critical_row is not None and high_row is not None
+        conn.execute(
+            "UPDATE notifications SET next_retry_at = ? WHERE notification_id = ?",
+            ((base_time - timedelta(minutes=1)).isoformat(), str(critical_row["notification_id"])),
+        )
+        conn.execute(
+            "UPDATE notifications SET next_retry_at = ? WHERE notification_id = ?",
+            ((base_time - timedelta(minutes=2)).isoformat(), str(high_row["notification_id"])),
+        )
+
+    telegram_sender.messages.clear()
+    recovered = await executor.process_retry_queue(limit=5)
+    assert recovered == 2
+    assert len(telegram_sender.messages) == 2
+    with store._connect() as conn:  # noqa: SLF001
+        rows = conn.execute(
+            """
+            SELECT we.priority
+            FROM notification_state_transitions t
+            JOIN watch_events we ON we.event_id = t.event_id
+            WHERE t.from_state = 'retrying' AND t.to_state = 'delivered'
+            ORDER BY t.created_at ASC
+            """
+        ).fetchall()
+    assert [str(item["priority"]) for item in rows] == ["critical", "high"]
 
 
 @pytest.mark.asyncio
