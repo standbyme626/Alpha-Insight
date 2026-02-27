@@ -378,6 +378,79 @@ class TelegramGateway:
     def _is_conversation_intent(cls, intent: str) -> bool:
         return intent in cls._GENERAL_CONVERSATION_INTENTS
 
+    async def _maybe_handle_snapshot_singleflight(
+        self,
+        *,
+        chat_id: str,
+        update_id: int,
+        scope_key: str,
+        plan: NLUPlan,
+    ) -> bool:
+        ttl_seconds = int(self._limits.session_singleflight_ttl_seconds)
+        if ttl_seconds <= 0:
+            return False
+        if plan.intent != "analyze_snapshot":
+            return False
+        symbol = str(plan.slots.get("symbol", "")).strip().upper()
+        period = str(plan.slots.get("period", "")).strip().lower()
+        interval = str(plan.slots.get("interval", "")).strip().lower()
+        if not symbol or not period or not interval:
+            return False
+
+        existing = self._store.find_recent_snapshot_singleflight(
+            chat_id=chat_id,
+            scope_key=scope_key,
+            symbol=symbol,
+            period=period,
+            interval=interval,
+            ttl_seconds=ttl_seconds,
+        )
+        if existing is None:
+            return False
+
+        if existing.status in {"queued", "executing"}:
+            await self._actions.send_error_message(
+                chat_id=chat_id,
+                text=(
+                    "同会话已有相同分析进行中，已复用该请求。\n"
+                    f"request_id(short)={self._short_request_id(existing.request_id)}"
+                ),
+            )
+            self._store.record_metric(metric_name="analysis_singleflight_hit_total", metric_value=1.0, tags={"state": "inflight"})
+            self._store.update_bot_update_status(
+                update_id=update_id,
+                status="processed",
+                command="nl_singleflight_inflight",
+                request_id=existing.request_id,
+                error=None,
+            )
+            return True
+
+        report = self._store.get_analysis_report(report_id=existing.request_id, chat_id=chat_id)
+        run_hint = f"run_id={report.run_id}" if report else "run_id=N/A"
+        chart_state_rec = self._store.get_request_chart_state(request_id=existing.request_id)
+        chart_state = chart_state_rec.chart_state if chart_state_rec else "none"
+        await self._actions.send_inline_buttons(
+            chat_id=chat_id,
+            text=(
+                "同会话短窗复用最近分析结果，避免重复重算。\n"
+                f"request_id(short)={self._short_request_id(existing.request_id)} {run_hint}"
+            ),
+            buttons=self._actions.build_snapshot_buttons(
+                request_id=existing.request_id,
+                chart_state=chart_state,
+            ),
+        )
+        self._store.record_metric(metric_name="analysis_singleflight_hit_total", metric_value=1.0, tags={"state": "completed"})
+        self._store.update_bot_update_status(
+            update_id=update_id,
+            status="processed",
+            command="nl_singleflight_reuse",
+            request_id=existing.request_id,
+            error=None,
+        )
+        return True
+
     @staticmethod
     def _extract_plan_steps(slots: dict[str, Any], intent: str) -> list[dict[str, Any]]:
         raw = slots.get("_plan_steps")
@@ -496,26 +569,27 @@ class TelegramGateway:
             )
             return None
         if record.intent == "analyze_snapshot":
-            await self._actions.send_analysis_progress(
-                chat_id=record.chat_id,
-                request_id=record.request_id,
-                stage="identify_symbol",
-            )
-            await self._actions.send_analysis_progress(
-                chat_id=record.chat_id,
-                request_id=record.request_id,
-                stage="fetch_market_data",
-            )
-            await self._actions.send_analysis_progress(
-                chat_id=record.chat_id,
-                request_id=record.request_id,
-                stage="merge_news",
-            )
-            await self._actions.send_analysis_progress(
-                chat_id=record.chat_id,
-                request_id=record.request_id,
-                stage="process_chart",
-            )
+            if self._limits.send_progress_updates:
+                await self._actions.send_analysis_progress(
+                    chat_id=record.chat_id,
+                    request_id=record.request_id,
+                    stage="identify_symbol",
+                )
+                await self._actions.send_analysis_progress(
+                    chat_id=record.chat_id,
+                    request_id=record.request_id,
+                    stage="fetch_market_data",
+                )
+                await self._actions.send_analysis_progress(
+                    chat_id=record.chat_id,
+                    request_id=record.request_id,
+                    stage="merge_news",
+                )
+                await self._actions.send_analysis_progress(
+                    chat_id=record.chat_id,
+                    request_id=record.request_id,
+                    stage="process_chart",
+                )
             want_chart = bool(slots.get("need_chart", False))
             fail_before = self._store.count_metric_events(metric_name="chart_render_fail_rate") if want_chart else 0
             if want_chart:
@@ -1355,19 +1429,6 @@ class TelegramGateway:
                 )
                 return True
 
-            if self._store.has_executing_nl_request(chat_id=chat_id):
-                await self._actions.send_error_message(
-                    chat_id=chat_id,
-                    text="正在执行，请稍后或使用 /status 查询 (Executing, please retry later).",
-                )
-                self._store.update_bot_update_status(
-                    update_id=update_id,
-                    status="failed",
-                    command="nl_executing_conflict",
-                    error="nl_executing",
-                )
-                return True
-
             within_nl_limit, _ = self._store.check_and_increment_command_rate_limit(
                 chat_id=chat_id,
                 max_per_minute=self._limits.nl_per_chat_per_minute,
@@ -1540,13 +1601,35 @@ class TelegramGateway:
                     return True
 
             now = self._current_ts()
-            request_id = f"nlr-{uuid4().hex[:10]}"
             scope_key = self._conversation_scope_key(chat_id=chat_id, chat_type=chat_type, user_id=user_id)
             plan, carry_symbol, carry_hit = self._inject_snapshot_defaults(
                 plan=plan,
                 normalized_text=normalized,
                 scope_key=scope_key,
             )
+
+            if await self._maybe_handle_snapshot_singleflight(
+                chat_id=chat_id,
+                update_id=update_id,
+                scope_key=scope_key,
+                plan=plan,
+            ):
+                return True
+
+            if self._store.has_executing_nl_request(chat_id=chat_id) and not self._is_conversation_intent(plan.intent):
+                await self._actions.send_error_message(
+                    chat_id=chat_id,
+                    text="正在执行，请稍后或使用 /status 查询 (Executing, please retry later).",
+                )
+                self._store.update_bot_update_status(
+                    update_id=update_id,
+                    status="failed",
+                    command="nl_executing_conflict",
+                    error="nl_executing",
+                )
+                return True
+
+            request_id = f"nlr-{uuid4().hex[:10]}"
             text_key, intent_key = self._build_dedupe_keys(
                 chat_id=chat_id,
                 normalized_text=normalized,

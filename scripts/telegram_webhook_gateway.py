@@ -47,6 +47,13 @@ def _parse_csv_set(raw: str) -> set[str]:
     return {item.strip() for item in raw.split(",") if item.strip()}
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
 def _resolve_client_ip(request: web.Request) -> str:
     fwd = str(request.headers.get("X-Forwarded-For", "")).strip()
     if fwd:
@@ -106,6 +113,13 @@ async def _build_app(args: argparse.Namespace) -> web.Application:
         max_watch_jobs_per_chat=int(os.getenv("TELEGRAM_MAX_WATCH_JOBS_PER_CHAT", "10")),
         global_concurrency=int(os.getenv("TELEGRAM_GLOBAL_CONCURRENCY", "8")),
         notification_max_retry=int(os.getenv("TELEGRAM_NOTIFICATION_MAX_RETRY", "3")),
+        analysis_command_timeout_seconds=float(os.getenv("TELEGRAM_ANALYSIS_COMMAND_TIMEOUT_SECONDS", "90")),
+        analysis_snapshot_timeout_seconds=float(os.getenv("TELEGRAM_ANALYSIS_SNAPSHOT_TIMEOUT_SECONDS", "90")),
+        analysis_recovery_timeout_seconds=float(os.getenv("TELEGRAM_ANALYSIS_RECOVERY_TIMEOUT_SECONDS", "180")),
+        photo_send_timeout_seconds=float(os.getenv("TELEGRAM_PHOTO_SEND_TIMEOUT_SECONDS", "20")),
+        typing_heartbeat_seconds=float(os.getenv("TELEGRAM_TYPING_HEARTBEAT_SECONDS", "4")),
+        session_singleflight_ttl_seconds=int(os.getenv("TELEGRAM_SINGLEFLIGHT_TTL_SECONDS", "120")),
+        send_progress_updates=_env_bool("TELEGRAM_SEND_PROGRESS_UPDATES", True),
     )
     gate = GlobalConcurrencyGate(limits.global_concurrency)
 

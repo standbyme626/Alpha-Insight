@@ -81,6 +81,15 @@ async def send_chat_action(bot_token: str, chat_id: str, action: str = "typing")
             return data
 
 
+async def send_progress(
+    bot_token: str,
+    chat_id: str,
+    text: str,
+    reply_markup: dict[str, Any] | None = None,
+) -> dict:
+    return await send_text(bot_token, chat_id, text, reply_markup=reply_markup)
+
+
 class TelegramNotifier:
     channel_name = "telegram"
 
@@ -93,6 +102,9 @@ class TelegramNotifier:
 
     async def send_chat_action(self, action: str = "typing") -> dict[str, Any]:
         return await send_chat_action(self._bot_token, self._chat_id, action)
+
+    async def send_progress(self, text: str, reply_markup: dict[str, Any] | None = None) -> dict[str, Any]:
+        return await send_progress(self._bot_token, self._chat_id, text, reply_markup=reply_markup)
 
 
 async def dispatch_notifications(

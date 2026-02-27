@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Protocol
 
 from agents.workflow_engine import run_unified_research
+from services.notification_channels import TelegramChannelAdapter
 from services.runtime_controls import GlobalConcurrencyGate, RuntimeLimits
 from services.telegram_chart_service import TelegramChartService
 from services.telegram_store import TelegramTaskStore
@@ -53,16 +54,33 @@ class TelegramActions:
         store: TelegramTaskStore,
         notifier: MessageSender,
         research_runner: ResearchRunner = run_unified_research,
-        analysis_timeout_seconds: float = 90.0,
+        analysis_timeout_seconds: float | None = None,
         limits: RuntimeLimits | None = None,
         global_gate: GlobalConcurrencyGate | None = None,
         chart_service: TelegramChartService | None = None,
     ):
         self._store = store
         self._notifier = notifier
+        self._channel = TelegramChannelAdapter(notifier)
         self._research_runner = research_runner
-        self._analysis_timeout_seconds = analysis_timeout_seconds
         self._limits = limits or RuntimeLimits()
+        resolved_timeout = (
+            float(analysis_timeout_seconds)
+            if analysis_timeout_seconds is not None
+            else float(self._limits.analysis_command_timeout_seconds)
+        )
+        self._analysis_command_timeout_seconds = resolved_timeout
+        self._analysis_snapshot_timeout_seconds = (
+            resolved_timeout
+            if analysis_timeout_seconds is not None
+            else float(self._limits.analysis_snapshot_timeout_seconds)
+        )
+        self._analysis_recovery_timeout_seconds = max(
+            self._analysis_command_timeout_seconds,
+            float(self._limits.analysis_recovery_timeout_seconds),
+        )
+        self._photo_send_timeout_seconds = max(0.001, float(self._limits.photo_send_timeout_seconds))
+        self._typing_heartbeat_seconds = max(1.0, float(self._limits.typing_heartbeat_seconds))
         self._global_gate = global_gate or GlobalConcurrencyGate(self._limits.global_concurrency)
         self._chart_service = chart_service or TelegramChartService()
 
@@ -78,7 +96,9 @@ class TelegramActions:
         if blocked:
             self._store.record_metric(metric_name="user_copy_guard_hit_total", metric_value=1.0)
         reply_markup = self._build_inline_keyboard(buttons) if buttons else None
-        await self._notifier.send_text(chat_id, safe_text, reply_markup=reply_markup)
+        dispatch = await self._channel.send_text(chat_id=chat_id, text=safe_text, reply_markup=reply_markup)
+        if not dispatch.delivered:
+            raise RuntimeError(f"telegram_send_text_failed:{dispatch.error or 'unknown_error'}")
 
     @classmethod
     def _sanitize_user_copy(cls, text: str) -> str:
@@ -221,12 +241,25 @@ class TelegramActions:
     @staticmethod
     def _extract_news(result: dict[str, Any], *, default_days: int = 7) -> tuple[int, str, str]:
         news = result.get("news")
+        if not isinstance(news, list):
+            news = result.get("news_items")
+        if not isinstance(news, list):
+            fused = result.get("fused_insights")
+            if isinstance(fused, dict):
+                raw = fused.get("raw")
+                if isinstance(raw, dict):
+                    news = raw.get("news_items")
         count = 0
         source = "aggregated_news"
         if isinstance(news, list):
             count = len(news)
-            if news and isinstance(news[0], dict):
-                source = str(news[0].get("source") or source)
+            sources = [
+                str(item.get("source", "")).strip()
+                for item in news
+                if isinstance(item, dict) and str(item.get("source", "")).strip()
+            ]
+            if sources:
+                source = ",".join(list(dict.fromkeys(sources))[:2])
         return count, f"近{default_days}天", source
 
     async def send_inline_buttons(
@@ -293,21 +326,22 @@ class TelegramActions:
         request_id: str,
         stage: str,
     ) -> None:
+        if not self._limits.send_progress_updates:
+            return
         stage_text = self._ANALYZE_PROGRESS_TEXT.get(stage)
         if not stage_text:
             return
-        await self._send_text(
+        dispatch = await self._channel.send_progress(
             chat_id=chat_id,
             text=f"{stage_text}\nrequest_id(short)={self._short_request_id(request_id)}",
+            reply_markup=None,
         )
+        if not dispatch.delivered:
+            raise RuntimeError(f"telegram_send_progress_failed:{dispatch.error or 'unknown_error'}")
 
     async def _send_chat_action(self, *, chat_id: str, action: str = "typing") -> None:
-        sender = getattr(self._notifier, "send_chat_action", None)
-        if not callable(sender):
-            return
-        try:
-            await sender(chat_id, action)
-        except Exception:  # noqa: BLE001
+        dispatch = await self._channel.send_chat_action(chat_id=chat_id, action=action)
+        if not dispatch.delivered:
             return
 
     @contextlib.asynccontextmanager
@@ -316,10 +350,10 @@ class TelegramActions:
         *,
         chat_id: str,
         action: str = "typing",
-        interval_seconds: float = 4.0,
+        interval_seconds: float | None = None,
     ):
-        sender = getattr(self._notifier, "send_chat_action", None)
-        if not callable(sender) or interval_seconds <= 0:
+        interval = self._typing_heartbeat_seconds if interval_seconds is None else max(0.0, float(interval_seconds))
+        if interval <= 0:
             yield
             return
 
@@ -329,7 +363,7 @@ class TelegramActions:
             while not stop_event.is_set():
                 await self._send_chat_action(chat_id=chat_id, action=action)
                 try:
-                    await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
+                    await asyncio.wait_for(stop_event.wait(), timeout=interval)
                 except TimeoutError:
                     continue
 
@@ -390,7 +424,7 @@ class TelegramActions:
             symbol=symbol,
             request_text=f"Analyze {symbol}",
             chat_id=chat_id,
-            timeout_seconds=self._analysis_timeout_seconds,
+            timeout_seconds=self._analysis_command_timeout_seconds,
             timeout_retry_count=0,
         )
         return ActionResult(command="analyze", request_id=rid)
@@ -422,7 +456,7 @@ class TelegramActions:
                         news_limit=(8 if news_window_days <= 7 else 20) if need_news else 0,
                         need_chart=need_chart,
                     ),
-                    timeout=self._analysis_timeout_seconds,
+                    timeout=self._analysis_snapshot_timeout_seconds,
                 )
 
         run_id = str(result.get("run_id", "")).strip()
@@ -539,7 +573,7 @@ class TelegramActions:
                             news_limit=(8 if news_window_days <= 7 else 20) if need_news else 0,
                             need_chart=need_chart,
                         ),
-                        timeout=self._analysis_timeout_seconds,
+                        timeout=self._analysis_snapshot_timeout_seconds,
                     )
                 retry_candidate = self._chart_service.extract_chart_path(retry_result)
                 retry_path, retry_size, retry_error = self._chart_service.ensure_chart_within_limit(retry_candidate)
@@ -571,36 +605,29 @@ class TelegramActions:
                     buttons=self._snapshot_buttons(request_id=target_request_id, chart_state=chart_state),
                 )
             else:
-                sender = self._notifier
-                if hasattr(sender, "send_photo"):
-                    try:
-                        await sender.send_photo(chat_id, str(chart_path), caption=f"{symbol} {period}/{interval} chart")  # type: ignore[attr-defined]
-                        chart_state = "ready"
-                        if target_request_id:
-                            self._store.upsert_request_chart_state(request_id=target_request_id, chart_state=chart_state)
-                        await self._send_text(
+                try:
+                    dispatch = await asyncio.wait_for(
+                        self._channel.send_photo(
                             chat_id=chat_id,
-                            text=(
-                                "图表已生成，可继续查看新闻或报告。\n"
-                                f"证据: 图表状态=已生成 | request_id(short)={(target_request_id or 'n/a')[-6:]}"
-                            ),
-                            buttons=self._snapshot_buttons(request_id=target_request_id, chart_state=chart_state),
-                        )
-                    except Exception:  # noqa: BLE001
-                        reason = "send_photo_error"
-                        chart_state = "failed"
-                        if target_request_id:
-                            self._store.upsert_request_chart_state(request_id=target_request_id, chart_state=chart_state)
-                        self._store.record_metric(metric_name="chart_render_fail_rate", metric_value=1.0, tags={"reason": reason})
-                        await self._send_text(
-                            chat_id=chat_id,
-                            text=(
-                                "图表发送失败，已降级为文本说明。\n"
-                                f"原因: {self._chart_reason_text(reason)}\n"
-                                f"证据: 图表状态=失败 | request_id(short)={(target_request_id or 'n/a')[-6:]}"
-                            ),
-                            buttons=self._snapshot_buttons(request_id=target_request_id, chart_state=chart_state),
-                        )
+                            image_path=str(chart_path),
+                            caption=f"{symbol} {period}/{interval} chart",
+                        ),
+                        timeout=self._photo_send_timeout_seconds,
+                    )
+                except TimeoutError:
+                    dispatch = None
+                if dispatch is not None and dispatch.delivered:
+                    chart_state = "ready"
+                    if target_request_id:
+                        self._store.upsert_request_chart_state(request_id=target_request_id, chart_state=chart_state)
+                    await self._send_text(
+                        chat_id=chat_id,
+                        text=(
+                            "图表已生成，可继续查看新闻或报告。\n"
+                            f"证据: 图表状态=已生成 | request_id(short)={(target_request_id or 'n/a')[-6:]}"
+                        ),
+                        buttons=self._snapshot_buttons(request_id=target_request_id, chart_state=chart_state),
+                    )
                 else:
                     reason = "send_photo_error"
                     chart_state = "failed"
@@ -852,7 +879,7 @@ class TelegramActions:
                 symbol=item.symbol,
                 request_text=f"Analyze {item.symbol}",
                 chat_id=item.chat_id,
-                timeout_seconds=max(self._analysis_timeout_seconds, 180.0),
+                timeout_seconds=self._analysis_recovery_timeout_seconds,
                 timeout_retry_count=item.retry_count,
             )
             handled += 1

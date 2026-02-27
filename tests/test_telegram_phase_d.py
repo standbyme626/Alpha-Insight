@@ -9,7 +9,8 @@ import pytest
 from agents.scanner_engine import WatchSignal, build_scan_trigger
 from agents.telegram_command_router import CommandError, parse_telegram_command
 from core.models import AlertSignalSnapshot, AlertSnapshot
-from services.notification_channels import MultiChannelNotifier
+from services.notification_channels import MultiChannelNotifier, TelegramChannelAdapter
+from services.runtime_controls import RuntimeLimits
 from services.telegram_actions import TelegramActions
 from services.telegram_gateway import TelegramGateway
 from services.telegram_store import TelegramTaskStore
@@ -50,6 +51,12 @@ class FakeTargetSender:
         return {"ok": True}
 
 
+class SlowPhotoChatSender(FakeChatSender):
+    async def send_photo(self, chat_id: str, image_path: str, caption: str = "") -> dict[str, object]:
+        await asyncio.sleep(0.05)
+        return await super().send_photo(chat_id, image_path, caption)
+
+
 @pytest.mark.parametrize(
     ("raw", "name"),
     [
@@ -62,6 +69,23 @@ def test_parse_phase_d_commands(raw: str, name: str) -> None:
     parsed = parse_telegram_command(raw)
     assert not isinstance(parsed, CommandError)
     assert parsed.name == name
+
+
+def test_extract_news_from_fused_raw_news_items() -> None:
+    payload = {
+        "fused_insights": {
+            "raw": {
+                "news_items": [
+                    {"source": "YahooFinanceRSS", "title": "one"},
+                    {"source": "GoogleNewsRSS#1", "title": "two"},
+                ]
+            }
+        }
+    }
+    count, window, source = TelegramActions._extract_news(payload, default_days=7)  # noqa: SLF001
+    assert count == 2
+    assert window == "近7天"
+    assert source == "YahooFinanceRSS,GoogleNewsRSS#1"
 
 
 @pytest.mark.asyncio
@@ -674,7 +698,7 @@ async def test_phase_b_data_empty_chart_failure_skips_artifact_retry(tmp_path) -
 
 
 @pytest.mark.asyncio
-async def test_phase_b_analyze_snapshot_dedupe_requires_double_key_hit(tmp_path) -> None:  # noqa: ANN001
+async def test_phase_b_analyze_snapshot_singleflight_reuses_equivalent_followup(tmp_path) -> None:  # noqa: ANN001
     store = TelegramTaskStore(tmp_path / "telegram.db")
     sender = FakeChatSender()
     calls = {"n": 0}
@@ -698,9 +722,10 @@ async def test_phase_b_analyze_snapshot_dedupe_requires_double_key_hit(tmp_path)
 
     assert await gateway.process_update(first)
     assert await gateway.process_update(second)
-    assert calls["n"] == 2
+    assert calls["n"] == 1
+    assert "复用" in sender.messages[-1][1]
     assert await gateway.process_update(third)
-    assert calls["n"] == 2
+    assert calls["n"] == 1
 
 
 @pytest.mark.asyncio
@@ -760,6 +785,191 @@ async def test_phase_d_typing_heartbeat_start_and_stop(tmp_path) -> None:  # noq
 
     await asyncio.sleep(0.05)
     assert len(sender.chat_actions) == action_count
+
+
+@pytest.mark.asyncio
+async def test_phase_d_singleflight_reuses_inflight_snapshot_request(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": "run-singleflight", "metrics": {"data_close": 10.0}, **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    existing_request_id = "nlr-sf-inflight"
+    assert store.create_nl_request(
+        request_id=existing_request_id,
+        update_id=22999,
+        chat_id="chat-sf",
+        intent="analyze_snapshot",
+        slots={
+            "symbol": "TSLA",
+            "period": "1mo",
+            "interval": "1d",
+            "need_chart": False,
+            "need_news": False,
+            "_context_scope_key": "chat:chat-sf",
+            "_schema_version": "telegram_nlu_plan_v2",
+        },
+        confidence=0.98,
+        needs_confirm=False,
+        status="executing",
+        text_dedupe_key="sf1-t",
+        intent_dedupe_key="sf1-i",
+        normalized_text="sf1",
+        normalized_request="sf1",
+        action_version="v2",
+        risk_level="low",
+        raw_text_hash="sf1-h",
+        intent_candidate="analyze_snapshot",
+    )
+
+    assert await gateway.process_update({"update_id": 23001, "message": {"chat": {"id": "chat-sf"}, "text": "分析 TSLA 一个月走势"}})
+    assert "同会话已有相同分析进行中" in sender.messages[-1][1]
+    with store._connect() as conn:  # noqa: SLF001
+        row = conn.execute("SELECT command, request_id FROM bot_updates WHERE update_id = 23001").fetchone()
+        count = conn.execute("SELECT COUNT(*) AS c FROM nl_requests WHERE chat_id = 'chat-sf'").fetchone()
+    assert row is not None
+    assert row["command"] == "nl_singleflight_inflight"
+    assert row["request_id"] == existing_request_id
+    assert count is not None and int(count["c"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_phase_d_singleflight_reuses_completed_snapshot_request(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": "run-singleflight-completed", "metrics": {"data_close": 10.0}, **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    existing_request_id = "nlr-sf-completed"
+    assert store.create_nl_request(
+        request_id=existing_request_id,
+        update_id=23002,
+        chat_id="chat-sf2",
+        intent="analyze_snapshot",
+        slots={
+            "symbol": "TSLA",
+            "period": "1mo",
+            "interval": "1d",
+            "need_chart": False,
+            "need_news": True,
+            "_context_scope_key": "chat:chat-sf2",
+            "_schema_version": "telegram_nlu_plan_v2",
+        },
+        confidence=0.98,
+        needs_confirm=False,
+        status="completed",
+        text_dedupe_key="sf2-t",
+        intent_dedupe_key="sf2-i",
+        normalized_text="sf2",
+        normalized_request="sf2",
+        action_version="v2",
+        risk_level="low",
+        raw_text_hash="sf2-h",
+        intent_candidate="analyze_snapshot",
+    )
+    store.upsert_analysis_report(
+        run_id="run-sf2",
+        request_id=existing_request_id,
+        chat_id="chat-sf2",
+        symbol="TSLA",
+        summary="cached result",
+        key_metrics={"data_close": 99.0},
+    )
+
+    assert await gateway.process_update({"update_id": 23003, "message": {"chat": {"id": "chat-sf2"}, "text": "分析 TSLA 一个月走势"}})
+    assert "复用最近分析结果" in sender.messages[-1][1]
+    with store._connect() as conn:  # noqa: SLF001
+        row = conn.execute("SELECT command, request_id FROM bot_updates WHERE update_id = 23003").fetchone()
+    assert row is not None
+    assert row["command"] == "nl_singleflight_reuse"
+    assert row["request_id"] == existing_request_id
+
+
+@pytest.mark.asyncio
+async def test_phase_d_send_progress_updates_can_be_disabled(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+    limits = RuntimeLimits(send_progress_updates=False)
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {
+            "run_id": "run-no-progress",
+            "fused_insights": {"summary": "no progress text"},
+            "metrics": {"data_close": 120.0},
+            **kwargs,
+        }
+
+    actions = TelegramActions(
+        store=store,
+        notifier=sender,
+        research_runner=fake_runner,
+        analysis_timeout_seconds=5,
+        limits=limits,
+    )
+    gateway = TelegramGateway(store=store, actions=actions, limits=limits)
+
+    assert await gateway.process_update({"update_id": 23004, "message": {"chat": {"id": "chat-no-progress"}, "text": "分析 TSLA 一个月走势"}})
+    messages = [item[1] for item in sender.messages]
+    assert any("已受理请求，开始分析" in item for item in messages)
+    assert not any("阶段进度" in item for item in messages)
+
+
+@pytest.mark.asyncio
+async def test_phase_d_photo_send_timeout_isolated_from_research_timeout(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = SlowPhotoChatSender()
+    chart = Path(tmp_path / "chart_timeout.png")
+    chart.write_bytes(b"\x89PNG\r\n" + b"T" * 1024)
+    limits = RuntimeLimits(photo_send_timeout_seconds=0.01, analysis_snapshot_timeout_seconds=5.0)
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {
+            "run_id": "run-photo-timeout",
+            "fused_insights": {"summary": "photo timeout"},
+            "metrics": {"data_close": 66.0},
+            "sandbox_artifacts": {"stdout": f"ARTIFACT_PNG={chart}\n"},
+            **kwargs,
+        }
+
+    actions = TelegramActions(
+        store=store,
+        notifier=sender,
+        research_runner=fake_runner,
+        limits=limits,
+    )
+    gateway = TelegramGateway(store=store, actions=actions, limits=limits)
+
+    assert await gateway.process_update({"update_id": 23005, "message": {"chat": {"id": "chat-photo-timeout"}, "text": "分析 TSLA 一个月走势并发图"}})
+    assert sender.photos == []
+    assert any("图表发送失败" in item[1] for item in sender.messages)
+
+
+@pytest.mark.asyncio
+async def test_phase_d_telegram_channel_adapter_supports_progress_and_photo_fallback() -> None:
+    sender = FakeChatSender()
+    adapter = TelegramChannelAdapter(sender)
+
+    progress = await adapter.send_progress(chat_id="chat-a", text="progress", reply_markup=None)
+    photo = await adapter.send_photo(chat_id="chat-a", image_path="/tmp/not-used.png", caption="c")
+    assert progress.delivered is True
+    assert photo.delivered is True
+
+    class TextOnlySender:
+        async def send_text(self, chat_id: str, text: str, reply_markup: dict[str, object] | None = None) -> dict[str, object]:  # noqa: ARG002
+            return {"ok": True}
+
+    adapter_text_only = TelegramChannelAdapter(TextOnlySender())
+    photo_fallback = await adapter_text_only.send_photo(chat_id="chat-b", image_path="/tmp/not-used.png")
+    assert photo_fallback.delivered is False
+    assert photo_fallback.error == "send_photo_not_supported"
 
 
 @pytest.mark.asyncio
@@ -1218,7 +1428,7 @@ async def test_phase_p1_dedupe_echoes_ready_state_and_run_id(tmp_path) -> None: 
     assert await gateway.process_update({"update_id": 30251, "message": {"chat": {"id": "chat-p1c"}, "text": "分析 TSLA 一个月走势"}})
     assert await gateway.process_update({"update_id": 30252, "message": {"chat": {"id": "chat-p1c"}, "text": "分析 TSLA 一个月走势"}})
     assert calls["n"] == 1
-    assert "30秒内重复请求已合并：已生成。" in sender.messages[-1][1]
+    assert "复用最近分析结果" in sender.messages[-1][1]
     assert "run_id=run-p1-dedupe-1" in sender.messages[-1][1]
 
 

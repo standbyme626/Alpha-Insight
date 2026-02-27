@@ -21,6 +21,13 @@ class RuntimeLimits:
     chart_degrade_min_samples: int = 6
     chart_degrade_fail_rate_threshold: float = 0.5
     chart_recover_fail_rate_threshold: float = 0.2
+    analysis_command_timeout_seconds: float = 90.0
+    analysis_snapshot_timeout_seconds: float = 90.0
+    analysis_recovery_timeout_seconds: float = 180.0
+    photo_send_timeout_seconds: float = 20.0
+    typing_heartbeat_seconds: float = 4.0
+    session_singleflight_ttl_seconds: int = 120
+    send_progress_updates: bool = True
     max_watch_jobs_per_chat: int = 10
     global_concurrency: int = 8
     notification_max_retry: int = 3

@@ -382,6 +382,7 @@ async def test_chart_fail_rate_degrades_to_text_mode(tmp_path) -> None:  # noqa:
         chart_degrade_min_samples=2,
         chart_degrade_fail_rate_threshold=0.5,
         chart_recover_fail_rate_threshold=0.0,
+        session_singleflight_ttl_seconds=0,
     )
     def parse_chart(_: str) -> NLUPlan:
         return NLUPlan(

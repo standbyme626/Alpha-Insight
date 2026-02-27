@@ -1067,6 +1067,47 @@ class TelegramTaskStore:
             ).fetchone()
         return int(row["c"]) > 0
 
+    def find_recent_snapshot_singleflight(
+        self,
+        *,
+        chat_id: str,
+        scope_key: str,
+        symbol: str,
+        period: str,
+        interval: str,
+        ttl_seconds: int = 120,
+    ) -> NLRequestRecord | None:
+        window_start = _isoformat(_utc_now_dt() - timedelta(seconds=max(1, int(ttl_seconds))))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT request_id
+                FROM nl_requests
+                WHERE chat_id = ?
+                  AND intent = 'analyze_snapshot'
+                  AND status IN ('queued', 'executing', 'completed')
+                  AND created_at >= ?
+                ORDER BY updated_at DESC
+                LIMIT 20
+                """,
+                (str(chat_id), window_start),
+            ).fetchall()
+
+        for row in rows:
+            request_id = str(row["request_id"])
+            record = self.get_nl_request(request_id=request_id)
+            if record is None:
+                continue
+            slots = record.slots if isinstance(record.slots, dict) else {}
+            if str(slots.get("_context_scope_key", "")).strip() != str(scope_key).strip():
+                continue
+            slot_symbol = str(slots.get("symbol", "")).strip().upper()
+            slot_period = str(slots.get("period", "")).strip().lower()
+            slot_interval = str(slots.get("interval", "")).strip().lower()
+            if slot_symbol == str(symbol).strip().upper() and slot_period == str(period).strip().lower() and slot_interval == str(interval).strip().lower():
+                return record
+        return None
+
     def upsert_clarify_pending(
         self,
         *,
