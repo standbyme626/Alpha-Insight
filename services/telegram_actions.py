@@ -12,6 +12,7 @@ from agents.workflow_engine import run_unified_research
 from core.strategy_tier import DEFAULT_STRATEGY_TIER, normalize_strategy_tier
 from services.news_digest import (
     NewsDigest,
+    ThemeDigestItem,
     TopNewsItem,
     build_news_digest_from_result,
     format_cluster_lines,
@@ -46,6 +47,8 @@ class ActionResult:
 class TelegramActions:
     _FORBIDDEN_USER_COPY = (
         "traceback",
+        "run_id",
+        "request_id",
         "schema_version",
         "action_version",
         "raw_error",
@@ -129,6 +132,12 @@ class TelegramActions:
         sanitized = str(text or "")
         for token in cls._FORBIDDEN_USER_COPY:
             sanitized = re.sub(re.escape(token), "内部细节", sanitized, flags=re.IGNORECASE)
+        sanitized = re.sub(
+            r"\b(action|internal_[a-z0-9_]+)\s*[:=]\s*[\w.\-]+",
+            "内部细节",
+            sanitized,
+            flags=re.IGNORECASE,
+        )
         return sanitized
 
     @staticmethod
@@ -290,30 +299,28 @@ class TelegramActions:
     @staticmethod
     def _technical_sentence(*, latest_close: float | None, ma: float | None, rsi: float | None) -> str:
         if rsi is not None and rsi >= 65:
-            return "短线偏强，若放量站稳前高可延续上行；高位波动风险上升。"
+            return "短线偏强，若放量站稳前高可延续上行；若量能不足则回撤风险上升。"
         if rsi is not None and rsi <= 35:
-            return "短线偏弱，若收复10日均线并放量可转中性；否则延续震荡偏弱。"
+            return "短线偏弱，若收复10日均线并放量可转中性；若失守近期低点则下行风险上升。"
         if ma is not None and latest_close is not None:
             if latest_close >= ma:
-                return "短线中性偏强，若继续站稳20日均线可确认转强；需防冲高回落。"
-            return "短线中性偏弱，若重回20日均线上方可改善；否则仍偏震荡。"
-        return "短线中性，待价格与量能给出方向触发条件。"
+                return "短线中性偏强，若继续站稳20日均线可确认转强；若跌回均线下方则回落风险增加。"
+            return "短线中性偏弱，若重回20日均线上方可改善；若持续受压则震荡下行风险偏高。"
+        return "短线中性，若放量突破区间上沿可转强；若跌破区间下沿则转弱风险抬升。"
 
     @staticmethod
-    def _news_sentence(news_digest: NewsDigest) -> str:
+    def _news_theme_lines(news_digest: NewsDigest) -> list[str]:
         if news_digest.total_count <= 0:
-            return f"主题覆盖不足（{news_digest.window_label}），可能遗漏重大事件。"
-        ranked = sorted(
-            ((name, int(count)) for name, count in news_digest.event_distribution.items() if int(count) > 0),
-            key=lambda item: item[1],
-            reverse=True,
-        )
-        topics = [name for name, _ in ranked[:3]] or ["其他"]
-        topic_text = " / ".join(topics)
-        return (
-            f"主题Top3：{topic_text}（{news_digest.window_label} {news_digest.total_count} 条），"
-            f"整体情绪{news_digest.sentiment_direction}。"
-        )
+            return [f"主题覆盖不足（{news_digest.window_label}），可能遗漏重大事件。"]
+        if not news_digest.top_themes:
+            return [f"主题覆盖不足（{news_digest.window_label}），可能遗漏重大事件。"]
+        lines = [f"主题Top3：{news_digest.window_label} 共 {news_digest.total_count} 条，整体情绪{news_digest.sentiment_direction}。"]
+        for index, item in enumerate(news_digest.top_themes[:3], start=1):
+            lines.append(f"{index}) {item.category}：{item.impact}")
+            lines.append(
+                f"   代表新闻：{item.representative_title}（{item.representative_time}｜来源：{item.representative_source}）"
+            )
+        return lines
 
     @classmethod
     def _final_schema_version_for_snapshot(
@@ -380,7 +387,8 @@ class TelegramActions:
             "",
             "Card B｜原因摘要",
             f"技术：{cls._technical_sentence(latest_close=latest_close, ma=ma, rsi=rsi)}",
-            f"新闻：{cls._news_sentence(news_digest)}",
+            "新闻：",
+            *cls._news_theme_lines(news_digest),
             "",
             "Card C｜证据三件套",
             f"行情源={market_source}（更新至 {cls._format_timestamp(market_updated_at)}）",
@@ -469,6 +477,7 @@ class TelegramActions:
                 sentiment_score=50,
                 sentiment_direction="中性",
                 sentiment_range="45-55",
+                top_themes=[],
                 top_news=[],
             )
         event_distribution_raw = raw.get("event_distribution")
@@ -476,6 +485,20 @@ class TelegramActions:
             event_distribution_raw = {}
         source_raw = raw.get("source_coverage")
         source_coverage = source_raw if isinstance(source_raw, list) else []
+        top_themes: list[ThemeDigestItem] = []
+        for item in raw.get("top_themes", []):
+            if not isinstance(item, dict):
+                continue
+            top_themes.append(
+                ThemeDigestItem(
+                    category=str(item.get("category", "")).strip(),
+                    count=max(0, int(item.get("count", 0))),
+                    impact=str(item.get("impact", "")).strip(),
+                    representative_title=str(item.get("representative_title", "")).strip(),
+                    representative_time=str(item.get("representative_time", "")).strip(),
+                    representative_source=str(item.get("representative_source", "")).strip(),
+                )
+            )
         top_news: list[TopNewsItem] = []
         for item in raw.get("top_news", []):
             if not isinstance(item, dict):
@@ -505,6 +528,7 @@ class TelegramActions:
             sentiment_score=max(0, min(100, int(raw.get("sentiment_score", 50)))),
             sentiment_direction=str(raw.get("sentiment_direction", "中性")).strip() or "中性",
             sentiment_range=str(raw.get("sentiment_range", "45-55")).strip() or "45-55",
+            top_themes=top_themes[:3],
             top_news=top_news[:5],
         )
 

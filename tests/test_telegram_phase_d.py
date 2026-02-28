@@ -2147,11 +2147,38 @@ async def test_phase_p1_candidate_selection_uses_inline_keyboard_buttons(tmp_pat
         row = conn.execute("SELECT request_id FROM bot_updates WHERE update_id = 30231").fetchone()
     assert row is not None
     req_id = str(row["request_id"])
+    selector_text = sender.messages[-1][1]
+    assert "排序依据" in selector_text
+    assert "默认候选" in selector_text
     assert sender.keyboards
     inline = sender.keyboards[-1][1].get("inline_keyboard")
     assert isinstance(inline, list) and inline
+    labels = [str(button["text"]) for row in inline for button in row]
+    assert 1 <= len(labels) <= 5
+    assert all("｜" in label for label in labels)
+    assert any("港股" in label and "腾讯" in label for label in labels)
     first_button = inline[0][0]
     assert str(first_button["callback_data"]).startswith(f"pick|{req_id[-6:]}|")
+
+
+@pytest.mark.asyncio
+async def test_phase_p1_candidate_selection_supports_natural_language_market_choice(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+    calls: list[str] = []
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        calls.append(str(kwargs.get("symbol", "")))
+        return {"run_id": "run-p1-candidate-natural", "metrics": {"data_close": 10.0}, **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 30235, "message": {"chat": {"id": "chat-p1-natural"}, "text": "分析腾讯走势"}})
+    assert await gateway.process_update({"update_id": 30236, "message": {"chat": {"id": "chat-p1-natural"}, "text": "选港股那个"}})
+    assert calls
+    assert calls[-1] == "0700.HK"
+    assert any("已选择标的 0700.HK" in text for _, text in sender.messages)
 
 
 @pytest.mark.asyncio
@@ -2217,7 +2244,7 @@ async def test_phase_p2_user_copy_forbidden_words_guard(tmp_path) -> None:  # no
     async def fake_runner(**kwargs):  # noqa: ANN003
         return {
             "run_id": "run-p2-guard",
-            "fused_insights": {"summary": "metrics unavailable traceback chart_missing"},
+            "fused_insights": {"summary": "metrics unavailable traceback chart_missing run_id=abc request_id=req-1 action=analyze internal_score=0.8"},
             "metrics": {"data_close": 123.0, "technical_rsi_14": 51.0},
             **kwargs,
         }
@@ -2230,6 +2257,10 @@ async def test_phase_p2_user_copy_forbidden_words_guard(tmp_path) -> None:  # no
     assert "metrics unavailable" not in merged
     assert "chart_missing" not in merged
     assert "traceback" not in merged
+    assert "run_id" not in merged
+    assert "request_id" not in merged
+    assert "action=analyze" not in merged
+    assert "internal_score" not in merged
 
 
 @pytest.mark.asyncio
@@ -2367,6 +2398,54 @@ async def test_upgrade8_p0_snapshot_card_contains_first_screen_required_fields(t
     assert "行情源=" in msg
     assert "新闻源覆盖=" in msg
     assert "指标口径=" in msg
+
+
+@pytest.mark.asyncio
+async def test_upgrade8_p1_snapshot_card_news_section_contains_thematic_top3_with_representative_news(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {
+            "run_id": "run-p1-theme",
+            "fused_insights": {"summary": "theme output"},
+            "metrics": {
+                "data_close": 200.0,
+                "technical_rsi_14": 56.0,
+                "window_low": 180.0,
+                "window_high": 220.0,
+                "return_30d": 0.1,
+                "max_drawdown_30d": -0.08,
+                "market_data_source": "AlphaFeed",
+                "market_data_updated_at": "2026-02-28T09:30:00+00:00",
+            },
+            "news": [
+                {"title": "Q4 earnings beat estimates", "source": "WireA", "published_at": "2026-02-27T08:00:00+00:00"},
+                {"title": "Regulator opens probe into filings", "source": "WireB", "published_at": "2026-02-27T07:00:00+00:00"},
+                {"title": "New product launch gains traction", "source": "WireC", "published_at": "2026-02-26T09:00:00+00:00"},
+                {"title": "Fed signals lower rate path", "source": "WireD", "published_at": "2026-02-26T06:00:00+00:00"},
+            ],
+            **kwargs,
+        }
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 30312, "message": {"chat": {"id": "chat-p1-theme"}, "text": "分析 TSLA 一个月走势"}})
+    msg = next(text for _, text in reversed(sender.messages) if "Card A｜区间表现" in text)
+    assert "主题Top3：" in msg
+    assert "1) 财报：" in msg
+    assert "2) 监管：" in msg
+    assert "3) 产品：" in msg
+    assert "代表新闻：" in msg
+    assert "来源：" in msg
+
+
+def test_upgrade8_p1_technical_sentence_contains_direction_trigger_and_risk() -> None:
+    sentence = TelegramActions._technical_sentence(latest_close=120.0, ma=100.0, rsi=70.0)  # noqa: SLF001
+    assert "偏强" in sentence
+    assert "若" in sentence
+    assert "风险" in sentence
 
 
 @pytest.mark.asyncio

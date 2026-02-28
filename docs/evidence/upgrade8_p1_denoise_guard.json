@@ -1,0 +1,19 @@
+{
+  "evidence_id": "upgrade8_p1_denoise_guard",
+  "date": "2026-02-28",
+  "scope": "Upgrade8 P1 user-visible denoise",
+  "tests": [
+    "tests/test_telegram_phase_d.py::test_phase_p2_user_copy_forbidden_words_guard"
+  ],
+  "blocked_tokens": [
+    "run_id",
+    "request_id",
+    "schema_version",
+    "action_version",
+    "traceback",
+    "raw_error",
+    "action=...",
+    "internal_*"
+  ],
+  "status": "passed"
+}

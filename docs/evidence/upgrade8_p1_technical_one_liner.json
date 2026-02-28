@@ -1,0 +1,17 @@
+{
+  "evidence_id": "upgrade8_p1_technical_one_liner",
+  "date": "2026-02-28",
+  "scope": "Upgrade8 P1 technical one-liner",
+  "tests": [
+    "tests/test_telegram_phase_d.py::test_upgrade8_p1_technical_sentence_contains_direction_trigger_and_risk"
+  ],
+  "contract": {
+    "structure": [
+      "direction_judgement",
+      "trigger_condition",
+      "risk_statement"
+    ],
+    "sample": "短线偏强，若放量站稳前高可延续上行；若量能不足则回撤风险上升。"
+  },
+  "status": "passed"
+}

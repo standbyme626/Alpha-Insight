@@ -1,0 +1,24 @@
+{
+  "evidence_id": "upgrade8_p1_news_theme_output",
+  "date": "2026-02-28",
+  "scope": "Upgrade8 P1 thematic news output",
+  "tests": [
+    "tests/test_telegram_phase_d.py::test_upgrade8_p1_snapshot_card_news_section_contains_thematic_top3_with_representative_news"
+  ],
+  "contract": {
+    "top_topics": 3,
+    "required_fields_per_topic": [
+      "theme",
+      "impact_sentence",
+      "representative_title",
+      "representative_time",
+      "representative_source"
+    ],
+    "render_markers": [
+      "主题Top3",
+      "代表新闻",
+      "来源"
+    ]
+  },
+  "status": "passed"
+}

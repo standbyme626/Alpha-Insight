@@ -112,6 +112,19 @@ class TopNewsItem:
 
 
 @dataclass(frozen=True)
+class ThemeDigestItem:
+    category: str
+    count: int
+    impact: str
+    representative_title: str
+    representative_time: str
+    representative_source: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class NewsDigest:
     window_days: int
     window_label: str
@@ -121,10 +134,12 @@ class NewsDigest:
     sentiment_score: int
     sentiment_direction: str
     sentiment_range: str
+    top_themes: list[ThemeDigestItem]
     top_news: list[TopNewsItem]
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
+        data["top_themes"] = [item.to_dict() for item in self.top_themes]
         data["top_news"] = [item.to_dict() for item in self.top_news]
         return data
 
@@ -182,6 +197,9 @@ def build_news_digest(news_items: list[dict[str, Any]], *, window_days: int = 7)
     event_distribution = {key: 0 for key in ("财报", "监管", "产品", "宏观", "其他")}
     score = 50
     top_rows: list[TopNewsItem] = []
+    top_theme_rows: list[ThemeDigestItem] = []
+    representative_by_category: dict[str, dict[str, str]] = {}
+    sentiment_rank = {"偏多": 2, "中性": 1, "偏空": 0}
     for row in items:
         title = str(row.get("title", "")).strip() or "（无标题）"
         summary = str(row.get("summary", "")).strip()
@@ -189,6 +207,18 @@ def build_news_digest(news_items: list[dict[str, Any]], *, window_days: int = 7)
         category = classify_event_category(f"{title} {summary}")
         event_distribution[category] = event_distribution.get(category, 0) + 1
         sentiment = classify_sentiment(f"{title} {summary}")
+        representative = representative_by_category.get(category)
+        if representative is None:
+            representative_by_category[category] = {
+                "title": _clip(title, 56),
+                "published_at": _format_news_time(str(row.get("published_at", "")).strip()),
+                "source": _clip(source, 22),
+                "sentiment": sentiment,
+            }
+        else:
+            previous_sentiment = str(representative.get("sentiment", "中性")).strip() or "中性"
+            if sentiment_rank.get(sentiment, 1) > sentiment_rank.get(previous_sentiment, 1):
+                representative["sentiment"] = sentiment
         if sentiment == "偏多":
             score += 8
         elif sentiment == "偏空":
@@ -204,6 +234,25 @@ def build_news_digest(news_items: list[dict[str, Any]], *, window_days: int = 7)
                     sentiment=sentiment,
                 )
             )
+
+    category_order = {"财报": 0, "监管": 1, "产品": 2, "宏观": 3, "其他": 4}
+    ranked_categories = sorted(
+        ((name, int(count)) for name, count in event_distribution.items() if int(count) > 0),
+        key=lambda item: (-item[1], category_order.get(item[0], 99)),
+    )
+    for category, count in ranked_categories[:3]:
+        representative = representative_by_category.get(category, {})
+        sentiment = str(representative.get("sentiment", "中性")).strip() or "中性"
+        top_theme_rows.append(
+            ThemeDigestItem(
+                category=category,
+                count=int(count),
+                impact=build_news_impact(category=category, sentiment=sentiment),
+                representative_title=str(representative.get("title", "（无标题）")).strip() or "（无标题）",
+                representative_time=str(representative.get("published_at", "未知时间")).strip() or "未知时间",
+                representative_source=str(representative.get("source", "未知来源")).strip() or "未知来源",
+            )
+        )
 
     score = max(0, min(100, score))
     direction = "中性"
@@ -222,6 +271,7 @@ def build_news_digest(news_items: list[dict[str, Any]], *, window_days: int = 7)
         sentiment_score=score,
         sentiment_direction=direction,
         sentiment_range=f"{score_low}-{score_high}",
+        top_themes=top_theme_rows,
         top_news=top_rows,
     )
 

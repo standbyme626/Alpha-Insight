@@ -40,6 +40,24 @@ _SYMBOL_ALIAS_MAP: dict[str, list[str]] = {
     "苹果": ["AAPL"],
     "apple": ["AAPL"],
 }
+_SYMBOL_DISPLAY_META: dict[str, dict[str, str]] = {
+    "0700.HK": {"market": "hk", "market_label": "港股", "company": "腾讯控股"},
+    "TCEHY": {"market": "us", "market_label": "美股", "company": "腾讯控股ADR"},
+    "9988.HK": {"market": "hk", "market_label": "港股", "company": "阿里巴巴-SW"},
+    "BABA": {"market": "us", "market_label": "美股", "company": "阿里巴巴"},
+    "TSLA": {"market": "us", "market_label": "美股", "company": "特斯拉"},
+    "AAPL": {"market": "us", "market_label": "美股", "company": "苹果"},
+}
+_MARKET_CHOICE_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "hk": ("港股", "hk", "hong kong", "h股"),
+    "us": ("美股", "us", "usa", "纳斯达克", "纽交所"),
+    "cn": ("a股", "沪深", "上证", "深证", "sh", "sz"),
+    "crypto": ("加密", "币", "crypto", "数字货币"),
+}
+_SYMBOL_ALIAS_BY_SYMBOL: dict[str, set[str]] = {}
+for _alias, _symbols in _SYMBOL_ALIAS_MAP.items():
+    for _symbol in _symbols:
+        _SYMBOL_ALIAS_BY_SYMBOL.setdefault(str(_symbol).upper(), set()).add(str(_alias).lower())
 
 class TelegramGateway:
     _CLARIFY_SLOT_WHITELIST = {"symbol", "period", "interval", "template", "market"}
@@ -181,6 +199,149 @@ class TelegramGateway:
         return [], matched_alias
 
     @staticmethod
+    def _contains_cjk(text: str) -> bool:
+        return bool(re.search(r"[\u4e00-\u9fff]", str(text or "")))
+
+    @staticmethod
+    def _infer_symbol_market(symbol: str) -> str:
+        token = str(symbol or "").upper()
+        if token.endswith(".HK"):
+            return "hk"
+        if token.endswith(".SH") or token.endswith(".SZ") or token.endswith(".BJ"):
+            return "cn"
+        if any(token.endswith(suffix) for suffix in ("-USD", "USDT", "USD")) and len(token) >= 6:
+            return "crypto"
+        if token in {"BTC", "ETH", "SOL", "XRP"}:
+            return "crypto"
+        if token:
+            return "us"
+        return "other"
+
+    @staticmethod
+    def _market_label(market: str) -> str:
+        return {
+            "hk": "港股",
+            "us": "美股",
+            "cn": "A股",
+            "crypto": "加密",
+        }.get(str(market or "").lower(), "其他")
+
+    @staticmethod
+    def _candidate_company_name(symbol: str) -> str:
+        meta = _SYMBOL_DISPLAY_META.get(str(symbol or "").upper(), {})
+        company = str(meta.get("company", "")).strip()
+        return company or "未知公司"
+
+    @classmethod
+    def _candidate_display_label(cls, symbol: str) -> str:
+        token = str(symbol or "").upper()
+        meta = _SYMBOL_DISPLAY_META.get(token, {})
+        market = str(meta.get("market", "")).strip().lower() or cls._infer_symbol_market(token)
+        market_label = str(meta.get("market_label", "")).strip() or cls._market_label(market)
+        company = str(meta.get("company", "")).strip() or cls._candidate_company_name(token)
+        return f"{token}｜{market_label}｜{company}"
+
+    @staticmethod
+    def _candidate_liquidity_rank(symbol: str) -> int:
+        proxy = {
+            "0700.HK": 10,
+            "9988.HK": 11,
+            "TCEHY": 20,
+            "BABA": 21,
+            "AAPL": 30,
+            "TSLA": 31,
+        }
+        token = str(symbol or "").upper()
+        return proxy.get(token, 500)
+
+    @classmethod
+    def _rank_candidate_symbols(
+        cls,
+        *,
+        candidates: list[str],
+        normalized_text: str,
+        context_last_symbol: str | None,
+    ) -> tuple[list[str], str]:
+        lang_market = "hk" if cls._contains_cjk(normalized_text) else "us"
+        history_symbol = str(context_last_symbol or "").strip().upper()
+        history_market = cls._infer_symbol_market(history_symbol) if history_symbol else ""
+        seen: set[str] = set()
+        normalized_candidates: list[str] = []
+        for item in candidates:
+            token = str(item).strip().upper()
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            normalized_candidates.append(token)
+        ranked = sorted(
+            normalized_candidates,
+            key=lambda item: (
+                0 if cls._infer_symbol_market(item) == lang_market else 1,
+                0 if history_market and cls._infer_symbol_market(item) == history_market else 1,
+                cls._candidate_liquidity_rank(item),
+                item,
+            ),
+        )
+        lang_part = "语言=中文语境→港股优先" if lang_market == "hk" else "语言=英文语境→美股优先"
+        history_part = (
+            f"历史偏好={cls._market_label(history_market)}优先"
+            if history_market in {"hk", "us", "cn", "crypto"}
+            else "历史偏好=无"
+        )
+        reason = f"{lang_part}；{history_part}；流动性兜底=成交额/市值代理排序"
+        return ranked, reason
+
+    @classmethod
+    def _extract_market_choice(cls, text: str) -> str | None:
+        lowered = str(text or "").lower()
+        for market, keywords in _MARKET_CHOICE_KEYWORDS.items():
+            if any(keyword in lowered for keyword in keywords):
+                return market
+        return None
+
+    @classmethod
+    def _resolve_pending_candidate_from_text(
+        cls,
+        *,
+        text: str,
+        candidates: list[str],
+    ) -> str | None:
+        normalized = sanitize_user_text(text)
+        lowered = normalized.lower()
+        if not lowered:
+            return None
+        normalized_candidates = [str(item).strip().upper() for item in candidates if str(item).strip()]
+        if not normalized_candidates:
+            return None
+
+        for token in re.findall(r"[A-Za-z0-9.\-]{1,16}", normalized):
+            symbol = str(token).upper()
+            if symbol in normalized_candidates:
+                return symbol
+
+        explicit_pick = any(keyword in lowered for keyword in ("选", "那个", "pick", "choose", "要看", "就看"))
+        symbol_hit: set[str] = set()
+        for symbol in normalized_candidates:
+            company = cls._candidate_company_name(symbol).lower()
+            if company and company != "未知公司" and company in lowered:
+                symbol_hit.add(symbol)
+                continue
+            aliases = _SYMBOL_ALIAS_BY_SYMBOL.get(symbol, set())
+            if any(alias and alias in lowered for alias in aliases):
+                symbol_hit.add(symbol)
+        if len(symbol_hit) == 1:
+            return next(iter(symbol_hit))
+
+        market = cls._extract_market_choice(lowered)
+        if market is not None:
+            market_hits = [item for item in normalized_candidates if cls._infer_symbol_market(item) == market]
+            if len(market_hits) == 1:
+                return market_hits[0]
+            if explicit_pick and market_hits:
+                return market_hits[0]
+        return None
+
+    @staticmethod
     def _is_explicit_switch_text(text: str) -> bool:
         lowered = (text or "").lower()
         return any(item in lowered for item in ("不是", "换成", "改看", "换标的", "怎么样"))
@@ -208,8 +369,15 @@ class TelegramGateway:
         elif len(candidates) == 1:
             slots["symbol"] = candidates[0]
         elif len(candidates) > 1 and not explicit_symbol:
-            slots["_candidate_symbols"] = candidates
+            ranked_candidates, rank_reason = self._rank_candidate_symbols(
+                candidates=candidates,
+                normalized_text=normalized_text,
+                context_last_symbol=(context.last_symbol_context if context else None),
+            )
+            slots["_candidate_symbols"] = ranked_candidates
             slots["_candidate_alias"] = alias
+            slots["_candidate_default_symbol"] = ranked_candidates[0] if ranked_candidates else ""
+            slots["_candidate_rank_reason"] = rank_reason
             plan.slots = slots
             plan.reject_reason = "candidate_selection_needed"
             plan.explain = "candidate_selection_needed"
@@ -1643,6 +1811,20 @@ class TelegramGateway:
                     request_ref=request_ref,
                 )
 
+            pending_candidate = self._store.get_latest_pending_candidate(chat_id=chat_id)
+            if pending_candidate is not None:
+                candidate_symbol = self._resolve_pending_candidate_from_text(
+                    text=text,
+                    candidates=pending_candidate.candidates,
+                )
+                if candidate_symbol is not None:
+                    return await self._handle_candidate_selection(
+                        chat_id=chat_id,
+                        update_id=update_id,
+                        request_ref=pending_candidate.request_id,
+                        chosen_symbol=candidate_symbol,
+                    )
+
             pending = self._store.get_pending_confirm_request(chat_id=chat_id)
             if pending is not None:
                 await self._actions.send_error_message(
@@ -2019,11 +2201,17 @@ class TelegramGateway:
                     ttl_seconds=300,
                 )
                 alias = str(plan.slots.get("_candidate_alias", "该标的")).strip()
-                buttons = [[(item, f"pick|{request_id[-6:]}|{item}")] for item in candidates[:4]]
+                rank_reason = str(plan.slots.get("_candidate_rank_reason", "")).strip()
+                default_symbol = str(plan.slots.get("_candidate_default_symbol", "")).strip().upper()
+                default_label = self._candidate_display_label(default_symbol) if default_symbol else "无"
+                buttons = [[(self._candidate_display_label(item), f"pick|{request_id[-6:]}|{item}")] for item in candidates[:5]]
                 await self._actions.send_inline_buttons(
                     chat_id=chat_id,
                     text=(
-                        f"标的 `{alias}` 命中多个候选，请在 5 分钟内点选按钮："
+                        f"标的 `{alias}` 命中多个候选（代码｜市场｜公司名），请在 5 分钟内确认：\n"
+                        f"排序依据：{rank_reason}\n"
+                        f"默认候选：{default_label}\n"
+                        "可直接回复：选港股那个 / 选美股那个 / 选A股那个 / 选加密那个。"
                     ),
                     buttons=buttons,
                 )

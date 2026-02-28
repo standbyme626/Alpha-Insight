@@ -1566,11 +1566,46 @@ class TelegramTaskStore:
                 """,
                 (str(chat_id), ref, ref[-6:]),
             ).fetchone()
+        record = self._pending_candidate_record_from_row(row)
+        if record is None:
+            return None
+        if str(record.expires_at) <= now_iso:
+            self.mark_pending_candidate_selection(request_id=record.request_id, status="expired")
+            return None
+        return record
+
+    def get_latest_pending_candidate(self, *, chat_id: str) -> PendingCandidateSelectionRecord | None:
+        now_iso = _isoformat(_utc_now_dt())
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT request_id, chat_id, scope_key, candidates, command_template, status, expires_at, created_at, updated_at
+                FROM pending_candidate_selection
+                WHERE chat_id = ?
+                  AND status = 'pending'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (str(chat_id),),
+            ).fetchone()
+        record = self._pending_candidate_record_from_row(row)
+        if record is None:
+            return None
+        if str(record.expires_at) <= now_iso:
+            self.mark_pending_candidate_selection(request_id=record.request_id, status="expired")
+            return None
+        return record
+
+    @staticmethod
+    def _pending_candidate_record_from_row(row: sqlite3.Row | None) -> PendingCandidateSelectionRecord | None:
         if row is None:
             return None
-        payload = json.loads(str(row["candidates"]))
+        try:
+            payload = json.loads(str(row["candidates"]))
+        except json.JSONDecodeError:
+            payload = {}
         candidates = payload.get("candidates") if isinstance(payload, dict) else []
-        record = PendingCandidateSelectionRecord(
+        return PendingCandidateSelectionRecord(
             request_id=str(row["request_id"]),
             chat_id=str(row["chat_id"]),
             scope_key=str(row["scope_key"]),
@@ -1581,10 +1616,6 @@ class TelegramTaskStore:
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
         )
-        if str(record.expires_at) <= now_iso:
-            self.mark_pending_candidate_selection(request_id=record.request_id, status="expired")
-            return None
-        return record
 
     def upsert_request_chart_state(self, *, request_id: str, chart_state: str) -> None:
         state = str(chart_state or "none").strip().lower()

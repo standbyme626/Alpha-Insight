@@ -1,0 +1,17 @@
+{
+  "evidence_id": "upgrade8_p1_ambiguity_confirmation",
+  "date": "2026-02-28",
+  "scope": "Upgrade8 P1 ambiguity selector",
+  "tests": [
+    "tests/test_telegram_phase_d.py::test_phase_p1_candidate_selection_uses_inline_keyboard_buttons",
+    "tests/test_telegram_phase_d.py::test_phase_p1_candidate_selection_supports_natural_language_market_choice"
+  ],
+  "selector_contract": {
+    "candidate_label_format": "代码｜市场｜公司名",
+    "max_candidates": 5,
+    "ranking_transparency": "语言语境 + 历史偏好 + 流动性兜底",
+    "default_choice_example": "0700.HK｜港股｜腾讯控股",
+    "natural_language_confirmation_example": "选港股那个 -> 0700.HK"
+  },
+  "status": "passed"
+}
