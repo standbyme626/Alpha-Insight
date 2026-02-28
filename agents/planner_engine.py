@@ -148,7 +148,7 @@ async def _call_remote_planner(request: str, cfg: PlannerLLMConfig, *, timeout_s
     # DashScope Qwen3 compatible endpoint requires explicit non-thinking mode for non-streaming calls.
     if cfg.enable_thinking is not None:
         payload["enable_thinking"] = cfg.enable_thinking
-    elif "dashscope.aliyuncs.com" in cfg.base_url or cfg.model.lower().startswith("qwen3"):
+    elif "dashscope.aliyuncs.com" in cfg.base_url or cfg.model.lower().startswith("qwen"):
         payload["enable_thinking"] = False
 
     headers = {
