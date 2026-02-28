@@ -1,489 +1,383 @@
 # Alpha-Insight
 
-Alpha-Insight 是一个基于 LangGraph 的多 Agent 量化投研系统，支持沙箱执行、行情抓取、自动纠错、研报输出与 Telegram 推送。
+## 项目简介（What / Why）
+Alpha-Insight 是一个“研究 + 监控 + 推送”的量化投研系统：
+- 对外能力：支持 Telegram 命令/NL 输入进行快速分析、监控任务创建、告警中心、日报与状态查询。
+- 核心目标：把“行情抓取 -> 新闻聚合 -> 指标计算 -> 解释输出 -> 告警分发 -> 降级治理”串成可追踪、可回归、可验收的闭环。
 
-## 已完成范围（第 1-4 周）
+代码依据：
+- 统一研究主链路：[agents/workflow_engine.py](agents/workflow_engine.py)
+- Telegram 网关与动作层：[services/telegram_gateway.py](services/telegram_gateway.py), [services/telegram_actions.py](services/telegram_actions.py)
+- 调度与可靠性治理：[services/scheduler.py](services/scheduler.py), [services/reliability_governor.py](services/reliability_governor.py)
 
-- 第 1 周：沙箱管理、行情数据工具、爬虫回退、Telegram 基础推送
-- 第 2 周：`Planner -> Coder -> Executor -> Debugger` 自修复闭环
-- 第 3 周：MACD/RSI、向量化回测、多模态研报、HITL 人工确认
-- 第 4 周：实时异动扫描、分级告警、Streamlit 驾驶舱、安全 Guardrails、观测封装
+---
 
-## 当前可用功能（在历史能力基础上的增量）
+## Repo Discovery（目录结构 / 入口 / 依赖）
 
-- 三市场监控：A 股 / 港股 / 美股，支持 Top100 监控池
-- 公司名展示：前端与告警统一展示公司名，支持 `代码(公司名)` 与 `代码 | 公司名`
-- Telegram 告警：分级告警文案中英双语，字段统一（价格/涨跌幅/RSI/原因/时间）
-- Telegram 命令增强（Phase D）：
-  - `/report <run_id|request_id>`、`/digest daily`
-  - `/monitor <symbol|sym1,sym2> <interval> [volatility|price|rsi] [telegram_only|webhook_only|dual_channel|email_only|wecom_only|multi_channel] [research-only|alert-only|execution-ready]`
-  - `/route <set|disable|list> <telegram|email|wecom> <target>`（渠道路由治理）
-- 双前端页面：
-  - `8501` 实时驾驶舱（扫描、信号、流水线、告警）
-  - `8502` Planner 控制台（规划）+ Full Analysis（完整分析产物）
-  - `8503` Upgrade7 Console（runs/alerts/evidence/governance 资源面板）
-- Full Analysis 模式：可展示沙箱代码、stdout/stderr、traceback、重试次数
-- 沙箱容灾：Docker 沙箱不可用（如 `docker.sock permission denied`）时，自动回退本地进程执行（仍受 guardrails）
+### 1) 顶层目录（关键）
+- `agents/`：研究/扫描/命令路由/NLU。
+- `core/`：模型、沙箱策略、运行时配置、连接器抽象、观测与预算。
+- `services/`：Telegram 业务动作、存储、调度、通知、脉冲发布、治理。
+- `tools/`：行情/新闻/Telegram API 适配器。
+- `scripts/`：长轮询网关、webhook 网关、调度器、前端资源导出等运行脚本。
+- `ui/`：Streamlit 前端（旧版与升级版控制台）。
+- `web_console/`：Next.js 前端（resource-first 路由壳层）。
+- `docs/evidence/`：验收证据 JSON。
+- `tests/`：pytest 回归与集成测试。
 
-## Telegram 体验升级（Upgrade5/Upgrade6）
+### 2) 关键入口文件
+- 统一研究入口：`agents/workflow_engine.py::run_unified_research`
+- Telegram 长轮询入口：`scripts/telegram_long_polling_gateway.py`
+- Telegram webhook 入口：`scripts/telegram_webhook_gateway.py`
+- 监控调度入口：`scripts/telegram_watch_scheduler.py`
+- 一键栈脚本：`scripts/telegram_stack.sh`
+- Streamlit 研究前端：`ui/llm_frontend.py`
+- Streamlit 运行控制台：`ui/upgrade7_console.py`
+- Next.js 前端：`web_console/app/(dashboard)/*`
 
-当前仓库已完成升级5“股民友好”交互能力：
+### 3) 外部 API / 数据源 / 集成依赖
+- 行情：`yfinance`（`tools/market_data.py::fetch_market_data`）。
+- 名称/池子补充：Sina 行情接口、Eastmoney、Wikipedia（`tools/market_data.py` 中 `_fetch_*` / `_refresh_*` / `_http_get`）。
+- 新闻：Yahoo Finance RSS + Google News RSS（`tools/news_data.py::fetch_symbol_news_tool_result`）。
+- 推送：Telegram Bot API（`tools/telegram.py` + `services/notification_channels.py`）。
+- 可选执行沙箱：E2B + Docker/local fallback（`core/sandbox_manager.py`）。
 
-- 上下文记忆：`last_symbol + last_period`（默认 TTL 30min）
-- 显式换标的优先：如“不是腾讯，是阿里”立即切换
-- 候选点选：多候选代码（如 `0700.HK/TCEHY`）用按钮选择，且绑定 `request_id`
-- 点选超时策略：5 分钟后自动取消（或默认主市场代码并回显）
-- `/reset`：清空 symbol/period/候选点选/待确认上下文
-- 证据优先：无证据不输出技术结论评分
-- 图表策略：先自动重试一次，再降级文本并给下一步按钮
-- 每条回复带 `request_id(short)`（有 run 则附 `run_id`）
+---
 
-在升级5基础上，升级6已落地以下能力（流畅对话 + 24/7 体验）：
+## 功能概览（用户视角）
+- 快速分析：`/analyze` 或自然语言“分析 TSLA 一个月走势”。
+- Snapshot 卡片输出：Card A/B/C/D（区间表现、技术+新闻解释、证据三件套、动作入口）。
+- 监控与告警：`/monitor`, `/list`, `/stop`, `/alerts`, `/bulk`。
+- 运行与运维：`/status`, `/digest daily`, `/report`。
+- 路由与偏好：`/route`, `/webhook`, `/pref`。
+- 前端查看：
+  - Streamlit（研究/运行看板）
+  - Next.js（runs/alerts/evidence/governance 资源视图）
 
-- 通用对话兜底：`你好/你会什么/怎么用` 返回能力卡与快捷按钮，不再走拒绝模板
-- 渐进式回包：分析类请求先回受理，再回阶段进度，再回最终结果
-- typing 心跳：长任务期间周期发送 typing，结束后自动停止
-- 会话单飞（Single-Flight）：同会话同类分析短窗口复用，避免重复重算
-- 多级超时治理：NLU、分析、发图分别治理，避免互相污染
-- ChannelAdapter 抽象：统一 `send_text/send_photo/send_progress`
-- 会话能力增强：`/stop` 取消、会话历史压缩归档
-- 优先级车道（P2 加分项）：`critical` 信号进入 fast lane（含立即重试与优先分发）
+---
 
-详细设计见：
+## Feature Mapping（功能 -> 代码位置）
+| 用户功能 | 代码位置（文件 + 关键函数/类） |
+|---|---|
+| 统一研究流水线（planner -> data -> coder -> executor） | `agents/workflow_engine.py::planner_node/market_data_node/coder_node/executor_node` |
+| 计划生成与数据源决策（api/scraper） | `agents/planner_engine.py::plan_tasks/_call_remote_planner/build_fallback_plan` |
+| Telegram 命令解析（含 route strategy / strategy tier） | `agents/telegram_command_router.py::parse_telegram_command` |
+| Telegram NL 规划/注入检测/槽位澄清 | `agents/telegram_nlu_planner.py::plan_from_text/detect_prompt_injection_risk/extract_clarify_slots` |
+| Telegram 分析输出（Card A/B/C/D） | `services/telegram_actions.py::_build_analysis_contract/_technical_sentence_with_levels/_news_theme_lines` |
+| Card A OHLC 计算与兜底 | `services/telegram_actions.py::_extract_ohlc_records_from_result/_compute_window_metrics_from_records/_resolve_market_contract_metrics` |
+| 监控任务调度与执行 | `services/scheduler.py::TelegramWatchScheduler.run_forever/run_once`, `services/watch_executor.py::execute_due_jobs` |
+| 策略分层治理与抑制 | `services/watch_executor.py::resolve_strategy_tier` + `services/telegram_store.py` 抑制状态字段 |
+| 降级治理（SLO -> 状态切换） | `services/reliability_governor.py::ReliabilityGovernor.reconcile` |
+| 脉冲发布（订阅 + 去重分发） | `services/market_pulse.py::MarketPulsePublisher.publish_due` |
+| 新闻主题化/情绪门槛 | `services/news_digest.py::build_news_digest/format_top_news_lines/format_cluster_lines` |
+| 多通道路由（telegram/email/wecom/webhook） | `services/notification_channels.py::MultiChannelNotifier`, `scripts/telegram_watch_scheduler.py::WebhookTextSender` |
+| Typed 资源读取（前端） | `ui/typed_resource_client.py::FrontendResourceClient`, `web_console/lib/contracts.ts` |
 
-- [升级5.md](升级5.md)
-- [升级6.md](升级6.md)
-- [升级8.md](升级8.md)
+---
 
-## Upgrade8（进行中，Telegram 优先）
-
-Upgrade8 聚焦“产品可感知升级”，在 Upgrade7 工程底座上优先解决首屏结论、自然对话与信息可信度问题。
-
-### 体验契约
-
-- 首屏四段卡片：区间表现、原因摘要、证据三件套、动作按钮
-- 每请求最多两条核心消息：`进度（单条可编辑） + 最终结果`
-- 默认隐藏内部字段（`run_id/request_id/schema/action`），仅调试模式可见
-- 自然问法优先：低置信度先澄清（标的/市场/周期），再执行
-
-### 新闻与公告扩源（分阶段）
-
-- P0（优先）：HKEX RSS、SEC RSS、Investing RSS
-- P1（增强）：Nasdaq RSS、PR Newswire、Business Wire、Seeking Alpha
-- P2（宏观脉冲）：FRED 发布日历、Fed 发布日程、NY Fed 经济日历
-
-官方入口：
-
-- HKEX RSS: <https://www.hkex.com.hk/Services/RSS-Feeds?sc_lang=en>
-- SEC RSS: <https://www.sec.gov/about/rss-feeds>
-- Investing RSS: <https://www.investing.com/webmaster-tools/rss>
-- Nasdaq RSS: <https://www.nasdaq.com/nasdaq-rss-feeds>
-- PR Newswire: <https://www.prnewswire.com/rss/>
-- Business Wire: <https://www.businesswire.com/help/feed-options>
-- Seeking Alpha Feeds: <https://about.seekingalpha.com/feeds>
-- FRED Calendar: <https://fred.stlouisfed.org/releases/calendar>
-- Federal Reserve Schedule: <https://www.federalreserve.gov/data/releaseschedule.htm>
-- NY Fed Calendar: <https://www.newyorkfed.org/research/calendars/nationalecon_cal>
-
-实施与验收详见：[升级8.md](升级8.md)。
-
-### 当前业务流程图（Telegram / 双语）
+## 架构与模块（开发者视角）
 
 ```mermaid
-flowchart TD
-  U[User 用户输入] --> G[Telegram Gateway 网关]
-  G --> R{Command or NL? 命令还是自然语言}
+graph TD
+    U[User Telegram / Frontend] --> TG[Telegram Gateway\nservices/telegram_gateway.py]
+    TG --> TA[Telegram Actions\nservices/telegram_actions.py]
+    TA --> WF[Unified Workflow\nagents/workflow_engine.py]
+    WF --> MD[Market Data\ntools/market_data.py]
+    WF --> ND[News Data\ntools/news_data.py]
+    WF --> SB[Sandbox Manager\ncore/sandbox_manager.py]
 
-  R -->|/command| C[Command Router 命令路由]
-  R -->|NL text| N[NLU Planner 意图与槽位解析]
+    TG --> TS[(TelegramTaskStore\nSQLite)]
+    TA --> TS
 
-  N --> CP{clarify_pending exists? 是否有待澄清上下文}
-  CP -->|yes| FM[Follow-up Merge 承接补槽合并]
-  CP -->|no| VP[Validate Plan 校验计划]
-  FM --> VP
+    SCH[Watch Scheduler\nservices/scheduler.py] --> WE[Watch Executor\nservices/watch_executor.py]
+    WE --> TS
+    WE --> NC[Notification Channels\nservices/notification_channels.py]
+    NC --> TEL[Telegram API]
+    NC --> WEBH[Webhook/Email/WeCom]
 
-  VP --> OK{Valid + Confidence? 校验与置信度通过}
-  OK -->|no| RJ[Reject with template 拒绝并返回模板]
-  OK -->|yes| HR{High risk? 高风险操作}
+    SCH --> RG[Reliability Governor\nservices/reliability_governor.py]
+    RG --> TS
+    SCH --> MP[Market Pulse\nservices/market_pulse.py]
+    MP --> NC
 
-  HR -->|yes| PC[pending_confirm 待确认]
-  PC --> CB{yes/no + request_id 绑定确认}
-  CB -->|no| CX[Cancel 取消]
-  CB -->|yes| EX
-  HR -->|no| EX[Execute 执行]
-  C --> EX
-
-  EX --> AI{Intent 意图}
-  AI -->|analyze_snapshot| AN[Run unified research 执行统一分析]
-  AI -->|create/list/stop/report/digest| AC[Actions 动作处理]
-
-  AN --> CH{need_chart? 需要图表}
-  CH -->|yes| RT[Chart retry once 图表自动重试一次]
-  RT --> CS{Chart available? 图表可用}
-  CS -->|yes| PH[sendPhoto 发图]
-  CS -->|no| FB[Fallback text 降级文本+按钮]
-  CH -->|no| TX[Text response 文本响应]
-
-  PH --> EV[Evidence+Metrics 审计证据与指标]
-  FB --> EV
-  TX --> EV
-  AC --> EV
-  RJ --> EV
-  CX --> EV
+    TS --> FE1[Streamlit UI\nui/upgrade7_console.py]
+    TS --> EXP[scripts/upgrade7_frontend_resources_export.py]
+    EXP --> FE2[Next.js Console\nweb_console]
 ```
 
-### 流程说明（详细双语）
+---
 
-1. 入口分流（Ingress Routing）  
-   用户消息先进入 `TelegramGateway`，按是否以 `/` 开头分流到命令路由或自然语言解析。
-
-2. 命令链路（Command Path）  
-   命令走既有稳定链路（`/analyze /monitor /list /stop /report /digest`），保持向后兼容，不受 NL 变更影响。
-
-3. 自然语言解析（NL Understanding）  
-   NL 文本由 Planner 产出 `intent + slots + confidence`；如果存在 `clarify_pending`，优先做 follow-up 补槽承接。
-
-4. 校验与拒绝（Validation & Rejection）  
-   执行前做 deterministic 校验（symbol/period/interval/template 等）；不通过则返回用户友好模板，不执行危险动作。
-
-5. 高风险确认（High-risk Confirmation）  
-   高风险意图必须进入 `pending_confirm`，通过 `yes/no + request_id` 绑定确认，避免串单与误执行。
-
-6. 执行动作（Action Execution）  
-   分析意图调用统一研究流程，管理意图走 Telegram actions（监控、列表、停止、报告、日报）。
-
-7. 图表策略（Chart Strategy）  
-   请求图表时先尝试生成/提取，失败自动重试一次；仍失败时降级文本并给下一步按钮，不静默失败。
-
-8. 结果与证据（Response & Evidence）  
-   对用户输出结构化响应（含 `request_id`，可选 `run_id`）；同时写入 metrics/audit/evidence，支持追溯和运营统计。
-
-### 升级6目标态流程图（Target Flow / 双语）
+## 数据流图（一次分析请求链路）
 
 ```mermaid
-flowchart TD
-  U[User Input 用户输入] --> I{Private or Group? 私聊还是群聊}
-  I -->|Private| S1[Context Scope=chat 上下文按chat]
-  I -->|Group| S2[Context Scope=user 上下文按用户]
-  S1 --> G
-  S2 --> G
+sequenceDiagram
+    participant User as Telegram User
+    participant GW as TelegramGateway
+    participant ACT as TelegramActions
+    participant WF as run_unified_research
+    participant MKT as market_data/news_data
+    participant STORE as TelegramTaskStore
+    participant TGAPI as Telegram API
 
-  G[Gateway 网关] --> K{Reset? 是否/reset}
-  K -->|yes| RS[Clear Context 清空上下文<br/>symbol/period/pending selection/confirm]
-  K -->|no| R{Command or NL 命令或自然语言}
-
-  R -->|Command| C[Command Router 命令路由]
-  R -->|NL| N[NLU + Slot Parse 意图与槽位]
-
-  N --> SYM{Symbol present? 有标的吗}
-  SYM -->|yes| SW{Explicit switch? 显式换标的}
-  SW -->|yes| NS[Override symbol 覆盖标的]
-  SW -->|no| PS[Keep symbol 保持当前标的]
-
-  SYM -->|no| CO{Carry-over hit? 命中上下文}
-  CO -->|yes| PS
-  CO -->|no| AM[Alias Map 候选映射<br/>中文名/代码/别名]
-  AM --> M{Single or Multi 单候选还是多候选}
-  M -->|single| PS
-  M -->|multi| SEL[Inline buttons 点选候选]
-  SEL --> TMO{Timeout 5m? 超时5分钟}
-  TMO -->|yes| DFT[Default/Cancel 默认或取消策略]
-  TMO -->|no| BIND[Bind request_id+symbol 绑定请求与标的]
-  DFT --> VP
-  BIND --> VP
-  NS --> VP
-  PS --> VP
-
-  VP[Validate + Risk 校验与风控] --> HR{High risk? 高风险}
-  HR -->|yes| PC[pending_confirm 待确认]
-  HR -->|no| EX[Execute 执行]
-  PC --> CF{yes/no + request_id 绑定确认}
-  CF -->|yes| EX
-  CF -->|no| CX[Cancelled 已取消]
-
-  EX --> PR[Resolve period 周期解析<br/>用户>输入>上下文>默认30天]
-  PR --> AN[Analyze/Actions 执行分析或动作]
-  C --> AN
-
-  AN --> CH{need_chart? 需要图表}
-  CH -->|yes| RT[Retry once 自动重试一次]
-  RT --> CE{chart ready? 图就绪}
-  CE -->|yes| PH[Photo + Summary 发图+摘要]
-  CE -->|no| FB[Fallback 降级文本+按钮]
-  CH -->|no| TX[Text Summary 文本摘要]
-
-  FB --> EV{Evidence visible? 证据可见}
-  TX --> EV
-  PH --> EV
-  EV -->|no| DG[Degrade with options 信息不足+可选操作]
-  EV -->|yes| OUT[Structured response 结构化输出]
-  DG --> OUT
-
-  OUT --> W[Write metrics/evidence 写入指标与证据]
-  CX --> W
-  RS --> W
+    User->>GW: /analyze TSLA 或 NL 输入
+    GW->>STORE: enqueue/update request
+    GW->>ACT: handle_analyze_snapshot(...)
+    ACT->>TGAPI: 进度消息(send_progress / edit)
+    ACT->>WF: run_unified_research(request,symbol,period)
+    WF->>MKT: 行情 + 新闻 + 指标
+    WF-->>ACT: result(metrics,fused_insights,tool_results)
+    ACT->>ACT: 计算 Card A/B/C/D + 技术价位 + 新闻主题
+    ACT->>STORE: upsert_analysis_report / dedupe final message
+    ACT->>TGAPI: 发送主结果 + 按钮
+    ACT->>STORE: 记录指标/状态/证据元数据
 ```
 
-### 升级后预期问答（示例）
+---
 
-1. `看看K线图` -> 机器人询问标的或候选按钮
-2. `腾讯的` -> 承接执行，返回 `Snapshot + 数据时间 + 数据来源 + request_id/run_id`
-3. `看看新闻怎么说` -> 默认沿用当前标的与周期，回显 `news_count + 时间窗 + 来源`
-4. `不是腾讯，是阿里` -> 立即切换标的，不再追问
-5. 图表失败 -> 自动重试一次；仍失败则给“原因（用户语言）+ 按钮菜单（重试/扩窗/报告）”
+## 数据源与证据口径（行情 / 新闻 / 指标）
 
-## 目录结构
+### 1) 行情口径（Card A 依赖）
+来源与字段：
+- 主来源：`yfinance`（`tools/market_data.py::fetch_market_data`）。
+- 数据结构：OHLC 序列在 `DataBundle.records`（`core/models.py::DataBundle`）。
+- 关键字段（Card A）：`start_close`, `end_close`, `pct_change`, `abs_change`, `high`, `low`, `amplitude`, `max_drawdown`, `ratio(position)`。
+- 计算实现：`services/telegram_actions.py::_compute_window_metrics_from_records`。
 
-- `agents/`：工作流与 Agent 逻辑（`planner_engine.py`, `workflow_engine.py`, `report_workflow.py`, `scanner_engine.py`）
-- `core/`：沙箱、模型、安全策略、观测模块
-- `tools/`：行情、Telegram、产物提取
-- `scripts/`：集成脚本、定时任务脚本、真实 LLM 测试脚本
-- `ui/`：前端页面（Streamlit，含运行态可观测面板）
-- `tests/`：Week1-Week4 的 pytest 测试
-- `models/`：模型目录（本项目当前主要使用远程 API 模型，见 `models/MODELS.md`）
+### 2) 新闻口径
+- 拉取：`tools/news_data.py::fetch_symbol_news_tool_result`。
+- 统一字段：`title/link(publisher/source/published_at/summary)`。
+- 主题化与情绪：`services/news_digest.py::build_news_digest`。
+- 情绪输出门槛：`N < 5` 时显示样本不足，不输出“玄学分”。
 
-## 环境准备
+### 3) 技术指标口径
+- 主要输出：`RSI14`, `MA10`, `MA20`, `support`, `resistance`。
+- 文案生成：`services/telegram_actions.py::_technical_sentence_with_levels`。
+- 指标说明在结果卡中固定展示：`RSI14(1d)、MA10(1d)、MA20(1d)`。
 
-1. 创建并填写 `.env`（已提供 `.env.example`）：
+### 4) 证据文件（可复核）
+- 目录：`docs/evidence/`
+- 已有示例：`upgrade8_p1_*.json`, `upgrade8_p2_*.json`, `upgrade8_p2_regression_gate.json`。
+- Next 前端资源快照：`docs/evidence/upgrade7_frontend_resources.json`（由 `scripts/upgrade7_frontend_resources_export.py` 生成）。
 
+---
+
+## 快速开始（安装 / 配置 / 运行）
+
+### 1) Python 环境
+```bash
+cd /home/kkk/Project/Alpha-Insight
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-dev.txt
+```
+
+### 2) 环境变量
+复制并编辑：
 ```bash
 cp .env.example .env
 ```
+重点配置键（代码中有直接读取）：
+- LLM：`OPENAI_API_KEY`, `OPENAI_API_BASE`, `OPENAI_MODEL_NAME`, `TEMPERATURE`, `ENABLE_LOCAL_FALLBACK`
+- Telegram：`TELEGRAM_BOT_TOKEN`, `TELEGRAM_ACCESS_MODE`, `TELEGRAM_ALLOWED_CHAT_IDS`, `TELEGRAM_BLOCKED_CHAT_IDS`
+- 网关/调度：`TELEGRAM_GATEWAY_DB`, `TELEGRAM_*_TIMEOUT_SECONDS`, `TELEGRAM_*_CONCURRENCY`
+- 灰度：`TELEGRAM_GRAY_RELEASE_ENABLED`
 
-2. 关键变量：
-
-- `OPENAI_API_KEY`
-- `OPENAI_API_BASE`（例如 DashScope OpenAI 兼容地址）
-- `OPENAI_MODEL_NAME`（例如 `qwen3-32b`）
-- `TEMPERATURE`
-- `ENABLE_LOCAL_FALLBACK`
-- `TELEGRAM_BOT_TOKEN`（可选）
-- `TELEGRAM_CHAT_ID`（可选）
-- `TELEGRAM_ACCESS_MODE`（`blacklist`/`allowlist`，默认 `blacklist`）
-- `TELEGRAM_ALLOWED_CHAT_IDS`（allowlist 模式下生效）
-- `TELEGRAM_BLOCKED_CHAT_IDS`（blacklist 模式下生效）
-
-3. 推荐本地 Python 环境（与当前测试一致）：
-
+### 3) 启动 Telegram 全链路（推荐）
 ```bash
-python3 -m venv .venv_local
-.venv_local/bin/pip install -r requirements-dev.txt
+bash scripts/telegram_stack.sh restart
+bash scripts/telegram_stack.sh status
+```
+日志默认：`/tmp/telegram_gateway.log`, `/tmp/telegram_scheduler.log`。
+
+### 4) 启动 webhook 模式（可选）
+```bash
+python scripts/telegram_webhook_gateway.py --host 0.0.0.0 --port 8081 --path /telegram/webhook
+python scripts/telegram_watch_scheduler.py --poll-interval-seconds 1 --batch-size 20
 ```
 
-## 测试
-
+### 5) 启动前端
+- Streamlit（研究前端）：
 ```bash
-docker compose --env-file .env run --rm test
+streamlit run ui/llm_frontend.py --server.port 8501
 ```
-
-或本地：
-
+- Streamlit（Upgrade7 控制台）：
 ```bash
-.venv_local/bin/python -m pytest -q
+streamlit run ui/upgrade7_console.py --server.port 8502
 ```
-
-最近一次全量基线（2026-02-27）：`133 passed`。
-
-## 前端运行（Streamlit）
-
-1. 实时驾驶舱（8501）：
-
+- Next.js 控制台：
 ```bash
-PYTHONPATH=/home/kkk/Project/Alpha-Insight streamlit run ui/streamlit_dashboard.py --server.port 8501
-```
-
-2. Planner 控制台（8502）：
-
-```bash
-PYTHONPATH=/home/kkk/Project/Alpha-Insight streamlit run ui/llm_frontend.py --server.port 8502
-```
-
-3. Upgrade7 Console（8503）：
-
-```bash
-PYTHONPATH=/home/kkk/Project/Alpha-Insight streamlit run ui/upgrade7_console.py --server.port 8503
-```
-
-Upgrade7 Console 使用 typed 资源客户端 `ui/typed_resource_client.py`，从本地 store DB 与 `docs/evidence/*.json` 读取 `runs / alerts / evidence / degradation_states` 资源；alerts 资源包含 `strategy_tier` 与 `tier_guarded` 字段，并在治理面板展示 tier 分布与 guard 命中。
-
-4. Upgrade7 Next.js Console（8600，参考仓模式）：
-
-```bash
-PYTHONPATH=/home/kkk/Project/Alpha-Insight python scripts/upgrade7_frontend_resources_export.py
+python scripts/upgrade7_frontend_resources_export.py
 cd web_console
 npm install
 npm run dev
 ```
+默认地址：`http://localhost:8600`（自动跳转 `/runs`）。
 
-Next.js 控制台参考并吸收了以下项目的结构模式（非整包拷贝）：
+---
 
-- `next-shadcn-dashboard-starter`：sidebar + dashboard 路由壳层
-- `nextjs-fastapi-template`：typed client + route handler 数据访问模式
-- `react-admin` / `refine`：resource-first 信息架构（runs/alerts/evidence/governance）
+## Runtime & Ops（调度 / 监控 / 降级 / 重试）
 
-## 硬口径验收证据（Run Report + 离线20次）
+### 1) 调度与脉冲
+- 主调度循环：`services/scheduler.py::TelegramWatchScheduler.run_forever`。
+- 脉冲发布：`services/market_pulse.py::MarketPulsePublisher.publish_due`。
+- 脚本级扫描：`scripts/hourly_watchlist_scan.py`（支持 `--once` 便于 cron）。
 
-已提供固定证据脚本：`scripts/hard_acceptance_evidence.py`，默认将产物写入 `docs/evidence/`。
+### 2) 重试与容错
+- 连接器重试：`core/connectors.py::BaseConnector.call` + `core/runtime_config.py` 的 retry 配置层。
+- 通知重试/DLQ：`services/watch_executor.py` + `services/telegram_store.py`（`notifications`/重试队列）。
+- 沙箱回退：`core/sandbox_manager.py::_should_fallback_to_local_process`（包括 Docker 缺失/权限问题时 local fallback）。
 
-1. 生成最新一次 run_report（样例）：
+### 3) 降级治理
+- 触发条件：推送成功率、分析 p95、DLQ 趋势。
+- 执行器：`services/reliability_governor.py::ReliabilityGovernor`。
+- 典型状态：`no_monitor_push`, `summary_mode`, `disable_critical_research`, `chart_text_only`, `nl_command_hint_mode`。
 
+### 4) 运行状态观测
+- `/status` 输出由 `services/telegram_actions.py::handle_status` 生成。
+- 指标与事件持久化：`services/telegram_store.py` 表 `metric_events`, `degradation_states`, `degradation_events`。
+
+---
+
+## 常用命令（测试 / 运行 / 验收）
+
+### 测试
 ```bash
-PYTHONPATH=/home/kkk/Project/Alpha-Insight python scripts/hard_acceptance_evidence.py generate --runs 1 --offline --output-json docs/evidence/run_report_latest.json --output-md docs/evidence/run_report_latest.md --title "Run Report (Latest Full Analysis)"
+pytest -q
+pytest -q tests/test_telegram_phase_b.py tests/test_telegram_phase_d.py tests/test_market_pulse.py
 ```
 
-2. 生成离线 Docker Full Analysis 20 次统计：
-
+### Telegram 栈
 ```bash
-PYTHONPATH=/home/kkk/Project/Alpha-Insight python scripts/hard_acceptance_evidence.py generate --runs 20 --offline --output-json docs/evidence/offline_docker_full_analysis_20.json --output-md docs/evidence/offline_docker_full_analysis_20.md --title "Offline Docker Full Analysis Benchmark (20 Runs)"
+bash scripts/telegram_stack.sh start
+bash scripts/telegram_stack.sh restart
+bash scripts/telegram_stack.sh status
 ```
 
-3. 记录 pytest 门禁结果：
-
+### 资源导出（Next 控制台数据源）
 ```bash
-PYTHONPATH=/home/kkk/Project/Alpha-Insight pytest -q | tee docs/evidence/pytest_gate_latest.txt
+python scripts/upgrade7_frontend_resources_export.py
 ```
 
-字段覆盖：`success/fallback/retry/latency/backend/failure_type`，用于硬口径复盘与回归对比。
-
-## Upgrade7 P2 证据脚本（A/B/C + 总览）
-
+### Docker Compose（可选）
 ```bash
-PYTHONPATH=/home/kkk/Project/Alpha-Insight python scripts/upgrade7_p2_evidence.py
-PYTHONPATH=/home/kkk/Project/Alpha-Insight python scripts/upgrade7_p2b_channel_adapter_evidence.py
-PYTHONPATH=/home/kkk/Project/Alpha-Insight python scripts/upgrade7_p2c_strategy_tier_evidence.py
-PYTHONPATH=/home/kkk/Project/Alpha-Insight python scripts/upgrade7_p2_overview_evidence.py
+docker compose up dev
+# 或
+ docker compose -f docker-compose.telegram.yml up -d
 ```
 
-主要产物：
-- `docs/evidence/upgrade7_p2_fault_injection_budget.json`
-- `docs/evidence/upgrade7_p2_latency_error_budget_summary.json`
-- `docs/evidence/upgrade7_p2_channel_adapter_matrix.json`
-- `docs/evidence/upgrade7_p2_strategy_tier_matrix.json`
-- `docs/evidence/upgrade7_p2_overview.json`
-- `docs/evidence/upgrade7_p2_smoke_e2e.json`
+---
 
-## 后端启动
-
-### Telegram 一键启停（Gateway + Scheduler）
-
-```bash
-chmod +x scripts/telegram_stack.sh
-scripts/telegram_stack.sh start
-scripts/telegram_stack.sh status
-scripts/telegram_stack.sh restart
-scripts/telegram_stack.sh stop
+## 目录结构导览
+```text
+Alpha-Insight/
+├── agents/                  # 统一研究、扫描、命令/NLU
+├── core/                    # 模型、策略、运行时配置、沙箱、连接器
+├── services/                # Telegram 动作、存储、调度、通知、治理
+├── tools/                   # 市场数据/新闻/Telegram API 适配
+├── scripts/                 # 启停脚本、网关入口、调度入口、资源导出
+├── ui/                      # Streamlit 前端
+├── web_console/             # Next.js 前端（runs/alerts/evidence/governance）
+├── docs/evidence/           # 验收与回归证据
+└── tests/                   # pytest 测试
 ```
 
-默认读取 `.env`，并使用 `storage/telegram_gateway_live.db`。可通过环境变量覆盖：
-`ENV_FILE`、`TELEGRAM_GATEWAY_DB`、`TELEGRAM_POLL_TIMEOUT_SECONDS`、`TELEGRAM_IDLE_SLEEP_SECONDS`。
+---
 
-### 1) 实时异动扫描（可用于 Cron）
+## 关键流程（Telegram 一次“分析”请求时序）
+1. 用户输入命令或自然语言，`TelegramGateway` 解析命令/NLU（含注入风险检测）。
+2. 网关写入 `bot_updates` / `analysis_requests`，并调用 `TelegramActions`。
+3. `TelegramActions` 发送进度消息（可 edit），进入 `run_unified_research`。
+4. 研究链路返回行情/新闻/指标，动作层计算 Card A/B/C/D。
+5. 写入 `analysis_reports` 与请求状态，执行 final-message 去重。
+6. 发送结果消息（含按钮），后续按钮可触发新闻详单、聚类、重试等。
 
-单次执行（推荐给 cron 调度）：
+相关代码：
+- `services/telegram_gateway.py::process_enqueued_update`
+- `services/telegram_actions.py::handle_analyze_snapshot/_run_analysis_request`
+- `services/telegram_store.py::claim_final_message_dispatch/mark_final_message_dispatched`
 
-```bash
-docker compose --env-file .env run --rm dev bash -lc "export PYTHONPATH=/workspace && python scripts/hourly_watchlist_scan.py --once --watchlist 'AAPL,MSFT,TSLA' --market us --granularity hour --mode anomaly"
-```
+---
 
-常驻循环（默认每小时一次）：
+## 故障排查（常见错误 / 降级模式 / /status 解读）
 
-```bash
-docker compose --env-file .env run --rm dev bash -lc "export PYTHONPATH=/workspace && python scripts/hourly_watchlist_scan.py --market cn --top100 --granularity day"
-```
+### 1) `Unified research failed: [Errno 2] No such file or directory: 'docker'`
+- 含义：Docker 二进制缺失或不可调用。
+- 代码路径：`core/sandbox_manager.py::_should_fallback_to_local_process`。
+- 处理：安装 Docker，或确认 local fallback 已启用并通过测试 `tests/test_sandbox_manager.py`。
 
-可选市场：`us | hk | cn | auto`
+### 2) Card A 出现“数据不足”
+- 触发：缺少近 30 日 OHLC 序列（不是单点 close）。
+- 代码路径：`services/telegram_actions.py::_compute_window_metrics_from_records`。
+- 处理：检查 `tool_results.market_data.raw.records` 是否完整。
 
-阈值告警参数（D'）：
+### 3) 告警不推送
+- 查看 `/status` 中：
+  - `24h投递成功率`
+  - `重试队列深度`
+  - `DLQ`
+  - `监控推送降级中`
+- 相关治理：`services/reliability_governor.py`。
 
-- `--fallback-spike-rate`：回退占比阈值（默认 `0.25`）
-- `--failure-spike-count`：失败数阈值（默认 `3`）
-- `--latency-anomaly-ms`：延迟阈值（默认 `2500`）
+### 4) Next.js 页面有壳无数据
+- 当前 Next 控制台读取 `docs/evidence/upgrade7_frontend_resources.json`，不是直连 SQLite。
+- 先运行：`python scripts/upgrade7_frontend_resources_export.py`。
 
-### 2) 真实 LLM 连通性测试
+---
 
-```bash
-docker compose --env-file .env run --rm dev bash -lc "export PYTHONPATH=/workspace && python scripts/real_llm_smoke_test.py"
-```
+## 安全与合规（爬虫 / RSS / 展示边界）
+- 代码执行防护：`core/sandbox_policy.py` + `core/guardrails.py::validate_sandbox_code`。
+- NL 安全：`agents/telegram_nlu_planner.py::detect_prompt_injection_risk`。
+- 展示脱敏：`services/news_digest.py::redact_user_visible_payload`；`telegram_actions` 对内部关键字做用户文案替换。
+- 内容边界：Telegram 帮助文案已明确“仅用于研究与提醒，不支持自动交易”（`services/telegram_actions.py::handle_help`）。
 
-## 前端启动
+⚠️ Unknown/Needs verify：
+- 爬虫/RSS 的 robots 与站点条款合规策略未在仓库看到统一策略文件。
+- 建议核查：是否存在独立合规说明（例如 `docs/compliance*.md`）或运维侧白名单策略。
 
-当前有两个 Streamlit 页面，可并行启动：
+---
 
-### A. 实时驾驶舱（8501）
+## Roadmap / TODO（基于代码现状推断）
+1. Next 控制台数据链路升级：从“离线 JSON 导出”升级到“实时 typed API / OpenAPI contract”。
+2. 统一配置文档化：把 Telegram 与 runtime config 键形成单一配置手册（当前分散在脚本与代码）。
+3. 增强观测面板：把 `metric_events`/`degradation_events` 直接可视化，减少人工查库。
+4. 完整合规文档：补爬虫源条款、采样频率、失败重试上限与缓存策略说明。
+5. 端到端回归套件：补 webhook + scheduler + pulse 的可重复 smoke（非破坏性）。
 
-```bash
-docker compose --env-file .env run --rm -d --name alpha-insight-ui-cockpit -p 8501:8501 dev bash -lc "export PYTHONPATH=/workspace && streamlit run ui/streamlit_dashboard.py --server.address 0.0.0.0 --server.port 8501"
-```
+---
 
-打开：`http://localhost:8501`
+## ⚠️ Unknown / Needs verify
+1. `docker-compose.telegram.yml` 启动了 `telegram-db(Postgres)`，但当前 Python 存储实现是 SQLite（`services/telegram_store.py`）。
+   - 需要确认：是否存在未纳入当前分支的 Postgres store 适配层。
+2. Email/WeCom 通过 webhook 发送时的对端协议只在 `scripts/telegram_watch_scheduler.py::WebhookTextSender` 中有最小约定（`{"target","text"}`），缺正式接口文档。
+3. 生产进程托管策略（systemd/supervisor/k8s）未在仓库给出。
 
-能力说明：
+---
 
-- 启动即展示 Top100 成分（代码 + 公司名）
-- 三市场切换、粒度切换（日/时/分）
-- 信号图与信号表显示 `代码(公司名)`
-- Telegram 预览与发送
-- Runtime Log 中英双语
-
-### B. Planner 控制台 + Full Analysis（8502）
-
-```bash
-docker compose --env-file .env run --rm -d --name alpha-insight-ui-llm -p 8502:8501 dev bash -lc "scripts/run_llm_frontend.sh"
-```
-
-打开：`http://localhost:8502`
-
-能力说明：
-
-- `Run Planner`：仅做规划（steps/data_source/reason）
-- `Run Full Analysis`：执行 Week2 全流程并显示完整产物
-  - sandbox code
-  - sandbox stdout / stderr
-  - traceback
-  - retry count / success
-
-查看运行状态：
-
-```bash
-docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-```
-
-查看日志：
-
-```bash
-docker logs -f alpha-insight-ui-cockpit
-docker logs -f alpha-insight-ui-llm
-```
-
-停止前端：
-
-```bash
-docker stop alpha-insight-ui-cockpit alpha-insight-ui-llm
-```
-
-## 安全与观测
-
-- `core/guardrails.py`：限制危险导入、网络调用、危险执行函数与越界路径
-- `core/observability.py`：span 计时、token 事件、success/fallback/retry/latency 指标、失败聚类与阈值告警规则
-
-## 运维 Runbook
-
-- 详细冷启动与应急流程见：[docs/runbook.md](docs/runbook.md)
-- Telegram 网关/Worker 容器化模板见：`docker-compose.telegram.yml`
-
-## 常见问题
-
-1. `ModuleNotFoundError: agents`
-需要在容器内设置：`export PYTHONPATH=/workspace`，或确保从项目根目录启动。
-
-2. 真实 LLM 报错且 `ENABLE_LOCAL_FALLBACK=false`
-表示远程调用失败时不会回退本地策略。可先排查 key、base URL、model，或临时改为 `true`。
-
-3. Planner 显示 `provider=fallback`
-说明远程模型调用失败或环境变量未生效。优先检查：
-- `OPENAI_API_KEY`
-- `OPENAI_API_BASE`
-- `OPENAI_MODEL_NAME`
-
-4. Full Analysis 报 Docker 权限错误
-当前版本已支持自动回退到本地进程执行。若需强隔离执行，需修复 Docker 权限或镜像环境。
+## 分析依据（本 README 编写时重点核查文件）
+- 运行与主链路：
+  - `agents/workflow_engine.py`
+  - `agents/planner_engine.py`
+  - `services/telegram_gateway.py`
+  - `services/telegram_actions.py`
+  - `services/scheduler.py`
+  - `services/watch_executor.py`
+  - `services/reliability_governor.py`
+  - `services/market_pulse.py`
+  - `services/telegram_store.py`
+- 数据与连接器：
+  - `tools/market_data.py`
+  - `tools/news_data.py`
+  - `services/news_digest.py`
+  - `core/connectors.py`
+  - `core/runtime_config.py`
+- 前端与资源：
+  - `ui/upgrade7_console.py`
+  - `ui/typed_resource_client.py`
+  - `web_console/app/(dashboard)/*`
+  - `web_console/lib/*`
+- 启动脚本与配置：
+  - `scripts/telegram_stack.sh`
+  - `scripts/telegram_long_polling_gateway.py`
+  - `scripts/telegram_webhook_gateway.py`
+  - `scripts/telegram_watch_scheduler.py`
+  - `.env.example`, `requirements*.txt`
