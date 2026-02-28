@@ -150,10 +150,24 @@
   - `/bulk interval all 30m`
   - `/bulk threshold all 0.05`
 - Watchlist 级规则与 webhook：
-  - `/monitor AAPL,MSFT,TSLA 1h price dual_channel`
+  - `/monitor AAPL,MSFT,TSLA 1h price dual_channel execution-ready`
+  - `/monitor TSLA 1h rsi email_only alert-only`
+  - `/monitor AAPL 1h volatility multi_channel research-only`
   - `/webhook set https://example.com/hook <secret>`
   - `/webhook list`
+  - `/route set email ops@example.com`
+  - `/route set wecom wecom-bot-1`
+  - `/route list`
+  - `/route disable email ops@example.com`
 - 移动优先策略（用户偏好）：
   - `/pref summary short|long`
   - `/pref quiet 22-07`（或 `off`）
   - `/pref priority critical|high|all`
+
+### 9.6 P2 证据聚合入口
+
+- 单脚本生成 P2-A/B/C 与前端治理总览证据：
+  - `PYTHONPATH=/home/kkk/Project/Alpha-Insight python scripts/upgrade7_p2_overview_evidence.py`
+- 关键输出：
+  - `docs/evidence/upgrade7_p2_overview.json`
+  - `docs/evidence/upgrade7_p2_smoke_e2e.json`

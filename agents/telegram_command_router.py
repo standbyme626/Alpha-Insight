@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from core.strategy_tier import ALLOWED_STRATEGY_TIERS, DEFAULT_STRATEGY_TIER
 from tools.market_data import normalize_market_symbol
 
 _SYMBOL_PATTERN = re.compile(r"^[A-Z0-9.\-]{1,12}$")
@@ -10,7 +11,15 @@ _INTERVAL_PATTERN = re.compile(r"^(\d+)([smhd])$", re.IGNORECASE)
 _JOB_ID_PATTERN = re.compile(r"^job-[a-f0-9]{8}$")
 _QUIET_HOURS_PATTERN = re.compile(r"^(\d{1,2})-(\d{1,2})$")
 _ALERT_VIEWS = {"triggered", "failed", "suppressed"}
-_ROUTE_STRATEGIES = {"telegram_only", "webhook_only", "dual_channel"}
+_ROUTE_STRATEGIES = {
+    "telegram_only",
+    "webhook_only",
+    "dual_channel",
+    "email_only",
+    "wecom_only",
+    "multi_channel",
+}
+_ROUTE_CHANNELS = {"telegram", "email", "wecom"}
 
 
 @dataclass
@@ -75,10 +84,12 @@ def parse_telegram_command(text: str) -> CommandRoute | CommandError:
         return CommandRoute(name="analyze", args={"symbol": symbol})
 
     if command == "/monitor":
-        if len(parts) not in {3, 4, 5}:
+        if len(parts) < 3 or len(parts) > 6:
             return CommandError(
                 "用法 (Usage): /monitor <symbol|sym1,sym2> <interval> [volatility|price|rsi] "
-                "[telegram_only|webhook_only|dual_channel]. 示例 (Example): /monitor TSLA 1h rsi"
+                "[telegram_only|webhook_only|dual_channel|email_only|wecom_only|multi_channel] "
+                "[research-only|alert-only|execution-ready]. "
+                "示例 (Example): /monitor TSLA 1h rsi email_only alert-only"
             )
         symbols = _normalize_symbols(parts[1])
         if symbols is None:
@@ -89,23 +100,45 @@ def parse_telegram_command(text: str) -> CommandRoute | CommandError:
         template = "volatility"
         mode = "anomaly"
         threshold = 0.03
-        if len(parts) >= 4:
-            raw_template = parts[3].lower()
-            template_map = {
-                "volatility": ("anomaly", 0.03),
-                "price": ("price_breakout", 0.02),
-                "rsi": ("rsi_extreme", 70.0),
-            }
-            picked = template_map.get(raw_template)
-            if picked is None:
-                return CommandError("无效监控模板 (Invalid monitor template). 可用 volatility|price|rsi.")
-            mode, threshold = picked
-            template = raw_template
         route_strategy = "dual_channel"
-        if len(parts) == 5:
-            route_strategy = parts[4].lower()
-            if route_strategy not in _ROUTE_STRATEGIES:
-                return CommandError("无效路由策略 (Invalid route strategy). 可用 telegram_only|webhook_only|dual_channel.")
+        strategy_tier = DEFAULT_STRATEGY_TIER
+        template_set = False
+        route_set = False
+        tier_set = False
+        template_map = {
+            "volatility": ("anomaly", 0.03),
+            "price": ("price_breakout", 0.02),
+            "rsi": ("rsi_extreme", 70.0),
+        }
+        for token in [piece.strip().lower() for piece in parts[3:]]:
+            if token in template_map and not template_set:
+                mode, threshold = template_map[token]
+                template = token
+                template_set = True
+                continue
+            if token in _ROUTE_STRATEGIES and not route_set:
+                route_strategy = token
+                route_set = True
+                continue
+            if token in ALLOWED_STRATEGY_TIERS and not tier_set:
+                strategy_tier = token
+                tier_set = True
+                continue
+            if token in ALLOWED_STRATEGY_TIERS:
+                return CommandError("监控策略分层参数重复 (Duplicate strategy tier).")
+            if token in _ROUTE_STRATEGIES:
+                return CommandError("路由策略参数重复 (Duplicate route strategy).")
+            if token in template_map:
+                return CommandError("监控模板参数重复 (Duplicate monitor template).")
+            if token.replace("-", "_") in {"research_only", "alert_only", "execution_ready"}:
+                return CommandError("无效策略分层 (Invalid strategy tier). 可用 research-only|alert-only|execution-ready.")
+            if "-" in token:
+                return CommandError("无效策略分层 (Invalid strategy tier). 可用 research-only|alert-only|execution-ready.")
+            return CommandError(
+                "无效监控参数 (Invalid monitor argument). 可用模板 volatility|price|rsi，"
+                "路由 telegram_only|webhook_only|dual_channel|email_only|wecom_only|multi_channel，"
+                "策略分层 research-only|alert-only|execution-ready。"
+            )
         scope = "group" if len(symbols) > 1 else "single"
         return CommandRoute(
             name="monitor",
@@ -120,6 +153,7 @@ def parse_telegram_command(text: str) -> CommandRoute | CommandError:
                 "mode": mode,
                 "threshold": str(threshold),
                 "route_strategy": route_strategy,
+                "strategy_tier": strategy_tier,
             },
         )
 
@@ -244,6 +278,27 @@ def parse_telegram_command(text: str) -> CommandRoute | CommandError:
                 return CommandError("用法 (Usage): /webhook list")
             return CommandRoute(name="webhook", args={"action": "list"})
         return CommandError("Webhook action 必须是 set|disable|list.")
+
+    if command == "/route":
+        if len(parts) < 2:
+            return CommandError("用法 (Usage): /route <set|disable|list> ...")
+        action = parts[1].strip().lower()
+        if action == "list":
+            if len(parts) != 2:
+                return CommandError("用法 (Usage): /route list")
+            return CommandRoute(name="route", args={"action": "list"})
+
+        if action in {"set", "disable"}:
+            if len(parts) != 4:
+                return CommandError("用法 (Usage): /route <set|disable> <telegram|email|wecom> <target>")
+            channel = parts[2].strip().lower()
+            if channel not in _ROUTE_CHANNELS:
+                return CommandError("Route channel 必须是 telegram|email|wecom.")
+            target = parts[3].strip()
+            if not target:
+                return CommandError("Route target 不能为空 (Route target must not be empty).")
+            return CommandRoute(name="route", args={"action": action, "channel": channel, "target": target})
+        return CommandError("Route action 必须是 set|disable|list.")
 
     if command == "/pref":
         if len(parts) < 3:

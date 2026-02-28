@@ -252,6 +252,269 @@ async def test_multi_channel_routing_keeps_single_channel_failure_isolated(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_phase_d_route_command_set_list_disable_email(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": "run-route", **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 12020, "message": {"chat": {"id": "chat-route"}, "text": "/route set email ops@example.com"}})
+    assert await gateway.process_update({"update_id": 12021, "message": {"chat": {"id": "chat-route"}, "text": "/route list"}})
+    assert "email target=ops@example.com enabled=True" in sender.messages[-1][1]
+
+    assert await gateway.process_update({"update_id": 12022, "message": {"chat": {"id": "chat-route"}, "text": "/route disable email ops@example.com"}})
+    assert await gateway.process_update({"update_id": 12023, "message": {"chat": {"id": "chat-route"}, "text": "/route list"}})
+    assert "email target=ops@example.com enabled=False" in sender.messages[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_phase_d_email_only_route_strategy_dispatches_email_without_telegram(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    store.upsert_telegram_chat(chat_id="chat-email-only", user_id="32", username="u32")
+    store.upsert_notification_route(chat_id="chat-email-only", channel="email", target="ops@example.com", enabled=True)
+
+    base_time = datetime(2026, 2, 27, 0, 0, tzinfo=timezone.utc)
+    store.create_watch_job(
+        chat_id="chat-email-only",
+        symbol="AAPL",
+        interval_sec=300,
+        route_strategy="email_only",
+        now=base_time,
+    )
+    due_job = store.claim_due_watch_jobs(now=base_time + timedelta(minutes=10), limit=1)[0]
+
+    async def fake_scan_runner(config, **kwargs):  # noqa: ANN001, ANN003
+        signal_ts = base_time + timedelta(minutes=10)
+        signal = WatchSignal(
+            symbol=config.watchlist[0],
+            timestamp=signal_ts,
+            price=100.0,
+            pct_change=0.05,
+            rsi=70.0,
+            priority="high",
+            reason="price_or_rsi",
+            company_name="Apple",
+        )
+        snapshot = AlertSnapshot(
+            snapshot_id="snap-email-only",
+            trigger_type="scheduled",
+            trigger_id="t-email-only",
+            trigger_time=signal_ts,
+            mode="anomaly",
+            signal=AlertSignalSnapshot(
+                symbol=signal.symbol,
+                company_name=signal.company_name,
+                timestamp=signal.timestamp,
+                price=signal.price,
+                pct_change=signal.pct_change,
+                rsi=signal.rsi,
+                priority=signal.priority,
+                reason=signal.reason,
+            ),
+            notification_channels=[],
+            notification_dispatched=False,
+            research_status="skipped",
+        )
+        return type("RunOut", (), {
+            "trigger": build_scan_trigger(trigger_time=signal_ts),
+            "signals": [signal],
+            "selected_alerts": [signal],
+            "snapshots": [snapshot],
+            "notifications": [],
+            "runtime_metrics": {},
+            "failure_events": [],
+            "failure_clusters": {},
+            "alarms": [],
+        })()
+
+    telegram_sender = FakeTargetSender()
+    email_sender = FakeTargetSender()
+    multi = MultiChannelNotifier(telegram=telegram_sender, email=email_sender)
+    executor = WatchExecutor(
+        store=store,
+        notifier=FakeChatSender(),
+        scan_runner=fake_scan_runner,
+        multi_channel_notifier=multi,
+    )
+
+    out = await executor.execute_job(due_job)
+    assert out.pushed_count == 1
+    assert len(email_sender.messages) == 1
+    assert len(telegram_sender.messages) == 0
+
+
+@pytest.mark.asyncio
+async def test_phase_d_research_only_strategy_tier_guards_notification_dispatch(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    store.upsert_telegram_chat(chat_id="chat-tier-research", user_id="41", username="u41")
+
+    base_time = datetime(2026, 2, 27, 0, 0, tzinfo=timezone.utc)
+    store.create_watch_job(
+        chat_id="chat-tier-research",
+        symbol="AAPL",
+        interval_sec=300,
+        strategy_tier="research-only",
+        now=base_time,
+    )
+    due_job = store.claim_due_watch_jobs(now=base_time + timedelta(minutes=10), limit=1)[0]
+
+    async def fake_scan_runner(config, **kwargs):  # noqa: ANN001, ANN003
+        signal_ts = base_time + timedelta(minutes=10)
+        signal = WatchSignal(
+            symbol=config.watchlist[0],
+            timestamp=signal_ts,
+            price=100.0,
+            pct_change=0.05,
+            rsi=70.0,
+            priority="critical",
+            reason="price_move",
+            company_name="Apple",
+        )
+        snapshot = AlertSnapshot(
+            snapshot_id="snap-tier-research",
+            trigger_type="scheduled",
+            trigger_id="t-tier-research",
+            trigger_time=signal_ts,
+            mode="anomaly",
+            signal=AlertSignalSnapshot(
+                symbol=signal.symbol,
+                company_name=signal.company_name,
+                timestamp=signal.timestamp,
+                price=signal.price,
+                pct_change=signal.pct_change,
+                rsi=signal.rsi,
+                priority=signal.priority,
+                reason=signal.reason,
+            ),
+            notification_channels=[],
+            notification_dispatched=False,
+            research_status="triggered",
+            research_run_id="run-tier-research",
+        )
+        return type("RunOut", (), {
+            "trigger": build_scan_trigger(trigger_time=signal_ts),
+            "signals": [signal],
+            "selected_alerts": [signal],
+            "snapshots": [snapshot],
+            "notifications": [],
+            "runtime_metrics": {},
+            "failure_events": [],
+            "failure_clusters": {},
+            "alarms": [],
+        })()
+
+    telegram_sender = FakeTargetSender()
+    multi = MultiChannelNotifier(telegram=telegram_sender)
+    executor = WatchExecutor(
+        store=store,
+        notifier=FakeChatSender(),
+        scan_runner=fake_scan_runner,
+        multi_channel_notifier=multi,
+    )
+
+    out = await executor.execute_job(due_job)
+    assert out.pushed_count == 0
+    assert len(telegram_sender.messages) == 0
+    assert store.count_audit_events(event_type="strategy_tier_guarded") >= 1
+    assert store.count_audit_events(event_type="strategy_tier_decision") >= 1
+
+    with store._connect() as conn:  # noqa: SLF001
+        row = conn.execute(
+            """
+            SELECT n.state, n.suppressed_reason, we.strategy_tier
+            FROM notifications n
+            JOIN watch_events we ON we.event_id = n.event_id
+            ORDER BY n.updated_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    assert row is not None
+    assert str(row["state"]) == "suppressed"
+    assert str(row["suppressed_reason"]).startswith("strategy_tier_guard")
+    assert str(row["strategy_tier"]) == "research-only"
+
+
+@pytest.mark.asyncio
+async def test_phase_d_alert_only_strategy_tier_disables_triggered_research_but_keeps_alerts(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    store.upsert_telegram_chat(chat_id="chat-tier-alert", user_id="42", username="u42")
+
+    base_time = datetime(2026, 2, 27, 0, 0, tzinfo=timezone.utc)
+    store.create_watch_job(
+        chat_id="chat-tier-alert",
+        symbol="TSLA",
+        interval_sec=300,
+        strategy_tier="alert-only",
+        now=base_time,
+    )
+    due_job = store.claim_due_watch_jobs(now=base_time + timedelta(minutes=10), limit=1)[0]
+    captured: dict[str, object] = {}
+
+    async def fake_scan_runner(config, **kwargs):  # noqa: ANN001, ANN003
+        captured.update(kwargs)
+        signal_ts = base_time + timedelta(minutes=10)
+        signal = WatchSignal(
+            symbol=config.watchlist[0],
+            timestamp=signal_ts,
+            price=100.0,
+            pct_change=0.04,
+            rsi=68.0,
+            priority="high",
+            reason="price_or_rsi",
+            company_name="Tesla",
+        )
+        snapshot = AlertSnapshot(
+            snapshot_id="snap-tier-alert",
+            trigger_type="scheduled",
+            trigger_id="t-tier-alert",
+            trigger_time=signal_ts,
+            mode="anomaly",
+            signal=AlertSignalSnapshot(
+                symbol=signal.symbol,
+                company_name=signal.company_name,
+                timestamp=signal.timestamp,
+                price=signal.price,
+                pct_change=signal.pct_change,
+                rsi=signal.rsi,
+                priority=signal.priority,
+                reason=signal.reason,
+            ),
+            notification_channels=[],
+            notification_dispatched=False,
+            research_status="skipped",
+        )
+        return type("RunOut", (), {
+            "trigger": build_scan_trigger(trigger_time=signal_ts),
+            "signals": [signal],
+            "selected_alerts": [signal],
+            "snapshots": [snapshot],
+            "notifications": [],
+            "runtime_metrics": {},
+            "failure_events": [],
+            "failure_clusters": {},
+            "alarms": [],
+        })()
+
+    telegram_sender = FakeTargetSender()
+    multi = MultiChannelNotifier(telegram=telegram_sender)
+    executor = WatchExecutor(
+        store=store,
+        notifier=FakeChatSender(),
+        scan_runner=fake_scan_runner,
+        multi_channel_notifier=multi,
+    )
+
+    out = await executor.execute_job(due_job)
+    assert out.pushed_count == 1
+    assert len(telegram_sender.messages) == 1
+    assert captured.get("enable_triggered_research") is False
+    assert captured.get("strategy_tier") == "alert-only"
+
+@pytest.mark.asyncio
 async def test_phase_d_critical_fast_lane_dispatches_before_high(tmp_path) -> None:  # noqa: ANN001
     store = TelegramTaskStore(tmp_path / "telegram.db")
     store.upsert_telegram_chat(chat_id="chat-fast-1", user_id="31", username="u31")
@@ -1653,7 +1916,10 @@ async def test_phase_s_report_full_contains_evidence_block(tmp_path) -> None:  #
     assert await gateway.process_update({"update_id": 30131, "message": {"chat": {"id": "chat-s4"}, "text": "分析 TSLA 一个月走势"}})
     assert await gateway.process_update({"update_id": 30132, "message": {"chat": {"id": "chat-s4"}, "text": "/report run-s-report full"}})
     assert "证据块 (Evidence)" in sender.messages[-1][1]
-    assert "schema_version=" in sender.messages[-1][1]
+    assert "execution_events=" in sender.messages[-1][1]
+    lowered = sender.messages[-1][1].lower()
+    assert "schema_version" not in lowered
+    assert "action_version" not in lowered
 
 
 @pytest.mark.asyncio
@@ -1772,7 +2038,7 @@ async def test_phase_p1_news_window_toggle_30_days_via_callback(tmp_path) -> Non
     assert await gateway.process_update(
         {"update_id": 30242, "callback_query": {"id": "cb-p1-news", "data": f"act|{req_id[-6:]}|news30", "message": {"chat": {"id": "chat-p1b"}}}}
     )
-    assert any("时间窗=近30天" in text for _, text in sender.messages)
+    assert any("新闻回显: 近30天" in text for _, text in sender.messages)
 
 
 @pytest.mark.asyncio
@@ -1825,6 +2091,98 @@ async def test_phase_p2_user_copy_forbidden_words_guard(tmp_path) -> None:  # no
 
 
 @pytest.mark.asyncio
+async def test_upgrade7_user_response_contract_baseline_and_density(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {
+            "run_id": "run-u7-contract",
+            "fused_insights": {
+                "summary": "schema_version action_version raw_error traceback "
+                "整体趋势偏强，但接近区间上沿，短线不宜追高。"
+            },
+            "metrics": {
+                "data_close": 205.0,
+                "technical_rsi_14": 62.5,
+                "window_low": 180.0,
+                "window_high": 210.0,
+            },
+            "news": [{"title": "headline", "source": "wire"}],
+            **kwargs,
+        }
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 30306, "message": {"chat": {"id": "chat-u7a"}, "text": "分析 TSLA 一个月走势"}})
+    contract_msgs = [text for _, text in sender.messages if "结论:" in text or "证据补充:" in text]
+    assert 1 <= len(contract_msgs) <= 2
+    main = next(text for text in contract_msgs if "结论:" in text)
+    assert "结论:" in main
+    assert "价格位置:" in main
+    assert "技术证据:" in main
+    assert "新闻回显:" in main
+    assert "风险提示:" in main
+    assert "下一步动作:" in main
+    assert len(main) <= 1200
+    lowered = main.lower()
+    assert "schema_version" not in lowered
+    assert "action_version" not in lowered
+    assert "raw_error" not in lowered
+    assert "traceback" not in lowered
+
+
+@pytest.mark.asyncio
+async def test_upgrade7_analyze_command_and_snapshot_have_same_contract_shape(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {
+            "run_id": "run-u7-shape",
+            "fused_insights": {"summary": "Trend check."},
+            "metrics": {"data_close": 101.2, "technical_rsi_14": 55.0, "window_low": 90.0, "window_high": 110.0},
+            "news": [{"title": "headline", "source": "wire"}],
+            **kwargs,
+        }
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 30307, "message": {"chat": {"id": "chat-u7b"}, "text": "/analyze TSLA"}})
+    cmd_msg = next(text for _, text in reversed(sender.messages) if "结论:" in text)
+    assert await gateway.process_update({"update_id": 30308, "message": {"chat": {"id": "chat-u7c"}, "text": "分析 TSLA 一个月走势"}})
+    snapshot_msg = next(text for _, text in reversed(sender.messages) if "结论:" in text)
+
+    for label in ("结论:", "价格位置:", "技术证据:", "新闻回显:", "风险提示:", "下一步动作:", "类型: Snapshot Analysis"):
+        assert label in cmd_msg
+        assert label in snapshot_msg
+
+
+@pytest.mark.asyncio
+async def test_upgrade7_context_carry_prompt_is_explicit_and_switchable(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+    limits = RuntimeLimits(session_singleflight_ttl_seconds=0)
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {
+            "run_id": f"run-u7-carry-{kwargs.get('symbol', 'na')}",
+            "fused_insights": {"summary": "carry context"},
+            "metrics": {"data_close": 88.0, "technical_rsi_14": 52.0},
+            **kwargs,
+        }
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, limits=limits, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions, limits=limits)
+
+    assert await gateway.process_update({"update_id": 30309, "message": {"chat": {"id": "chat-u7d"}, "text": "分析 TSLA 一个月走势"}})
+    assert await gateway.process_update({"update_id": 30310, "message": {"chat": {"id": "chat-u7d"}, "text": "分析最近走势"}})
+    assert any("已沿用上次上下文" in text and "TSLA" in text and "换标的" in text for _, text in sender.messages)
+
+
+@pytest.mark.asyncio
 async def test_phase_p2_snapshot_output_order_and_evidence_visible(tmp_path) -> None:  # noqa: ANN001
     store = TelegramTaskStore(tmp_path / "telegram.db")
     sender = FakeChatSender()
@@ -1848,16 +2206,16 @@ async def test_phase_p2_snapshot_output_order_and_evidence_visible(tmp_path) -> 
     gateway = TelegramGateway(store=store, actions=actions)
 
     assert await gateway.process_update({"update_id": 30311, "message": {"chat": {"id": "chat-p2b"}, "text": "分析 TSLA 一个月走势"}})
-    msg = sender.messages[-1][1]
-    idx_symbol = msg.find("标的区间:")
-    idx_price = msg.find("价格摘要:")
-    idx_tech = msg.find("技术一句话:")
-    idx_news = msg.find("新闻一句话:")
-    idx_risk = msg.find("风险:")
-    idx_menu = msg.find("菜单:")
-    assert -1 not in {idx_symbol, idx_price, idx_tech, idx_news, idx_risk, idx_menu}
-    assert idx_symbol < idx_price < idx_tech < idx_news < idx_risk < idx_menu
-    assert "证据:" in msg
+    msg = next(text for _, text in reversed(sender.messages) if "结论:" in text)
+    idx_conclusion = msg.find("结论:")
+    idx_price = msg.find("价格位置:")
+    idx_tech = msg.find("技术证据:")
+    idx_news = msg.find("新闻回显:")
+    idx_risk = msg.find("风险提示:")
+    idx_next = msg.find("下一步动作:")
+    assert -1 not in {idx_conclusion, idx_price, idx_tech, idx_news, idx_risk, idx_next}
+    assert idx_conclusion < idx_price < idx_tech < idx_news < idx_risk < idx_next
+    assert "类型: Snapshot Analysis" in msg
 
 
 @pytest.mark.asyncio

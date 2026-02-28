@@ -14,10 +14,14 @@ Alpha-Insight 是一个基于 LangGraph 的多 Agent 量化投研系统，支持
 - 三市场监控：A 股 / 港股 / 美股，支持 Top100 监控池
 - 公司名展示：前端与告警统一展示公司名，支持 `代码(公司名)` 与 `代码 | 公司名`
 - Telegram 告警：分级告警文案中英双语，字段统一（价格/涨跌幅/RSI/原因/时间）
-- Telegram 命令增强（Phase D）：`/report <run_id|request_id>`、`/digest daily`、`/monitor <symbol> <interval> [volatility|price|rsi]`
+- Telegram 命令增强（Phase D）：
+  - `/report <run_id|request_id>`、`/digest daily`
+  - `/monitor <symbol|sym1,sym2> <interval> [volatility|price|rsi] [telegram_only|webhook_only|dual_channel|email_only|wecom_only|multi_channel] [research-only|alert-only|execution-ready]`
+  - `/route <set|disable|list> <telegram|email|wecom> <target>`（渠道路由治理）
 - 双前端页面：
   - `8501` 实时驾驶舱（扫描、信号、流水线、告警）
   - `8502` Planner 控制台（规划）+ Full Analysis（完整分析产物）
+  - `8503` Upgrade7 Console（runs/alerts/evidence/governance 资源面板）
 - Full Analysis 模式：可展示沙箱代码、stdout/stderr、traceback、重试次数
 - 沙箱容灾：Docker 沙箱不可用（如 `docker.sock permission denied`）时，自动回退本地进程执行（仍受 guardrails）
 
@@ -247,6 +251,43 @@ docker compose --env-file .env run --rm test
 
 最近一次全量基线（2026-02-27）：`133 passed`。
 
+## 前端运行（Streamlit）
+
+1. 实时驾驶舱（8501）：
+
+```bash
+PYTHONPATH=/home/kkk/Project/Alpha-Insight streamlit run ui/streamlit_dashboard.py --server.port 8501
+```
+
+2. Planner 控制台（8502）：
+
+```bash
+PYTHONPATH=/home/kkk/Project/Alpha-Insight streamlit run ui/llm_frontend.py --server.port 8502
+```
+
+3. Upgrade7 Console（8503）：
+
+```bash
+PYTHONPATH=/home/kkk/Project/Alpha-Insight streamlit run ui/upgrade7_console.py --server.port 8503
+```
+
+Upgrade7 Console 使用 typed 资源客户端 `ui/typed_resource_client.py`，从本地 store DB 与 `docs/evidence/*.json` 读取 `runs / alerts / evidence / degradation_states` 资源；alerts 资源包含 `strategy_tier` 与 `tier_guarded` 字段，并在治理面板展示 tier 分布与 guard 命中。
+
+4. Upgrade7 Next.js Console（8600，参考仓模式）：
+
+```bash
+PYTHONPATH=/home/kkk/Project/Alpha-Insight python scripts/upgrade7_frontend_resources_export.py
+cd web_console
+npm install
+npm run dev
+```
+
+Next.js 控制台参考并吸收了以下项目的结构模式（非整包拷贝）：
+
+- `next-shadcn-dashboard-starter`：sidebar + dashboard 路由壳层
+- `nextjs-fastapi-template`：typed client + route handler 数据访问模式
+- `react-admin` / `refine`：resource-first 信息架构（runs/alerts/evidence/governance）
+
 ## 硬口径验收证据（Run Report + 离线20次）
 
 已提供固定证据脚本：`scripts/hard_acceptance_evidence.py`，默认将产物写入 `docs/evidence/`。
@@ -270,6 +311,23 @@ PYTHONPATH=/home/kkk/Project/Alpha-Insight pytest -q | tee docs/evidence/pytest_
 ```
 
 字段覆盖：`success/fallback/retry/latency/backend/failure_type`，用于硬口径复盘与回归对比。
+
+## Upgrade7 P2 证据脚本（A/B/C + 总览）
+
+```bash
+PYTHONPATH=/home/kkk/Project/Alpha-Insight python scripts/upgrade7_p2_evidence.py
+PYTHONPATH=/home/kkk/Project/Alpha-Insight python scripts/upgrade7_p2b_channel_adapter_evidence.py
+PYTHONPATH=/home/kkk/Project/Alpha-Insight python scripts/upgrade7_p2c_strategy_tier_evidence.py
+PYTHONPATH=/home/kkk/Project/Alpha-Insight python scripts/upgrade7_p2_overview_evidence.py
+```
+
+主要产物：
+- `docs/evidence/upgrade7_p2_fault_injection_budget.json`
+- `docs/evidence/upgrade7_p2_latency_error_budget_summary.json`
+- `docs/evidence/upgrade7_p2_channel_adapter_matrix.json`
+- `docs/evidence/upgrade7_p2_strategy_tier_matrix.json`
+- `docs/evidence/upgrade7_p2_overview.json`
+- `docs/evidence/upgrade7_p2_smoke_e2e.json`
 
 ## 后端启动
 

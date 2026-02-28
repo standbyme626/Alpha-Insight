@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from core.strategy_tier import ALLOWED_STRATEGY_TIERS, DEFAULT_STRATEGY_TIER, normalize_strategy_tier
 from tools.market_data import normalize_market_symbol
 
 _SYMBOL_PATTERN = re.compile(r"^[A-Z0-9.\-]{1,12}$")
@@ -13,7 +14,7 @@ _INTERVAL_PATTERN = re.compile(r"^(\d+)([smhd])$", re.IGNORECASE)
 _ALLOWED_INTERVALS = {"1m", "5m", "15m", "30m", "1h", "4h", "1d", "24h"}
 _ALLOWED_ANALYZE_PERIODS = {"5d", "1mo", "3mo", "6mo", "1y"}
 _ALLOWED_TEMPLATES = {"volatility", "price", "rsi"}
-_ALLOWED_ROUTE_STRATEGIES = {"telegram_only", "webhook_only", "dual_channel"}
+_ALLOWED_ROUTE_STRATEGIES = {"telegram_only", "webhook_only", "dual_channel", "email_only", "wecom_only", "multi_channel"}
 _ALLOWED_CLARIFY_SLOTS = {"symbol", "period", "interval", "template", "market"}
 _GENERAL_CONVERSATION_INTENTS = {"greeting", "capability", "help", "how_to_start"}
 _MAX_NL_TEXT_CHARS = 800
@@ -43,7 +44,11 @@ class NLUPlan:
     action_version: str
     explain: str
     reject_reason: str | None = None
-    command_template: str = "/monitor <symbol> <interval> [volatility|price|rsi] [telegram_only|webhook_only|dual_channel]"
+    command_template: str = (
+        "/monitor <symbol> <interval> [volatility|price|rsi] "
+        "[telegram_only|webhook_only|dual_channel|email_only|wecom_only|multi_channel] "
+        "[research-only|alert-only|execution-ready]"
+    )
     schema_version: str = "telegram_nlu_plan_v2"
     plan_steps: list[dict[str, Any]] | None = None
     clarify_slot: str | None = None
@@ -143,9 +148,26 @@ def _extract_route_strategy(text: str) -> str:
     lowered = text.lower()
     if "telegram_only" in lowered:
         return "telegram_only"
+    if "email_only" in lowered:
+        return "email_only"
+    if "wecom_only" in lowered:
+        return "wecom_only"
+    if "multi_channel" in lowered:
+        return "multi_channel"
     if "webhook_only" in lowered:
         return "webhook_only"
     return "dual_channel"
+
+
+def _extract_strategy_tier(text: str) -> str:
+    lowered = text.lower()
+    if "research-only" in lowered or "research only" in lowered:
+        return "research-only"
+    if "alert-only" in lowered or "alert only" in lowered:
+        return "alert-only"
+    if "execution-ready" in lowered or "execution ready" in lowered:
+        return "execution-ready"
+    return DEFAULT_STRATEGY_TIER
 
 
 def _intent_from_text(text: str) -> str:
@@ -360,6 +382,7 @@ def _validate_slots(plan: NLUPlan) -> NLUPlan:
     interval = str(plan.slots.get("interval", "")).lower()
     template = str(plan.slots.get("template", "")).lower()
     route_strategy = str(plan.slots.get("route_strategy", "")).lower()
+    strategy_tier = normalize_strategy_tier(str(plan.slots.get("strategy_tier", DEFAULT_STRATEGY_TIER)))
 
     if not symbol:
         return _clarify(
@@ -389,6 +412,11 @@ def _validate_slots(plan: NLUPlan) -> NLUPlan:
         plan.reject_reason = "unsafe_route"
         plan.explain = "invalid route_strategy"
         return plan
+    if strategy_tier not in ALLOWED_STRATEGY_TIERS:
+        plan.reject_reason = "invalid_slot"
+        plan.explain = "invalid strategy_tier"
+        return plan
+    plan.slots["strategy_tier"] = strategy_tier
 
     return plan
 
@@ -508,6 +536,7 @@ def plan_from_text(text: str) -> NLUPlan:
     interval = _extract_interval(normalized)
     template = _extract_template(normalized)
     route_strategy = _extract_route_strategy(normalized)
+    strategy_tier = _extract_strategy_tier(normalized)
     mode, threshold = _TEMPLATE_MODE_THRESHOLD[template]
 
     confidence = 0.92 if symbol and interval else 0.45
@@ -519,6 +548,7 @@ def plan_from_text(text: str) -> NLUPlan:
         "mode": mode,
         "threshold": threshold,
         "route_strategy": route_strategy,
+        "strategy_tier": strategy_tier,
     }
     plan = NLUPlan(
         intent="create_monitor",

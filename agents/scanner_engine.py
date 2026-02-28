@@ -6,6 +6,7 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
 from uuid import uuid4
@@ -20,11 +21,18 @@ from core.observability import (
     classify_failure,
     evaluate_threshold_alarms,
 )
+from core.fault_injection import FaultInjector, fault_semantic, resolve_fault_injection
+from core.reliability_budget import evaluate_latency_error_budget
+from core.runtime_config import ResolvedRuntimeConfig, resolve_runtime_config
+from core.strategy_tier import resolve_strategy_tier
+from core.strategy_plugins import PluginContext, PluginKind, StrategyPluginManager
+from core.tool_result import build_tool_result
 from tools.market_data import (
     MarketDataResult,
     fetch_market_data,
     get_company_name,
     get_company_names_batch,
+    market_data_result_to_tool_result,
     normalize_market_symbol,
 )
 from tools.telegram import NotificationChannel, NotificationMessage, TelegramNotifier, dispatch_notifications
@@ -82,9 +90,35 @@ class SymbolAnalysisResult:
     signal: WatchSignal | None
     failure: FailureEvent | None = None
     used_fallback: bool = False
+    market_tool_result: dict[str, Any] | None = None
+    latency_ms: float = 0.0
+    retry_count: int = 0
+    fault_events: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class ScanDiagnostics:
+    signals: list[WatchSignal]
+    failures: list[FailureEvent]
+    fallback_count: int
+    scan_latency_ms: float
+    symbol_latency_ms: list[float] = field(default_factory=list)
+    retry_count: int = 0
+    fault_events: list[dict[str, Any]] = field(default_factory=list)
 
 
 ResearchRunner = Callable[..., Awaitable[dict[str, Any] | ResearchResult]]
+
+
+@lru_cache(maxsize=1)
+def _resolve_runtime_config_cached() -> ResolvedRuntimeConfig:
+    return resolve_runtime_config()
+
+
+def _resolve_runtime(runtime_flags: dict[str, Any] | None) -> ResolvedRuntimeConfig:
+    if runtime_flags:
+        return resolve_runtime_config(runtime_flags_layer=runtime_flags)
+    return _resolve_runtime_config_cached()
 
 
 def _compute_rsi(close: pd.Series, period: int = 14) -> float:
@@ -223,17 +257,62 @@ async def _analyze_symbol_with_diagnostics(
     config: ScanConfig,
     *,
     fetcher: Callable[..., Awaitable[MarketDataResult]] = fetch_market_data,
+    fault_injector: FaultInjector | None = None,
 ) -> SymbolAnalysisResult:
+    started_at = time.perf_counter()
     query_symbol = normalize_market_symbol(symbol, market=config.market)
     used_fallback = False
+    retry_count = 0
+    injector = fault_injector if fault_injector is not None else FaultInjector.disabled()
+    fault_events: list[dict[str, Any]] = []
+
+    fetch_fault = injector.maybe_inject(
+        node="scanner.fetch",
+        allowed_faults=("timeout", "upstream_5xx", "rate_limit"),
+    )
+    if fetch_fault is not None:
+        fault_events.append(fetch_fault.to_dict())
+        semantic = fault_semantic(fetch_fault.fault, node="scanner.fetch")
+        message = semantic.message
+        retry_count = max(retry_count, semantic.default_retry_delta)
+        latency_ms = (time.perf_counter() - started_at) * 1000
+        return SymbolAnalysisResult(
+            signal=None,
+            failure=classify_failure(
+                source="scanner.fetch",
+                error_type=semantic.error_type,
+                message=message,
+                backend="fault_injection",
+            ),
+            used_fallback=False,
+            market_tool_result=build_tool_result(
+                source="market_data:fault_injection",
+                confidence=0.0,
+                raw={"symbol": query_symbol},
+                error=message,
+                meta={"fault_injection": fetch_fault.to_dict(), "period": config.period, "interval": config.interval},
+            ).to_dict(),
+            latency_ms=latency_ms,
+            retry_count=retry_count,
+            fault_events=fault_events,
+        )
+
     try:
         result = await fetcher(query_symbol, config.period, config.interval)
     except TypeError:
         # Backward compatibility for older test doubles accepting only (symbol, period).
         used_fallback = True
+        retry_count += 1
         try:
             result = await fetcher(query_symbol, config.period)
         except Exception as exc:
+            tool_result = build_tool_result(
+                source="market_data:legacy_fetcher",
+                confidence=0.0,
+                raw={"symbol": query_symbol},
+                error=str(exc),
+                meta={"period": config.period, "interval": config.interval},
+            )
             return SymbolAnalysisResult(
                 signal=None,
                 failure=classify_failure(
@@ -243,8 +322,19 @@ async def _analyze_symbol_with_diagnostics(
                     backend="legacy_fetcher_fallback",
                 ),
                 used_fallback=True,
+                market_tool_result=tool_result.to_dict(),
+                latency_ms=(time.perf_counter() - started_at) * 1000,
+                retry_count=retry_count,
+                fault_events=fault_events,
             )
     except Exception as exc:
+        tool_result = build_tool_result(
+            source="market_data:fetcher",
+            confidence=0.0,
+            raw={"symbol": query_symbol},
+            error=str(exc),
+            meta={"period": config.period, "interval": config.interval},
+        )
         return SymbolAnalysisResult(
             signal=None,
             failure=classify_failure(
@@ -253,16 +343,54 @@ async def _analyze_symbol_with_diagnostics(
                 message=str(exc),
             ),
             used_fallback=False,
+            market_tool_result=tool_result.to_dict(),
+            latency_ms=(time.perf_counter() - started_at) * 1000,
+            retry_count=retry_count,
+            fault_events=fault_events,
         )
+
+    tool_result = market_data_result_to_tool_result(
+        result,
+        period=config.period,
+        interval=config.interval,
+    )
+    tool_error_message = tool_result.error or result.message
     if not result.ok or not result.records:
         return SymbolAnalysisResult(
             signal=None,
             failure=classify_failure(
                 source="scanner.fetch",
                 error_type="DataFetchError",
-                message=result.message,
+                message=tool_error_message,
             ),
             used_fallback=used_fallback,
+            market_tool_result=tool_result.to_dict(),
+            latency_ms=(time.perf_counter() - started_at) * 1000,
+            retry_count=retry_count,
+            fault_events=fault_events,
+        )
+
+    parse_fault = injector.maybe_inject(
+        node="scanner.parse",
+        allowed_faults=("parse",),
+    )
+    if parse_fault is not None:
+        fault_events.append(parse_fault.to_dict())
+        semantic = fault_semantic(parse_fault.fault, node="scanner.parse")
+        message = semantic.message
+        return SymbolAnalysisResult(
+            signal=None,
+            failure=classify_failure(
+                source="scanner.parse",
+                error_type=semantic.error_type,
+                message=message,
+                backend="fault_injection",
+            ),
+            used_fallback=used_fallback,
+            market_tool_result=tool_result.to_dict(),
+            latency_ms=(time.perf_counter() - started_at) * 1000,
+            retry_count=retry_count,
+            fault_events=fault_events,
         )
 
     df = pd.DataFrame(result.records)
@@ -275,6 +403,10 @@ async def _analyze_symbol_with_diagnostics(
                 message="invalid Close column or insufficient rows",
             ),
             used_fallback=used_fallback,
+            market_tool_result=tool_result.to_dict(),
+            latency_ms=(time.perf_counter() - started_at) * 1000,
+            retry_count=retry_count,
+            fault_events=fault_events,
         )
 
     close = pd.to_numeric(df["Close"], errors="coerce").ffill().fillna(0)
@@ -304,6 +436,10 @@ async def _analyze_symbol_with_diagnostics(
         ),
         failure=None,
         used_fallback=used_fallback,
+        market_tool_result=tool_result.to_dict(),
+        latency_ms=(time.perf_counter() - started_at) * 1000,
+        retry_count=retry_count,
+        fault_events=fault_events,
     )
 
 
@@ -312,23 +448,37 @@ async def analyze_symbol(
     config: ScanConfig,
     *,
     fetcher: Callable[..., Awaitable[MarketDataResult]] = fetch_market_data,
+    fault_injector: FaultInjector | None = None,
 ) -> WatchSignal | None:
-    result = await _analyze_symbol_with_diagnostics(symbol, config, fetcher=fetcher)
+    result = await _analyze_symbol_with_diagnostics(
+        symbol,
+        config,
+        fetcher=fetcher,
+        fault_injector=fault_injector,
+    )
     return result.signal
 
 
-async def scan_watchlist_with_diagnostics(
+async def _scan_watchlist_internal(
     config: ScanConfig,
     *,
     fetcher: Callable[..., Awaitable[MarketDataResult]] = fetch_market_data,
-) -> tuple[list[WatchSignal], list[FailureEvent], int, float]:
+    fault_injector: FaultInjector | None = None,
+) -> ScanDiagnostics:
     started_at = time.perf_counter()
-    tasks = [_analyze_symbol_with_diagnostics(symbol, config, fetcher=fetcher) for symbol in config.watchlist]
+    injector = fault_injector if fault_injector is not None else FaultInjector.disabled()
+    tasks = [
+        _analyze_symbol_with_diagnostics(symbol, config, fetcher=fetcher, fault_injector=injector)
+        for symbol in config.watchlist
+    ]
     results = await asyncio.gather(*tasks)
 
     signals = [item.signal for item in results if item.signal is not None]
     failures = [item.failure for item in results if item.failure is not None]
     fallback_count = sum(1 for item in results if item.used_fallback)
+    latency_samples = [float(item.latency_ms) for item in results if item.latency_ms >= 0.0]
+    total_retries = sum(int(max(0, item.retry_count)) for item in results)
+    fault_events = [event for item in results for event in item.fault_events if isinstance(event, dict)]
 
     if signals:
         try:
@@ -349,15 +499,38 @@ async def scan_watchlist_with_diagnostics(
     order = {"critical": 0, "high": 1, "normal": 2}
     sorted_signals = sorted(signals, key=lambda x: order.get(x.priority, 9))
     latency_ms = (time.perf_counter() - started_at) * 1000
-    return sorted_signals, failures, fallback_count, latency_ms
+    return ScanDiagnostics(
+        signals=sorted_signals,
+        failures=failures,
+        fallback_count=fallback_count,
+        scan_latency_ms=latency_ms,
+        symbol_latency_ms=latency_samples,
+        retry_count=total_retries,
+        fault_events=fault_events,
+    )
+
+
+async def scan_watchlist_with_diagnostics(
+    config: ScanConfig,
+    *,
+    fetcher: Callable[..., Awaitable[MarketDataResult]] = fetch_market_data,
+    fault_injector: FaultInjector | None = None,
+) -> tuple[list[WatchSignal], list[FailureEvent], int, float]:
+    diagnostics = await _scan_watchlist_internal(config, fetcher=fetcher, fault_injector=fault_injector)
+    return diagnostics.signals, diagnostics.failures, diagnostics.fallback_count, diagnostics.scan_latency_ms
 
 
 async def scan_watchlist(
     config: ScanConfig,
     *,
     fetcher: Callable[..., Awaitable[MarketDataResult]] = fetch_market_data,
+    fault_injector: FaultInjector | None = None,
 ) -> list[WatchSignal]:
-    signals, _, _, _ = await scan_watchlist_with_diagnostics(config, fetcher=fetcher)
+    signals, _, _, _ = await scan_watchlist_with_diagnostics(
+        config,
+        fetcher=fetcher,
+        fault_injector=fault_injector,
+    )
     return signals
 
 
@@ -408,10 +581,59 @@ async def run_watchlist_cycle(
     snapshot_store: AlertSnapshotStore | None = None,
     enable_triggered_research: bool = True,
     research_runner: ResearchRunner | None = None,
+    plugin_manager: StrategyPluginManager | None = None,
+    runtime_flags: dict[str, Any] | None = None,
+    strategy_tier: str = "execution-ready",
 ) -> WatchlistRunResult:
     cycle_started_at = time.perf_counter()
-    signals, scan_failures, fallback_count, scan_latency_ms = await scan_watchlist_with_diagnostics(config, fetcher=fetcher)
+    config_flags, fault_injector = resolve_fault_injection(runtime_flags)
+    resolved_runtime = _resolve_runtime(config_flags)
+    manager = plugin_manager or StrategyPluginManager.from_runtime_config(resolved_runtime.config)
+    tier_decision = resolve_strategy_tier(
+        strategy_tier,
+        requested_enable_triggered_research=enable_triggered_research,
+    )
+    scan_diag = await _scan_watchlist_internal(config, fetcher=fetcher, fault_injector=fault_injector)
+    signals = scan_diag.signals
+    scan_failures = scan_diag.failures
+    fallback_count = scan_diag.fallback_count
+    scan_latency_ms = scan_diag.scan_latency_ms
+    plugin_context = PluginContext(
+        request_id=trigger.trigger_id,
+        trigger_id=trigger.trigger_id,
+        observability_tags={
+            "trigger_type": trigger.trigger_type,
+            "mode": mode,
+        },
+    )
+    signal_payload, signal_audit = await manager.apply(
+        kind=PluginKind.SIGNALS,
+        payload={"signals": signals, "mode": mode},
+        context=plugin_context,
+    )
+    signals = list(signal_payload.get("signals", signals) or [])
     selected = select_alerts_for_mode(signals, mode)
+    alert_payload, alert_audit = await manager.apply(
+        kind=PluginKind.ALERTS,
+        payload={"selected_alerts": selected, "mode": mode},
+        context=plugin_context,
+    )
+    selected = list(alert_payload.get("selected_alerts", selected) or [])
+    policy_payload, policy_audit = await manager.apply(
+        kind=PluginKind.POLICIES,
+        payload={
+            "allow_triggered_research": tier_decision.allow_triggered_research,
+            "selected_alerts": selected,
+            "mode": mode,
+            "strategy_tier": tier_decision.tier,
+        },
+        context=plugin_context,
+    )
+    effective_enable_triggered_research = bool(
+        policy_payload.get("allow_triggered_research", tier_decision.allow_triggered_research)
+    ) and tier_decision.allow_triggered_research
+    plugin_audit = [item.to_dict() for item in [*signal_audit, *alert_audit, *policy_audit]]
+
     snapshots: list[AlertSnapshot] = []
     failure_events = list(scan_failures)
     runner = research_runner or _run_unified_research_default
@@ -427,7 +649,7 @@ async def run_watchlist_cycle(
             signal=_signal_to_snapshot(signal),
             notification_channels=[notifier.channel_name] if notifier is not None else [],
         )
-        if enable_triggered_research and signal.priority == "critical":
+        if effective_enable_triggered_research and signal.priority == "critical":
             try:
                 payload = await runner(
                     request=_build_triggered_request(signal, trigger),
@@ -455,7 +677,7 @@ async def run_watchlist_cycle(
         snapshots.append(snapshot)
 
     notifications: list[dict[str, Any]] = []
-    if notifier is not None:
+    if notifier is not None and tier_decision.allow_notification_dispatch:
         notifications = await dispatch_alert_notifications(
             signals,
             notifier=notifier,
@@ -483,6 +705,13 @@ async def run_watchlist_cycle(
         failure_spike_count=config.failure_spike_count,
         latency_anomaly_ms=config.latency_anomaly_ms,
     )
+    budget = evaluate_latency_error_budget(
+        latency_samples_ms=[*scan_diag.symbol_latency_ms, cycle_latency_ms],
+        error_count=len(failure_events),
+        total_count=max(1, len(config.watchlist)),
+        fallback_count=fallback_count,
+        retry_count=scan_diag.retry_count,
+    )
     runtime_metrics: dict[str, Any] = {
         "watchlist_size": len(config.watchlist),
         "signal_count": len(signals),
@@ -494,6 +723,26 @@ async def run_watchlist_cycle(
         "fallback_rate": round(fallback_rate, 6),
         "failure_clusters": failure_clusters,
         "failure_tags": failure_tags,
+        "plugin_audit_count": len(plugin_audit),
+        "plugin_audit": plugin_audit,
+        "config_layer_diff_count": len(resolved_runtime.diff_summary),
+        "config_merge_priority": list(resolved_runtime.merge_priority),
+        "config_changed_fields": resolved_runtime.diff_summary,
+        "allow_triggered_research": effective_enable_triggered_research,
+        "strategy_tier": tier_decision.tier,
+        "strategy_tier_decision": tier_decision.to_dict(),
+        "strategy_tier_notifications_guarded": not tier_decision.allow_notification_dispatch,
+        "strategy_tier_notification_guarded_count": len(selected) if not tier_decision.allow_notification_dispatch else 0,
+        "runtime_budget_verdict": budget.status,
+        "runtime_budget_reasons": [item.to_dict() for item in budget.reasons],
+        "runtime_latency_p50_ms": budget.metrics["p50_latency_ms"],
+        "runtime_latency_p95_ms": budget.metrics["p95_latency_ms"],
+        "runtime_error_rate": budget.metrics["error_rate"],
+        "runtime_fallback_rate": budget.metrics["fallback_rate"],
+        "runtime_retry_pressure": budget.metrics["retry_pressure"],
+        "fault_injection_enabled": bool(fault_injector.enabled),
+        "fault_injection_event_count": len(scan_diag.fault_events),
+        "fault_injection_events": list(scan_diag.fault_events),
     }
 
     return WatchlistRunResult(

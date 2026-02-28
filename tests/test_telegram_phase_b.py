@@ -42,6 +42,10 @@ class FlakySender(FakeSender):
     ("raw", "expected_name"),
     [
         ("/monitor TSLA 1h", "monitor"),
+        ("/monitor TSLA 1h rsi email_only", "monitor"),
+        ("/monitor TSLA 1h rsi email_only alert-only", "monitor"),
+        ("/monitor TSLA 1h rsi research-only", "monitor"),
+        ("/route list", "route"),
         ("/list", "list"),
         ("/stop TSLA", "stop"),
     ],
@@ -50,6 +54,40 @@ def test_parse_phase_b_commands(raw: str, expected_name: str) -> None:
     parsed = parse_telegram_command(raw)
     assert not isinstance(parsed, CommandError)
     assert parsed.name == expected_name
+
+
+@pytest.mark.parametrize("strategy", ["email_only", "wecom_only", "multi_channel"])
+def test_parse_monitor_extended_route_strategies(strategy: str) -> None:
+    parsed = parse_telegram_command(f"/monitor TSLA 1h rsi {strategy}")
+    assert not isinstance(parsed, CommandError)
+    assert parsed.args["route_strategy"] == strategy
+
+
+@pytest.mark.parametrize("tier", ["research-only", "alert-only", "execution-ready"])
+def test_parse_monitor_strategy_tier(tier: str) -> None:
+    parsed = parse_telegram_command(f"/monitor TSLA 1h rsi email_only {tier}")
+    assert not isinstance(parsed, CommandError)
+    assert parsed.args["route_strategy"] == "email_only"
+    assert parsed.args["strategy_tier"] == tier
+
+
+def test_parse_monitor_strategy_tier_without_explicit_route_strategy() -> None:
+    parsed = parse_telegram_command("/monitor TSLA 1h rsi research-only")
+    assert not isinstance(parsed, CommandError)
+    assert parsed.args["route_strategy"] == "dual_channel"
+    assert parsed.args["strategy_tier"] == "research-only"
+
+
+def test_parse_monitor_invalid_strategy_tier() -> None:
+    parsed = parse_telegram_command("/monitor TSLA 1h rsi email_only sandbox-ready")
+    assert isinstance(parsed, CommandError)
+    assert "strategy tier" in parsed.message.lower()
+
+
+def test_parse_route_invalid_channel() -> None:
+    parsed = parse_telegram_command("/route set sms 123")
+    assert isinstance(parsed, CommandError)
+    assert "channel" in parsed.message.lower()
 
 
 def test_parse_monitor_invalid_interval() -> None:

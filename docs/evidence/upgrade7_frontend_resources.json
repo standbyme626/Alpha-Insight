@@ -1,0 +1,1747 @@
+{
+  "generated_at": "2026-02-28T04:42:01.962166+00:00",
+  "db_path": "storage/telegram_gateway_live.db",
+  "runs": [
+    {
+      "run_id": "run-32115d410648",
+      "request_id": "nlr-666eb99638",
+      "chat_id": "7566115125",
+      "symbol": "9988.HK",
+      "summary": "综合判断：技术面与新闻面信号分歧，当前更接近震荡市，需等待更明确催化。 情绪方向为中性（50.00/100），趋势判定为震荡。 本页面输出仅用于信息分析与研究讨论，不构成任何投资建议。",
+      "key_metrics": {
+        "full_success": true,
+        "retry_count": 0,
+        "data_record_count": 5,
+        "latest_close": 142.9,
+        "period_change_pct": -6.1104,
+        "ma20": 142.9,
+        "rsi14": 50.0,
+        "volatility_pct": 1.8992,
+        "volume_ratio": 1.222,
+        "sentiment_score": 50.0,
+        "runtime_market_data_latency_ms": 1035.252,
+        "runtime_executor_latency_ms": 1039.947,
+        "runtime_fallback_used": false,
+        "runtime_retry_count": 0,
+        "runtime_success": true,
+        "runtime_failure_count": 0,
+        "runtime_failure_clusters": {},
+        "runtime_failure_tags": {}
+      },
+      "created_at": "2026-02-27T19:02:28.442617+00:00",
+      "updated_at": "2026-02-27T19:02:28.442617+00:00"
+    },
+    {
+      "run_id": "run-98cb093cd9b5",
+      "request_id": "nlr-8733040f9d",
+      "chat_id": "7566115125",
+      "symbol": "9988.HK",
+      "summary": "综合判断：技术面与新闻面信号分歧，当前更接近震荡市，需等待更明确催化。 当前 RSI 偏低，需关注超跌反抽与趋势延续的博弈。 情绪方向为中性（45.00/100），趋势判定为震荡。 本页面输出仅用于信息分析与研究讨论，不构成任何投资建议。",
+      "key_metrics": {
+        "full_success": true,
+        "retry_count": 0,
+        "data_record_count": 21,
+        "latest_close": 142.9,
+        "period_change_pct": -15.8917,
+        "ma20": 157.155,
+        "rsi14": 28.4974,
+        "volatility_pct": 2.144,
+        "volume_ratio": 1.2433,
+        "sentiment_score": 45.0,
+        "runtime_market_data_latency_ms": 878.143,
+        "runtime_executor_latency_ms": 729.245,
+        "runtime_fallback_used": false,
+        "runtime_retry_count": 0,
+        "runtime_success": true,
+        "runtime_failure_count": 0,
+        "runtime_failure_clusters": {},
+        "runtime_failure_tags": {}
+      },
+      "created_at": "2026-02-27T17:59:46.018359+00:00",
+      "updated_at": "2026-02-27T18:03:05.116602+00:00"
+    },
+    {
+      "run_id": "run-b47f175301f0-dup-test",
+      "request_id": "nlr-f3b9efb9de",
+      "chat_id": "7566115125",
+      "symbol": "9988.HK",
+      "summary": "综合判断：技术面与新闻面信号分歧，当前更接近震荡市，需等待更明确催化。 当前 RSI 偏低，需关注超跌反抽与趋势延续的博弈。 情绪方向为中性（50.00/100），趋势判定为震荡。 本页面输出仅用于信息分析与研究讨论，不构成任何投资建议。 (dup test)",
+      "key_metrics": {
+        "dup_test": true
+      },
+      "created_at": "2026-02-27T17:40:55.976210+00:00",
+      "updated_at": "2026-02-27T17:53:53.406472+00:00"
+    },
+    {
+      "run_id": "run-ea4965059215",
+      "request_id": "nlr-b2d435383a",
+      "chat_id": "7566115125",
+      "symbol": "0700.HK",
+      "summary": "综合判断：技术面与新闻面同向偏弱，短线需优先关注回撤风险。 情绪方向为中性（45.00/100），趋势判定为偏弱。 本页面输出仅用于信息分析与研究讨论，不构成任何投资建议。",
+      "key_metrics": {
+        "full_success": true,
+        "retry_count": 0,
+        "data_record_count": 21,
+        "latest_close": 518.0,
+        "period_change_pct": -14.6623,
+        "ma20": 554.3,
+        "rsi14": 33.3333,
+        "volatility_pct": 1.9916,
+        "volume_ratio": 1.0127,
+        "sentiment_score": 45.0,
+        "runtime_market_data_latency_ms": 2503.898,
+        "runtime_executor_latency_ms": 1491.858,
+        "runtime_fallback_used": false,
+        "runtime_retry_count": 0,
+        "runtime_success": true,
+        "runtime_failure_count": 0,
+        "runtime_failure_clusters": {},
+        "runtime_failure_tags": {}
+      },
+      "created_at": "2026-02-27T16:05:06.677645+00:00",
+      "updated_at": "2026-02-27T16:05:06.677645+00:00"
+    },
+    {
+      "run_id": "run-d13b023eee4e",
+      "request_id": "nlr-9469e61314",
+      "chat_id": "7566115125",
+      "symbol": "A",
+      "summary": "综合判断：技术面与新闻面信号分歧，当前更接近震荡市，需等待更明确催化。 情绪方向为中性（50.00/100），趋势判定为偏弱。 本页面输出仅用于信息分析与研究讨论，不构成任何投资建议。",
+      "key_metrics": {
+        "full_success": true,
+        "retry_count": 0,
+        "data_record_count": 23,
+        "latest_close": 120.905,
+        "period_change_pct": -11.0666,
+        "ma20": 127.2457,
+        "rsi14": 31.3961,
+        "volatility_pct": 1.5621,
+        "volume_ratio": 0.2476,
+        "sentiment_score": 50.0,
+        "runtime_market_data_latency_ms": 6275.298,
+        "runtime_executor_latency_ms": 707.164,
+        "runtime_fallback_used": false,
+        "runtime_retry_count": 0,
+        "runtime_success": true,
+        "runtime_failure_count": 0,
+        "runtime_failure_clusters": {},
+        "runtime_failure_tags": {}
+      },
+      "created_at": "2026-02-27T16:02:11.084134+00:00",
+      "updated_at": "2026-02-27T16:02:11.084134+00:00"
+    },
+    {
+      "run_id": "run-e4fbb41475fa",
+      "request_id": "nlr-9f5ff0575e",
+      "chat_id": "7566115125",
+      "symbol": "0700.HK",
+      "summary": "综合判断：技术面与新闻面信号分歧，当前更接近震荡市，需等待更明确催化。 情绪方向为中性（47.50/100），趋势判定为偏弱。 本页面输出仅用于信息分析与研究讨论，不构成任何投资建议。",
+      "key_metrics": {
+        "full_success": true,
+        "retry_count": 0,
+        "data_record_count": 21,
+        "latest_close": 518.0,
+        "period_change_pct": -14.6623,
+        "ma20": 554.3,
+        "rsi14": 33.3333,
+        "volatility_pct": 1.9916,
+        "volume_ratio": 1.0127,
+        "sentiment_score": 47.5,
+        "runtime_market_data_latency_ms": 3491.73,
+        "runtime_executor_latency_ms": 665.949,
+        "runtime_fallback_used": false,
+        "runtime_retry_count": 0,
+        "runtime_success": true,
+        "runtime_failure_count": 0,
+        "runtime_failure_clusters": {},
+        "runtime_failure_tags": {}
+      },
+      "created_at": "2026-02-27T15:50:57.337998+00:00",
+      "updated_at": "2026-02-27T15:50:57.337998+00:00"
+    },
+    {
+      "run_id": "run-cefbb11ddb64",
+      "request_id": "nlr-3b34a32339",
+      "chat_id": "7566115125",
+      "symbol": "0700.HK",
+      "summary": "综合判断：技术面与新闻面信号分歧，当前更接近震荡市，需等待更明确催化。 情绪方向为中性（47.50/100），趋势判定为偏弱。 本页面输出仅用于信息分析与研究讨论，不构成任何投资建议。",
+      "key_metrics": {
+        "full_success": true,
+        "retry_count": 0,
+        "data_record_count": 21,
+        "latest_close": 518.0,
+        "period_change_pct": -14.6623,
+        "ma20": 554.3,
+        "rsi14": 33.3333,
+        "volatility_pct": 1.9916,
+        "volume_ratio": 1.0127,
+        "sentiment_score": 47.5,
+        "runtime_market_data_latency_ms": 2017.218,
+        "runtime_executor_latency_ms": 1062.003,
+        "runtime_fallback_used": false,
+        "runtime_retry_count": 0,
+        "runtime_success": true,
+        "runtime_failure_count": 0,
+        "runtime_failure_clusters": {},
+        "runtime_failure_tags": {}
+      },
+      "created_at": "2026-02-27T15:44:19.026440+00:00",
+      "updated_at": "2026-02-27T15:44:19.026440+00:00"
+    },
+    {
+      "run_id": "run-d377f703bd83",
+      "request_id": "nlr-aa21b3dd37",
+      "chat_id": "7566115125",
+      "symbol": "0700.HK",
+      "summary": "综合判断：技术面与新闻面同向偏弱，短线需优先关注回撤风险。 情绪方向为中性（45.00/100），趋势判定为偏弱。 本页面输出仅用于信息分析与研究讨论，不构成任何投资建议。",
+      "key_metrics": {
+        "full_success": true,
+        "retry_count": 0,
+        "data_record_count": 21,
+        "latest_close": 518.0,
+        "period_change_pct": -14.6623,
+        "ma20": 554.3,
+        "rsi14": 33.3333,
+        "volatility_pct": 1.9916,
+        "volume_ratio": 1.0127,
+        "sentiment_score": 45.0,
+        "runtime_market_data_latency_ms": 269.979,
+        "runtime_executor_latency_ms": 669.339,
+        "runtime_fallback_used": false,
+        "runtime_retry_count": 0,
+        "runtime_success": true,
+        "runtime_failure_count": 0,
+        "runtime_failure_clusters": {},
+        "runtime_failure_tags": {}
+      },
+      "created_at": "2026-02-27T10:18:53.718484+00:00",
+      "updated_at": "2026-02-27T10:18:53.718484+00:00"
+    },
+    {
+      "run_id": "run-d4001339d153",
+      "request_id": "nlr-b437628a1a",
+      "chat_id": "7566115125",
+      "symbol": "0700.HK",
+      "summary": "综合判断：技术面与新闻面信号分歧，当前更接近震荡市，需等待更明确催化。 情绪方向为中性（47.50/100），趋势判定为偏弱。 本页面输出仅用于信息分析与研究讨论，不构成任何投资建议。",
+      "key_metrics": {
+        "full_success": true,
+        "retry_count": 0,
+        "data_record_count": 21,
+        "latest_close": 518.0,
+        "period_change_pct": -14.6623,
+        "ma20": 554.3,
+        "rsi14": 33.3333,
+        "volatility_pct": 1.9916,
+        "volume_ratio": 1.0127,
+        "sentiment_score": 47.5,
+        "runtime_market_data_latency_ms": 303.677,
+        "runtime_executor_latency_ms": 923.171,
+        "runtime_fallback_used": false,
+        "runtime_retry_count": 0,
+        "runtime_success": true,
+        "runtime_failure_count": 0,
+        "runtime_failure_clusters": {},
+        "runtime_failure_tags": {}
+      },
+      "created_at": "2026-02-27T10:18:24.897872+00:00",
+      "updated_at": "2026-02-27T10:18:24.897872+00:00"
+    },
+    {
+      "run_id": "run-367a1b5fb285",
+      "request_id": "nlr-17a7a51264",
+      "chat_id": "7566115125",
+      "symbol": "0700.HK",
+      "summary": "综合判断：技术面与新闻面信号分歧，当前更接近震荡市，需等待更明确催化。 情绪方向为中性（47.50/100），趋势判定为偏弱。 本页面输出仅用于信息分析与研究讨论，不构成任何投资建议。",
+      "key_metrics": {
+        "full_success": true,
+        "retry_count": 0,
+        "data_record_count": 21,
+        "latest_close": 518.0,
+        "period_change_pct": -14.6623,
+        "ma20": 554.3,
+        "rsi14": 33.3333,
+        "volatility_pct": 1.9916,
+        "volume_ratio": 1.0127,
+        "sentiment_score": 47.5,
+        "runtime_market_data_latency_ms": 2214.266,
+        "runtime_executor_latency_ms": 718.651,
+        "runtime_fallback_used": false,
+        "runtime_retry_count": 0,
+        "runtime_success": true,
+        "runtime_failure_count": 0,
+        "runtime_failure_clusters": {},
+        "runtime_failure_tags": {}
+      },
+      "created_at": "2026-02-27T10:18:01.528180+00:00",
+      "updated_at": "2026-02-27T10:18:01.528180+00:00"
+    },
+    {
+      "run_id": "run-fb8a57da483e",
+      "request_id": "nlr-f611041211",
+      "chat_id": "7566115125",
+      "symbol": "0700.HK",
+      "summary": "综合判断：技术面与新闻面信号分歧，当前更接近震荡市，需等待更明确催化。 情绪方向为中性（47.50/100），趋势判定为偏弱。 本页面输出仅用于信息分析与研究讨论，不构成任何投资建议。",
+      "key_metrics": {
+        "full_success": true,
+        "retry_count": 0,
+        "data_record_count": 21,
+        "latest_close": 518.0,
+        "period_change_pct": -14.6623,
+        "ma20": 554.3,
+        "rsi14": 33.3333,
+        "volatility_pct": 1.9916,
+        "volume_ratio": 1.0127,
+        "sentiment_score": 47.5,
+        "runtime_market_data_latency_ms": 2109.372,
+        "runtime_executor_latency_ms": 639.357,
+        "runtime_fallback_used": false,
+        "runtime_retry_count": 0,
+        "runtime_success": true,
+        "runtime_failure_count": 0,
+        "runtime_failure_clusters": {},
+        "runtime_failure_tags": {}
+      },
+      "created_at": "2026-02-27T09:46:09.826198+00:00",
+      "updated_at": "2026-02-27T09:46:09.826198+00:00"
+    },
+    {
+      "run_id": "run-bbdd4971947c",
+      "request_id": "nlr-9174e5d3bb",
+      "chat_id": "7566115125",
+      "symbol": "0700.HK",
+      "summary": "综合判断：技术面与新闻面信号分歧，当前更接近震荡市，需等待更明确催化。 情绪方向为中性（47.50/100），趋势判定为震荡。 本页面输出仅用于信息分析与研究讨论，不构成任何投资建议。",
+      "key_metrics": {
+        "full_success": true,
+        "retry_count": 0,
+        "data_record_count": 5,
+        "latest_close": 518.0,
+        "period_change_pct": -3.7175,
+        "ma20": 518.0,
+        "rsi14": 50.0,
+        "volatility_pct": 2.1142,
+        "volume_ratio": 1.1603,
+        "sentiment_score": 47.5,
+        "runtime_market_data_latency_ms": 2142.243,
+        "runtime_executor_latency_ms": 1318.075,
+        "runtime_fallback_used": false,
+        "runtime_retry_count": 0,
+        "runtime_success": true,
+        "runtime_failure_count": 0,
+        "runtime_failure_clusters": {},
+        "runtime_failure_tags": {}
+      },
+      "created_at": "2026-02-27T09:36:09.146995+00:00",
+      "updated_at": "2026-02-27T09:36:09.146995+00:00"
+    }
+  ],
+  "alerts": [
+    {
+      "event_id": "evt-0fc3f57595",
+      "symbol": "TSLA",
+      "priority": "high",
+      "rule": "price_or_rsi",
+      "strategy_tier": "execution-ready",
+      "trigger_ts": "2026-02-28T03:53:04.186694+00:00",
+      "run_id": null,
+      "channel": "telegram",
+      "status": "delivered",
+      "tier_guarded": false,
+      "suppressed_reason": null,
+      "last_error": null,
+      "updated_at": "2026-02-28T03:53:06.003153+00:00"
+    },
+    {
+      "event_id": "evt-ad05e76031",
+      "symbol": "TSLA",
+      "priority": "high",
+      "rule": "price_or_rsi",
+      "strategy_tier": "execution-ready",
+      "trigger_ts": "2026-02-28T03:52:26.361253+00:00",
+      "run_id": null,
+      "channel": "telegram",
+      "status": "delivered",
+      "tier_guarded": false,
+      "suppressed_reason": null,
+      "last_error": null,
+      "updated_at": "2026-02-28T03:52:28.097604+00:00"
+    },
+    {
+      "event_id": "evt-c42aa6d859",
+      "symbol": "TSLA",
+      "priority": "high",
+      "rule": "price_or_rsi",
+      "strategy_tier": "execution-ready",
+      "trigger_ts": "2026-02-28T02:53:03.434284+00:00",
+      "run_id": null,
+      "channel": "telegram",
+      "status": "delivered",
+      "tier_guarded": false,
+      "suppressed_reason": null,
+      "last_error": null,
+      "updated_at": "2026-02-28T02:53:05.152680+00:00"
+    },
+    {
+      "event_id": "evt-dddff15fd1",
+      "symbol": "TSLA",
+      "priority": "high",
+      "rule": "price_or_rsi",
+      "strategy_tier": "execution-ready",
+      "trigger_ts": "2026-02-28T02:52:25.420528+00:00",
+      "run_id": null,
+      "channel": "telegram",
+      "status": "delivered",
+      "tier_guarded": false,
+      "suppressed_reason": null,
+      "last_error": null,
+      "updated_at": "2026-02-28T02:52:27.125824+00:00"
+    },
+    {
+      "event_id": "evt-0325ed27cf",
+      "symbol": "TSLA",
+      "priority": "high",
+      "rule": "price_or_rsi",
+      "strategy_tier": "execution-ready",
+      "trigger_ts": "2026-02-28T01:53:03.372238+00:00",
+      "run_id": null,
+      "channel": "telegram",
+      "status": "delivered",
+      "tier_guarded": false,
+      "suppressed_reason": null,
+      "last_error": null,
+      "updated_at": "2026-02-28T01:53:05.122935+00:00"
+    },
+    {
+      "event_id": "evt-e56e2be91d",
+      "symbol": "TSLA",
+      "priority": "high",
+      "rule": "price_or_rsi",
+      "strategy_tier": "execution-ready",
+      "trigger_ts": "2026-02-28T01:52:24.741524+00:00",
+      "run_id": null,
+      "channel": "telegram",
+      "status": "delivered",
+      "tier_guarded": false,
+      "suppressed_reason": null,
+      "last_error": null,
+      "updated_at": "2026-02-28T01:52:26.542563+00:00"
+    },
+    {
+      "event_id": "evt-8394e8b98d",
+      "symbol": "TSLA",
+      "priority": "high",
+      "rule": "price_or_rsi",
+      "strategy_tier": "execution-ready",
+      "trigger_ts": "2026-02-28T00:53:02.288160+00:00",
+      "run_id": null,
+      "channel": "telegram",
+      "status": "delivered",
+      "tier_guarded": false,
+      "suppressed_reason": null,
+      "last_error": null,
+      "updated_at": "2026-02-28T00:53:04.051179+00:00"
+    },
+    {
+      "event_id": "evt-6cd4023c4c",
+      "symbol": "TSLA",
+      "priority": "high",
+      "rule": "price_or_rsi",
+      "strategy_tier": "execution-ready",
+      "trigger_ts": "2026-02-28T00:52:23.760985+00:00",
+      "run_id": null,
+      "channel": "telegram",
+      "status": "delivered",
+      "tier_guarded": false,
+      "suppressed_reason": null,
+      "last_error": null,
+      "updated_at": "2026-02-28T00:52:25.625161+00:00"
+    },
+    {
+      "event_id": "evt-ba5750ddb4",
+      "symbol": "TSLA",
+      "priority": "high",
+      "rule": "price_or_rsi",
+      "strategy_tier": "execution-ready",
+      "trigger_ts": "2026-02-27T23:53:02.086292+00:00",
+      "run_id": null,
+      "channel": "telegram",
+      "status": "delivered",
+      "tier_guarded": false,
+      "suppressed_reason": null,
+      "last_error": null,
+      "updated_at": "2026-02-27T23:53:03.848397+00:00"
+    },
+    {
+      "event_id": "evt-1772f6cbd7",
+      "symbol": "TSLA",
+      "priority": "high",
+      "rule": "price_or_rsi",
+      "strategy_tier": "execution-ready",
+      "trigger_ts": "2026-02-27T23:52:22.789193+00:00",
+      "run_id": null,
+      "channel": "telegram",
+      "status": "delivered",
+      "tier_guarded": false,
+      "suppressed_reason": null,
+      "last_error": null,
+      "updated_at": "2026-02-27T23:52:24.532519+00:00"
+    },
+    {
+      "event_id": "evt-4c134ef219",
+      "symbol": "TSLA",
+      "priority": "high",
+      "rule": "price_or_rsi",
+      "strategy_tier": "execution-ready",
+      "trigger_ts": "2026-02-27T22:53:01.128148+00:00",
+      "run_id": null,
+      "channel": "telegram",
+      "status": "delivered",
+      "tier_guarded": false,
+      "suppressed_reason": null,
+      "last_error": null,
+      "updated_at": "2026-02-27T22:53:02.762854+00:00"
+    },
+    {
+      "event_id": "evt-9da984bb1f",
+      "symbol": "TSLA",
+      "priority": "high",
+      "rule": "price_or_rsi",
+      "strategy_tier": "execution-ready",
+      "trigger_ts": "2026-02-27T22:52:21.767175+00:00",
+      "run_id": null,
+      "channel": "telegram",
+      "status": "delivered",
+      "tier_guarded": false,
+      "suppressed_reason": null,
+      "last_error": null,
+      "updated_at": "2026-02-27T22:52:23.633786+00:00"
+    },
+    {
+      "event_id": "evt-fbbd528dda",
+      "symbol": "TSLA",
+      "priority": "high",
+      "rule": "price_or_rsi",
+      "strategy_tier": "execution-ready",
+      "trigger_ts": "2026-02-27T21:53:00.910916+00:00",
+      "run_id": null,
+      "channel": "telegram",
+      "status": "delivered",
+      "tier_guarded": false,
+      "suppressed_reason": null,
+      "last_error": null,
+      "updated_at": "2026-02-27T21:53:02.828181+00:00"
+    },
+    {
+      "event_id": "evt-4bb6a776f5",
+      "symbol": "TSLA",
+      "priority": "high",
+      "rule": "price_or_rsi",
+      "strategy_tier": "execution-ready",
+      "trigger_ts": "2026-02-27T21:52:21.500504+00:00",
+      "run_id": null,
+      "channel": "telegram",
+      "status": "delivered",
+      "tier_guarded": false,
+      "suppressed_reason": null,
+      "last_error": null,
+      "updated_at": "2026-02-27T21:52:23.493086+00:00"
+    },
+    {
+      "event_id": "evt-43e39d1075",
+      "symbol": "TSLA",
+      "priority": "high",
+      "rule": "price_or_rsi",
+      "strategy_tier": "execution-ready",
+      "trigger_ts": "2026-02-27T20:53:00.782538+00:00",
+      "run_id": null,
+      "channel": "telegram",
+      "status": "delivered",
+      "tier_guarded": false,
+      "suppressed_reason": null,
+      "last_error": null,
+      "updated_at": "2026-02-27T20:53:02.689891+00:00"
+    },
+    {
+      "event_id": "evt-189a14ed43",
+      "symbol": "TSLA",
+      "priority": "high",
+      "rule": "price_or_rsi",
+      "strategy_tier": "execution-ready",
+      "trigger_ts": "2026-02-27T20:52:20.730090+00:00",
+      "run_id": null,
+      "channel": "telegram",
+      "status": "delivered",
+      "tier_guarded": false,
+      "suppressed_reason": null,
+      "last_error": null,
+      "updated_at": "2026-02-27T20:52:22.456089+00:00"
+    },
+    {
+      "event_id": "evt-7f39f8f688",
+      "symbol": "TSLA",
+      "priority": "high",
+      "rule": "price_or_rsi",
+      "strategy_tier": "execution-ready",
+      "trigger_ts": "2026-02-27T19:53:00.338443+00:00",
+      "run_id": null,
+      "channel": "telegram",
+      "status": "delivered",
+      "tier_guarded": false,
+      "suppressed_reason": null,
+      "last_error": null,
+      "updated_at": "2026-02-27T19:53:02.076961+00:00"
+    },
+    {
+      "event_id": "evt-06342a9894",
+      "symbol": "TSLA",
+      "priority": "high",
+      "rule": "price_or_rsi",
+      "strategy_tier": "execution-ready",
+      "trigger_ts": "2026-02-27T19:52:20.255863+00:00",
+      "run_id": null,
+      "channel": "telegram",
+      "status": "delivered",
+      "tier_guarded": false,
+      "suppressed_reason": null,
+      "last_error": null,
+      "updated_at": "2026-02-27T19:52:22.111764+00:00"
+    },
+    {
+      "event_id": "evt-1b00ee392e",
+      "symbol": "TSLA",
+      "priority": "high",
+      "rule": "price_or_rsi",
+      "strategy_tier": "execution-ready",
+      "trigger_ts": "2026-02-27T18:52:59.430918+00:00",
+      "run_id": null,
+      "channel": "telegram",
+      "status": "delivered",
+      "tier_guarded": false,
+      "suppressed_reason": null,
+      "last_error": null,
+      "updated_at": "2026-02-27T18:53:01.149845+00:00"
+    },
+    {
+      "event_id": "evt-ac01a3be7c",
+      "symbol": "TSLA",
+      "priority": "high",
+      "rule": "price_or_rsi",
+      "strategy_tier": "execution-ready",
+      "trigger_ts": "2026-02-27T18:52:19.801749+00:00",
+      "run_id": null,
+      "channel": "telegram",
+      "status": "delivered",
+      "tier_guarded": false,
+      "suppressed_reason": null,
+      "last_error": null,
+      "updated_at": "2026-02-27T18:52:21.278190+00:00"
+    },
+    {
+      "event_id": "evt-c43490e9d2",
+      "symbol": "TSLA",
+      "priority": "high",
+      "rule": "price_or_rsi",
+      "strategy_tier": "execution-ready",
+      "trigger_ts": "2026-02-27T17:52:58.618004+00:00",
+      "run_id": null,
+      "channel": "telegram",
+      "status": "delivered",
+      "tier_guarded": false,
+      "suppressed_reason": null,
+      "last_error": null,
+      "updated_at": "2026-02-27T17:53:00.074332+00:00"
+    },
+    {
+      "event_id": "evt-006bb40d2e",
+      "symbol": "TSLA",
+      "priority": "high",
+      "rule": "price_or_rsi",
+      "strategy_tier": "execution-ready",
+      "trigger_ts": "2026-02-27T17:52:20.764312+00:00",
+      "run_id": null,
+      "channel": "telegram",
+      "status": "delivered",
+      "tier_guarded": false,
+      "suppressed_reason": null,
+      "last_error": null,
+      "updated_at": "2026-02-27T17:52:22.417482+00:00"
+    },
+    {
+      "event_id": "evt-69e5e2e510",
+      "symbol": "TSLA",
+      "priority": "high",
+      "rule": "price_or_rsi",
+      "strategy_tier": "execution-ready",
+      "trigger_ts": "2026-02-27T16:52:58.350804+00:00",
+      "run_id": null,
+      "channel": "telegram",
+      "status": "delivered",
+      "tier_guarded": false,
+      "suppressed_reason": null,
+      "last_error": null,
+      "updated_at": "2026-02-27T16:53:00.230340+00:00"
+    },
+    {
+      "event_id": "evt-3d1aa5ab98",
+      "symbol": "TSLA",
+      "priority": "high",
+      "rule": "price_or_rsi",
+      "strategy_tier": "execution-ready",
+      "trigger_ts": "2026-02-27T16:52:19.354612+00:00",
+      "run_id": null,
+      "channel": "telegram",
+      "status": "delivered",
+      "tier_guarded": false,
+      "suppressed_reason": null,
+      "last_error": null,
+      "updated_at": "2026-02-27T16:52:21.061421+00:00"
+    },
+    {
+      "event_id": "evt-c23266f302",
+      "symbol": "TSLA",
+      "priority": "critical",
+      "rule": "live_acceptance_manual_trigger",
+      "strategy_tier": "execution-ready",
+      "trigger_ts": "2026-02-27T05:52:51.567886+00:00",
+      "run_id": "run-live-acceptance",
+      "channel": "telegram",
+      "status": "delivered",
+      "tier_guarded": false,
+      "suppressed_reason": null,
+      "last_error": null,
+      "updated_at": "2026-02-27T05:52:54.163098+00:00"
+    }
+  ],
+  "evidence": [
+    {
+      "name": "upgrade7_p2_strategy_tier_matrix.json",
+      "path": "docs/evidence/upgrade7_p2_strategy_tier_matrix.json",
+      "generated_at": "2026-02-28T04:42:01.726142+00:00",
+      "size_bytes": 4015,
+      "summary": {
+        "generated_at": "2026-02-28T04:42:01.726142+00:00",
+        "strategy_tiers_covered": [
+          "research-only",
+          "alert-only",
+          "execution-ready"
+        ],
+        "tier_matrix": [
+          {
+            "strategy_tier": "research-only",
+            "job_id": "job-13d034c2",
+            "route_strategy": "multi_channel",
+            "watch_event_strategy_tier": "research-only",
+            "pushed_count": 0,
+            "dedupe_suppressed_count": 0,
+            "dispatch_counts": {
+              "telegram": 0,
+              "email": 0,
+              "wecom": 0,
+              "webhook": 0
+            },
+            "targets": {
+              "telegram": [],
+              "email": [],
+              "wecom": [],
+              "webhook": [],
+              "webhook_id_reference": "wh-fc86c886"
+            },
+            "notification_state_matrix": [
+              {
+                "state": "suppressed",
+                "suppressed_reason": "strategy_tier_guard_research_only",
+                "count": 4
+              }
+            ],
+            "audit_counts": {
+              "strategy_tier_decision": 1,
+              "strategy_tier_guarded": 1,
+              "degrade_skip": 0
+            },
+            "runtime_metrics": {
+              "seed_runtime_metric": true,
+              "seed_strategy_tier": "research-only",
+              "seed_enable_triggered_research": true
+            },
+            "scan_kwargs_seen": {
+              "enable_triggered_research": true,
+              "strategy_tier": "research-only"
+            }
+          },
+          {
+            "strategy_tier": "alert-only",
+            "job_id": "job-dd27827b",
+            "route_strategy": "multi_channel",
+            "watch_event_strategy_tier": "alert-only",
+            "pushed_count": 1,
+            "dedupe_suppressed_count": 0,
+            "dispatch_counts": {
+              "telegram": 1,
+              "email": 1,
+              "wecom": 1,
+              "webhook": 1
+            },
+            "targets": {
+              "telegram": [
+                "chat-p2c"
+              ],
+              "email": [
+                "ops@example.com"
+              ],
+              "wecom": [
+                "wecom-bot-1"
+              ],
+              "webhook": [
+                "wh-4f3da91c"
+              ],
+              "webhook_id_reference": "wh-4f3da91c"
+            },
+            "notification_state_matrix": [
+              {
+                "state": "delivered",
+                "suppressed_reason": "",
+                "count": 4
+              }
+            ],
+            "audit_counts": {
+              "strategy_tier_decision": 1,
+              "strategy_tier_guarded": 0,
+              "degrade_skip": 1
+            },
+            "runtime_metrics": {
+              "seed_runtime_metric": true,
+              "seed_strategy_tier": "alert-only",
+              "seed_enable_triggered_research": false
+            },
+            "scan_kwargs_seen": {
+              "enable_triggered_research": false,
+              "strategy_tier": "alert-only"
+            }
+          },
+          {
+            "strategy_tier": "execution-ready",
+            "job_id": "job-88a56afa",
+            "route_strategy": "multi_channel",
+            "watch_event_strategy_tier": "execution-ready",
+            "pushed_count": 1,
+            "dedupe_suppressed_count": 0,
+            "dispatch_counts": {
+              "telegram": 1,
+              "email": 1,
+              "wecom": 1,
+              "webhook": 1
+            },
+            "targets": {
+              "telegram": [
+                "chat-p2c"
+              ],
+              "email": [
+                "ops@example.com"
+              ],
+              "wecom": [
+                "wecom-bot-1"
+              ],
+              "webhook": [
+                "wh-597c555f"
+              ],
+              "webhook_id_reference": "wh-597c555f"
+            },
+            "notification_state_matrix": [
+              {
+                "state": "delivered",
+                "suppressed_reason": "",
+                "count": 4
+              }
+            ],
+            "audit_counts": {
+              "strategy_tier_decision": 1,
+              "strategy_tier_guarded": 0,
+              "degrade_skip": 0
+            },
+            "runtime_metrics": {
+              "seed_runtime_metric": true,
+              "seed_strategy_tier": "execution-ready",
+              "seed_enable_triggered_research": true
+            },
+            "scan_kwargs_seen": {
+              "enable_triggered_research": true,
+              "strategy_tier": "execution-ready"
+            }
+          }
+        ],
+        "tier_distribution": {
+          "research-only": 1,
+          "alert-only": 1,
+          "execution-ready": 1
+        },
+        "guarded_tier_distribution": {
+          "research-only": 1,
+          "alert-only": 0,
+          "execution-ready": 0
+        }
+      },
+      "updated_at": "2026-02-28T04:42:01.722245+00:00"
+    },
+    {
+      "name": "upgrade7_p2_channel_adapter_matrix.json",
+      "path": "docs/evidence/upgrade7_p2_channel_adapter_matrix.json",
+      "generated_at": "2026-02-28T04:42:00.030898+00:00",
+      "size_bytes": 3214,
+      "summary": {
+        "generated_at": "2026-02-28T04:42:00.030898+00:00",
+        "strategies_covered": [
+          "dual_channel",
+          "email_only",
+          "multi_channel",
+          "telegram_only",
+          "webhook_only",
+          "wecom_only"
+        ],
+        "strategy_matrix": [
+          {
+            "strategy": "telegram_only",
+            "job_id": "job-5e63a691",
+            "pushed_count": 1,
+            "dedupe_suppressed_count": 0,
+            "dispatch_counts": {
+              "telegram": 1,
+              "email": 0,
+              "wecom": 0,
+              "webhook": 0
+            },
+            "targets": {
+              "telegram": [
+                "chat-p2b"
+              ],
+              "email": [],
+              "wecom": [],
+              "webhook": []
+            },
+            "webhook_id_reference": "wh-e619d691"
+          },
+          {
+            "strategy": "email_only",
+            "job_id": "job-fed2cf3c",
+            "pushed_count": 1,
+            "dedupe_suppressed_count": 0,
+            "dispatch_counts": {
+              "telegram": 0,
+              "email": 1,
+              "wecom": 0,
+              "webhook": 0
+            },
+            "targets": {
+              "telegram": [],
+              "email": [
+                "ops@example.com"
+              ],
+              "wecom": [],
+              "webhook": []
+            },
+            "webhook_id_reference": "wh-f434f3c0"
+          },
+          {
+            "strategy": "wecom_only",
+            "job_id": "job-a97e5c55",
+            "pushed_count": 1,
+            "dedupe_suppressed_count": 0,
+            "dispatch_counts": {
+              "telegram": 0,
+              "email": 0,
+              "wecom": 1,
+              "webhook": 0
+            },
+            "targets": {
+              "telegram": [],
+              "email": [],
+              "wecom": [
+                "wecom-bot-1"
+              ],
+              "webhook": []
+            },
+            "webhook_id_reference": "wh-126b8c69"
+          },
+          {
+            "strategy": "webhook_only",
+            "job_id": "job-e44223db",
+            "pushed_count": 1,
+            "dedupe_suppressed_count": 0,
+            "dispatch_counts": {
+              "telegram": 0,
+              "email": 0,
+              "wecom": 0,
+              "webhook": 1
+            },
+            "targets": {
+              "telegram": [],
+              "email": [],
+              "wecom": [],
+              "webhook": [
+                "wh-14c1185f"
+              ]
+            },
+            "webhook_id_reference": "wh-14c1185f"
+          },
+          {
+            "strategy": "dual_channel",
+            "job_id": "job-dd741d0a",
+            "pushed_count": 1,
+            "dedupe_suppressed_count": 0,
+            "dispatch_counts": {
+              "telegram": 1,
+              "email": 1,
+              "wecom": 1,
+              "webhook": 1
+            },
+            "targets": {
+              "telegram": [
+                "chat-p2b"
+              ],
+              "email": [
+                "ops@example.com"
+              ],
+              "wecom": [
+                "wecom-bot-1"
+              ],
+              "webhook": [
+                "wh-582f36e2"
+              ]
+            },
+            "webhook_id_reference": "wh-582f36e2"
+          },
+          {
+            "strategy": "multi_channel",
+            "job_id": "job-488faf5c",
+            "pushed_count": 1,
+            "dedupe_suppressed_count": 0,
+            "dispatch_counts": {
+              "telegram": 1,
+              "email": 1,
+              "wecom": 1,
+              "webhook": 1
+            },
+            "targets": {
+              "telegram": [
+                "chat-p2b"
+              ],
+              "email": [
+                "ops@example.com"
+              ],
+              "wecom": [
+                "wecom-bot-1"
+              ],
+              "webhook": [
+                "wh-6b93ced6"
+              ]
+            },
+            "webhook_id_reference": "wh-6b93ced6"
+          }
+        ]
+      },
+      "updated_at": "2026-02-28T04:42:00.026245+00:00"
+    },
+    {
+      "name": "upgrade7_p2_fault_injection_budget.json",
+      "path": "docs/evidence/upgrade7_p2_fault_injection_budget.json",
+      "generated_at": "2026-02-28T04:41:57.663352+00:00",
+      "size_bytes": 12407,
+      "summary": {
+        "generated_at": "2026-02-28T04:41:57.663352+00:00",
+        "fault_injection_events_total": 10
+      },
+      "updated_at": "2026-02-28T04:41:57.658245+00:00"
+    },
+    {
+      "name": "upgrade7_p2_latency_error_budget_summary.json",
+      "path": "docs/evidence/upgrade7_p2_latency_error_budget_summary.json",
+      "generated_at": "2026-02-28T04:41:57.663370+00:00",
+      "size_bytes": 7061,
+      "summary": {
+        "generated_at": "2026-02-28T04:41:57.663370+00:00"
+      },
+      "updated_at": "2026-02-28T04:41:57.658245+00:00"
+    },
+    {
+      "name": "upgrade7_frontend_console_smoke.json",
+      "path": "docs/evidence/upgrade7_frontend_console_smoke.json",
+      "generated_at": "2026-02-28T04:41:51.235082+00:00",
+      "size_bytes": 1940,
+      "summary": {
+        "generated_at": "2026-02-28T04:41:51.235082+00:00"
+      },
+      "updated_at": "2026-02-28T04:41:51.230245+00:00"
+    },
+    {
+      "name": "upgrade7_frontend_resources.json",
+      "path": "docs/evidence/upgrade7_frontend_resources.json",
+      "generated_at": "2026-02-28T04:41:51.095870+00:00",
+      "size_bytes": 62919,
+      "summary": {
+        "generated_at": "2026-02-28T04:41:51.095870+00:00",
+        "runs": [
+          {
+            "run_id": "run-32115d410648",
+            "request_id": "nlr-666eb99638",
+            "chat_id": "7566115125",
+            "symbol": "9988.HK",
+            "summary": "综合判断：技术面与新闻面信号分歧，当前更接近震荡市，需等待更明确催化。 情绪方向为中性（50.00/100），趋势判定为震荡。 本页面输出仅用于信息分析与研究讨论，不构成任何投资建议。",
+            "key_metrics": {
+              "full_success": true,
+              "retry_count": 0,
+              "data_record_count": 5,
+              "latest_close": 142.9,
+              "period_change_pct": -6.1104,
+              "ma20": 142.9,
+              "rsi14": 50.0,
+              "volatility_pct": 1.8992,
+              "volume_ratio": 1.222,
+              "sentiment_score": 50.0,
+              "runtime_market_data_latency_ms": 1035.252,
+              "runtime_executor_latency_ms": 1039.947,
+              "runtime_fallback_used": false,
+              "runtime_retry_count": 0,
+              "runtime_success": true,
+              "runtime_failure_count": 0,
+              "runtime_failure_clusters": {},
+              "runtime_failure_tags": {}
+            },
+            "created_at": "2026-02-27T19:02:28.442617+00:00",
+            "updated_at": "2026-02-27T19:02:28.442617+00:00"
+          },
+          {
+            "run_id": "run-98cb093cd9b5",
+            "request_id": "nlr-8733040f9d",
+            "chat_id": "7566115125",
+            "symbol": "9988.HK",
+            "summary": "综合判断：技术面与新闻面信号分歧，当前更接近震荡市，需等待更明确催化。 当前 RSI 偏低，需关注超跌反抽与趋势延续的博弈。 情绪方向为中性（45.00/100），趋势判定为震荡。 本页面输出仅用于信息分析与研究讨论，不构成任何投资建议。",
+            "key_metrics": {
+              "full_success": true,
+              "retry_count": 0,
+              "data_record_count": 21,
+              "latest_close": 142.9,
+              "period_change_pct": -15.8917,
+              "ma20": 157.155,
+              "rsi14": 28.4974,
+              "volatility_pct": 2.144,
+              "volume_ratio": 1.2433,
+              "sentiment_score": 45.0,
+              "runtime_market_data_latency_ms": 878.143,
+              "runtime_executor_latency_ms": 729.245,
+              "runtime_fallback_used": false,
+              "runtime_retry_count": 0,
+              "runtime_success": true,
+              "runtime_failure_count": 0,
+              "runtime_failure_clusters": {},
+              "runtime_failure_tags": {}
+            },
+            "created_at": "2026-02-27T17:59:46.018359+00:00",
+            "updated_at": "2026-02-27T18:03:05.116602+00:00"
+          },
+          {
+            "run_id": "run-b47f175301f0-dup-test",
+            "request_id": "nlr-f3b9efb9de",
+            "chat_id": "7566115125",
+            "symbol": "9988.HK",
+            "summary": "综合判断：技术面与新闻面信号分歧，当前更接近震荡市，需等待更明确催化。 当前 RSI 偏低，需关注超跌反抽与趋势延续的博弈。 情绪方向为中性（50.00/100），趋势判定为震荡。 本页面输出仅用于信息分析与研究讨论，不构成任何投资建议。 (dup test)",
+            "key_metrics": {
+              "dup_test": true
+            },
+            "created_at": "2026-02-27T17:40:55.976210+00:00",
+            "updated_at": "2026-02-27T17:53:53.406472+00:00"
+          },
+          {
+            "run_id": "run-ea4965059215",
+            "request_id": "nlr-b2d435383a",
+            "chat_id": "7566115125",
+            "symbol": "0700.HK",
+            "summary": "综合判断：技术面与新闻面同向偏弱，短线需优先关注回撤风险。 情绪方向为中性（45.00/100），趋势判定为偏弱。 本页面输出仅用于信息分析与研究讨论，不构成任何投资建议。",
+            "key_metrics": {
+              "full_success": true,
+              "retry_count": 0,
+              "data_record_count": 21,
+              "latest_close": 518.0,
+              "period_change_pct": -14.6623,
+              "ma20": 554.3,
+              "rsi14": 33.3333,
+              "volatility_pct": 1.9916,
+              "volume_ratio": 1.0127,
+              "sentiment_score": 45.0,
+              "runtime_market_data_latency_ms": 2503.898,
+              "runtime_executor_latency_ms": 1491.858,
+              "runtime_fallback_used": false,
+              "runtime_retry_count": 0,
+              "runtime_success": true,
+              "runtime_failure_count": 0,
+              "runtime_failure_clusters": {},
+              "runtime_failure_tags": {}
+            },
+            "created_at": "2026-02-27T16:05:06.677645+00:00",
+            "updated_at": "2026-02-27T16:05:06.677645+00:00"
+          },
+          {
+            "run_id": "run-d13b023eee4e",
+            "request_id": "nlr-9469e61314",
+            "chat_id": "7566115125",
+            "symbol": "A",
+            "summary": "综合判断：技术面与新闻面信号分歧，当前更接近震荡市，需等待更明确催化。 情绪方向为中性（50.00/100），趋势判定为偏弱。 本页面输出仅用于信息分析与研究讨论，不构成任何投资建议。",
+            "key_metrics": {
+              "full_success": true,
+              "retry_count": 0,
+              "data_record_count": 23,
+              "latest_close": 120.905,
+              "period_change_pct": -11.0666,
+              "ma20": 127.2457,
+              "rsi14": 31.3961,
+              "volatility_pct": 1.5621,
+              "volume_ratio": 0.2476,
+              "sentiment_score": 50.0,
+              "runtime_market_data_latency_ms": 6275.298,
+              "runtime_executor_latency_ms": 707.164,
+              "runtime_fallback_used": false,
+              "runtime_retry_count": 0,
+              "runtime_success": true,
+              "runtime_failure_count": 0,
+              "runtime_failure_clusters": {},
+              "runtime_failure_tags": {}
+            },
+            "created_at": "2026-02-27T16:02:11.084134+00:00",
+            "updated_at": "2026-02-27T16:02:11.084134+00:00"
+          },
+          {
+            "run_id": "run-e4fbb41475fa",
+            "request_id": "nlr-9f5ff0575e",
+            "chat_id": "7566115125",
+            "symbol": "0700.HK",
+            "summary": "综合判断：技术面与新闻面信号分歧，当前更接近震荡市，需等待更明确催化。 情绪方向为中性（47.50/100），趋势判定为偏弱。 本页面输出仅用于信息分析与研究讨论，不构成任何投资建议。",
+            "key_metrics": {
+              "full_success": true,
+              "retry_count": 0,
+              "data_record_count": 21,
+              "latest_close": 518.0,
+              "period_change_pct": -14.6623,
+              "ma20": 554.3,
+              "rsi14": 33.3333,
+              "volatility_pct": 1.9916,
+              "volume_ratio": 1.0127,
+              "sentiment_score": 47.5,
+              "runtime_market_data_latency_ms": 3491.73,
+              "runtime_executor_latency_ms": 665.949,
+              "runtime_fallback_used": false,
+              "runtime_retry_count": 0,
+              "runtime_success": true,
+              "runtime_failure_count": 0,
+              "runtime_failure_clusters": {},
+              "runtime_failure_tags": {}
+            },
+            "created_at": "2026-02-27T15:50:57.337998+00:00",
+            "updated_at": "2026-02-27T15:50:57.337998+00:00"
+          },
+          {
+            "run_id": "run-cefbb11ddb64",
+            "request_id": "nlr-3b34a32339",
+            "chat_id": "7566115125",
+            "symbol": "0700.HK",
+            "summary": "综合判断：技术面与新闻面信号分歧，当前更接近震荡市，需等待更明确催化。 情绪方向为中性（47.50/100），趋势判定为偏弱。 本页面输出仅用于信息分析与研究讨论，不构成任何投资建议。",
+            "key_metrics": {
+              "full_success": true,
+              "retry_count": 0,
+              "data_record_count": 21,
+              "latest_close": 518.0,
+              "period_change_pct": -14.6623,
+              "ma20": 554.3,
+              "rsi14": 33.3333,
+              "volatility_pct": 1.9916,
+              "volume_ratio": 1.0127,
+              "sentiment_score": 47.5,
+              "runtime_market_data_latency_ms": 2017.218,
+              "runtime_executor_latency_ms": 1062.003,
+              "runtime_fallback_used": false,
+              "runtime_retry_count": 0,
+              "runtime_success": true,
+              "runtime_failure_count": 0,
+              "runtime_failure_clusters": {},
+              "runtime_failure_tags": {}
+            },
+            "created_at": "2026-02-27T15:44:19.026440+00:00",
+            "updated_at": "2026-02-27T15:44:19.026440+00:00"
+          },
+          {
+            "run_id": "run-d377f703bd83",
+            "request_id": "nlr-aa21b3dd37",
+            "chat_id": "7566115125",
+            "symbol": "0700.HK",
+            "summary": "综合判断：技术面与新闻面同向偏弱，短线需优先关注回撤风险。 情绪方向为中性（45.00/100），趋势判定为偏弱。 本页面输出仅用于信息分析与研究讨论，不构成任何投资建议。",
+            "key_metrics": {
+              "full_success": true,
+              "retry_count": 0,
+              "data_record_count": 21,
+              "latest_close": 518.0,
+              "period_change_pct": -14.6623,
+              "ma20": 554.3,
+              "rsi14": 33.3333,
+              "volatility_pct": 1.9916,
+              "volume_ratio": 1.0127,
+              "sentiment_score": 45.0,
+              "runtime_market_data_latency_ms": 269.979,
+              "runtime_executor_latency_ms": 669.339,
+              "runtime_fallback_used": false,
+              "runtime_retry_count": 0,
+              "runtime_success": true,
+              "runtime_failure_count": 0,
+              "runtime_failure_clusters": {},
+              "runtime_failure_tags": {}
+            },
+            "created_at": "2026-02-27T10:18:53.718484+00:00",
+            "updated_at": "2026-02-27T10:18:53.718484+00:00"
+          },
+          {
+            "run_id": "run-d4001339d153",
+            "request_id": "nlr-b437628a1a",
+            "chat_id": "7566115125",
+            "symbol": "0700.HK",
+            "summary": "综合判断：技术面与新闻面信号分歧，当前更接近震荡市，需等待更明确催化。 情绪方向为中性（47.50/100），趋势判定为偏弱。 本页面输出仅用于信息分析与研究讨论，不构成任何投资建议。",
+            "key_metrics": {
+              "full_success": true,
+              "retry_count": 0,
+              "data_record_count": 21,
+              "latest_close": 518.0,
+              "period_change_pct": -14.6623,
+              "ma20": 554.3,
+              "rsi14": 33.3333,
+              "volatility_pct": 1.9916,
+              "volume_ratio": 1.0127,
+              "sentiment_score": 47.5,
+              "runtime_market_data_latency_ms": 303.677,
+              "runtime_executor_latency_ms": 923.171,
+              "runtime_fallback_used": false,
+              "runtime_retry_count": 0,
+              "runtime_success": true,
+              "runtime_failure_count": 0,
+              "runtime_failure_clusters": {},
+              "runtime_failure_tags": {}
+            },
+            "created_at": "2026-02-27T10:18:24.897872+00:00",
+            "updated_at": "2026-02-27T10:18:24.897872+00:00"
+          },
+          {
+            "run_id": "run-367a1b5fb285",
+            "request_id": "nlr-17a7a51264",
+            "chat_id": "7566115125",
+            "symbol": "0700.HK",
+            "summary": "综合判断：技术面与新闻面信号分歧，当前更接近震荡市，需等待更明确催化。 情绪方向为中性（47.50/100），趋势判定为偏弱。 本页面输出仅用于信息分析与研究讨论，不构成任何投资建议。",
+            "key_metrics": {
+              "full_success": true,
+              "retry_count": 0,
+              "data_record_count": 21,
+              "latest_close": 518.0,
+              "period_change_pct": -14.6623,
+              "ma20": 554.3,
+              "rsi14": 33.3333,
+              "volatility_pct": 1.9916,
+              "volume_ratio": 1.0127,
+              "sentiment_score": 47.5,
+              "runtime_market_data_latency_ms": 2214.266,
+              "runtime_executor_latency_ms": 718.651,
+              "runtime_fallback_used": false,
+              "runtime_retry_count": 0,
+              "runtime_success": true,
+              "runtime_failure_count": 0,
+              "runtime_failure_clusters": {},
+              "runtime_failure_tags": {}
+            },
+            "created_at": "2026-02-27T10:18:01.528180+00:00",
+            "updated_at": "2026-02-27T10:18:01.528180+00:00"
+          },
+          {
+            "run_id": "run-fb8a57da483e",
+            "request_id": "nlr-f611041211",
+            "chat_id": "7566115125",
+            "symbol": "0700.HK",
+            "summary": "综合判断：技术面与新闻面信号分歧，当前更接近震荡市，需等待更明确催化。 情绪方向为中性（47.50/100），趋势判定为偏弱。 本页面输出仅用于信息分析与研究讨论，不构成任何投资建议。",
+            "key_metrics": {
+              "full_success": true,
+              "retry_count": 0,
+              "data_record_count": 21,
+              "latest_close": 518.0,
+              "period_change_pct": -14.6623,
+              "ma20": 554.3,
+              "rsi14": 33.3333,
+              "volatility_pct": 1.9916,
+              "volume_ratio": 1.0127,
+              "sentiment_score": 47.5,
+              "runtime_market_data_latency_ms": 2109.372,
+              "runtime_executor_latency_ms": 639.357,
+              "runtime_fallback_used": false,
+              "runtime_retry_count": 0,
+              "runtime_success": true,
+              "runtime_failure_count": 0,
+              "runtime_failure_clusters": {},
+              "runtime_failure_tags": {}
+            },
+            "created_at": "2026-02-27T09:46:09.826198+00:00",
+            "updated_at": "2026-02-27T09:46:09.826198+00:00"
+          },
+          {
+            "run_id": "run-bbdd4971947c",
+            "request_id": "nlr-9174e5d3bb",
+            "chat_id": "7566115125",
+            "symbol": "0700.HK",
+            "summary": "综合判断：技术面与新闻面信号分歧，当前更接近震荡市，需等待更明确催化。 情绪方向为中性（47.50/100），趋势判定为震荡。 本页面输出仅用于信息分析与研究讨论，不构成任何投资建议。",
+            "key_metrics": {
+              "full_success": true,
+              "retry_count": 0,
+              "data_record_count": 5,
+              "latest_close": 518.0,
+              "period_change_pct": -3.7175,
+              "ma20": 518.0,
+              "rsi14": 50.0,
+              "volatility_pct": 2.1142,
+              "volume_ratio": 1.1603,
+              "sentiment_score": 47.5,
+              "runtime_market_data_latency_ms": 2142.243,
+              "runtime_executor_latency_ms": 1318.075,
+              "runtime_fallback_used": false,
+              "runtime_retry_count": 0,
+              "runtime_success": true,
+              "runtime_failure_count": 0,
+              "runtime_failure_clusters": {},
+              "runtime_failure_tags": {}
+            },
+            "created_at": "2026-02-27T09:36:09.146995+00:00",
+            "updated_at": "2026-02-27T09:36:09.146995+00:00"
+          }
+        ],
+        "tier_distribution": {
+          "execution-ready": 25
+        },
+        "guarded_tier_distribution": {}
+      },
+      "updated_at": "2026-02-28T04:41:51.094245+00:00"
+    },
+    {
+      "name": "upgrade7_connector_reliability.json",
+      "path": "docs/evidence/upgrade7_connector_reliability.json",
+      "generated_at": "2026-02-28T04:41:42.484450+00:00",
+      "size_bytes": 280,
+      "summary": {
+        "generated_at": "2026-02-28T04:41:42.484450+00:00",
+        "base_connector_retry": {
+          "result": "ok",
+          "attempts": 3,
+          "error_semantic": "RATE_LIMIT"
+        },
+        "rss_connector_retry": {
+          "result": "<rss></rss>",
+          "attempts": 2,
+          "error_semantic": "UPSTREAM_5XX"
+        }
+      },
+      "updated_at": "2026-02-28T04:41:42.478245+00:00"
+    },
+    {
+      "name": "upgrade7_config_layering_validation.json",
+      "path": "docs/evidence/upgrade7_config_layering_validation.json",
+      "generated_at": "2026-02-28T04:41:42.480658+00:00",
+      "size_bytes": 3371,
+      "summary": {
+        "generated_at": "2026-02-28T04:41:42.480658+00:00",
+        "merge_priority": [
+          "base",
+          "env_override",
+          "runtime_flags"
+        ]
+      },
+      "updated_at": "2026-02-28T04:41:42.478245+00:00"
+    },
+    {
+      "name": "upgrade7_plugin_loading_matrix.json",
+      "path": "docs/evidence/upgrade7_plugin_loading_matrix.json",
+      "generated_at": "2026-02-28T04:41:42.479962+00:00",
+      "size_bytes": 1704,
+      "summary": {
+        "generated_at": "2026-02-28T04:41:42.479962+00:00",
+        "runtime_flags_applied": true
+      },
+      "updated_at": "2026-02-28T04:41:42.474245+00:00"
+    },
+    {
+      "name": "upgrade7_p2_overview.json",
+      "path": "docs/evidence/upgrade7_p2_overview.json",
+      "generated_at": "2026-02-28T04:37:30.061714+00:00",
+      "size_bytes": 103154,
+      "summary": {
+        "generated_at": "2026-02-28T04:37:30.061714+00:00",
+        "summary": {
+          "overall_ok": true,
+          "p2a_overall_verdict": "fail",
+          "p2b_strategies_covered": [
+            "dual_channel",
+            "email_only",
+            "multi_channel",
+            "telegram_only",
+            "webhook_only",
+            "wecom_only"
+          ],
+          "p2c_strategy_tiers_covered": [
+            "research-only",
+            "alert-only",
+            "execution-ready"
+          ],
+          "p2c_guarded_tier_distribution": {
+            "research-only": 1,
+            "alert-only": 0,
+            "execution-ready": 0
+          },
+          "frontend_tier_distribution": {
+            "execution-ready": 25
+          },
+          "frontend_guarded_tier_distribution": {}
+        }
+      },
+      "updated_at": "2026-02-28T04:37:30.058248+00:00"
+    },
+    {
+      "name": "upgrade7_p2_smoke_e2e.json",
+      "path": "docs/evidence/upgrade7_p2_smoke_e2e.json",
+      "generated_at": "2026-02-28T04:37:30.061731+00:00",
+      "size_bytes": 1348,
+      "summary": {
+        "generated_at": "2026-02-28T04:37:30.061731+00:00",
+        "summary": {
+          "overall_ok": true,
+          "p2a_overall_verdict": "fail",
+          "p2b_strategies_covered": [
+            "dual_channel",
+            "email_only",
+            "multi_channel",
+            "telegram_only",
+            "webhook_only",
+            "wecom_only"
+          ],
+          "p2c_strategy_tiers_covered": [
+            "research-only",
+            "alert-only",
+            "execution-ready"
+          ],
+          "p2c_guarded_tier_distribution": {
+            "research-only": 1,
+            "alert-only": 0,
+            "execution-ready": 0
+          },
+          "frontend_tier_distribution": {
+            "execution-ready": 25
+          },
+          "frontend_guarded_tier_distribution": {}
+        }
+      },
+      "updated_at": "2026-02-28T04:37:30.058248+00:00"
+    },
+    {
+      "name": "upgrade7_node_contract_matrix.json",
+      "path": "docs/evidence/upgrade7_node_contract_matrix.json",
+      "generated_at": "2026-02-28T02:29:53Z",
+      "size_bytes": 1700,
+      "summary": {
+        "generated_at": "2026-02-28T02:29:53Z"
+      },
+      "updated_at": "2026-02-28T02:29:53.502249+00:00"
+    },
+    {
+      "name": "upgrade7_toolresult_unification.json",
+      "path": "docs/evidence/upgrade7_toolresult_unification.json",
+      "generated_at": "2026-02-28T02:21:02Z",
+      "size_bytes": 1172,
+      "summary": {
+        "generated_at": "2026-02-28T02:21:02Z"
+      },
+      "updated_at": "2026-02-28T02:21:02.254245+00:00"
+    },
+    {
+      "name": "upgrade7_execution_result_contract.json",
+      "path": "docs/evidence/upgrade7_execution_result_contract.json",
+      "generated_at": "2026-02-28T02:15:45Z",
+      "size_bytes": 860,
+      "summary": {
+        "generated_at": "2026-02-28T02:15:45Z"
+      },
+      "updated_at": "2026-02-28T02:15:45.006247+00:00"
+    },
+    {
+      "name": "upgrade7_policy_runtime_consistency.json",
+      "path": "docs/evidence/upgrade7_policy_runtime_consistency.json",
+      "generated_at": "2026-02-28T02:15:36Z",
+      "size_bytes": 744,
+      "summary": {
+        "generated_at": "2026-02-28T02:15:36Z"
+      },
+      "updated_at": "2026-02-28T02:15:36.614248+00:00"
+    },
+    {
+      "name": "upgrade7_telegram_analysis_depth_baseline.json",
+      "path": "docs/evidence/upgrade7_telegram_analysis_depth_baseline.json",
+      "generated_at": "2026-02-28T01:52:43Z",
+      "size_bytes": 879,
+      "summary": {
+        "generated_at": "2026-02-28T01:52:43Z"
+      },
+      "updated_at": "2026-02-28T01:52:43.958248+00:00"
+    },
+    {
+      "name": "upgrade7_telegram_context_guardrails.json",
+      "path": "docs/evidence/upgrade7_telegram_context_guardrails.json",
+      "generated_at": "2026-02-28T01:52:43Z",
+      "size_bytes": 709,
+      "summary": {
+        "generated_at": "2026-02-28T01:52:43Z"
+      },
+      "updated_at": "2026-02-28T01:52:43.958248+00:00"
+    },
+    {
+      "name": "upgrade7_telegram_response_contract.json",
+      "path": "docs/evidence/upgrade7_telegram_response_contract.json",
+      "generated_at": "2026-02-28T01:52:43Z",
+      "size_bytes": 827,
+      "summary": {
+        "generated_at": "2026-02-28T01:52:43Z"
+      },
+      "updated_at": "2026-02-28T01:52:43.958248+00:00"
+    },
+    {
+      "name": "telegram_webhook_service_path_report.latest.json",
+      "path": "docs/evidence/telegram_webhook_service_path_report.latest.json",
+      "generated_at": "2026-02-27T17:29:54.418826+00:00",
+      "size_bytes": 2522,
+      "summary": {
+        "generated_at": "2026-02-27T17:29:54.418826+00:00"
+      },
+      "updated_at": "2026-02-27T17:29:54.414248+00:00"
+    },
+    {
+      "name": "telegram_phase_d_run_report.live.latest.json",
+      "path": "docs/evidence/telegram_phase_d_run_report.live.latest.json",
+      "generated_at": null,
+      "size_bytes": 1506,
+      "summary": {},
+      "updated_at": "2026-02-27T17:29:53.518248+00:00"
+    },
+    {
+      "name": "telegram_real_30m_cold_start_e2e_report.json",
+      "path": "docs/evidence/telegram_real_30m_cold_start_e2e_report.json",
+      "generated_at": "2026-02-27T05:36:33.269642+00:00",
+      "size_bytes": 2395,
+      "summary": {
+        "generated_at": "2026-02-27T05:36:33.269642+00:00"
+      },
+      "updated_at": "2026-02-27T05:36:33.266269+00:00"
+    },
+    {
+      "name": "telegram_webhook_service_path_report.json",
+      "path": "docs/evidence/telegram_webhook_service_path_report.json",
+      "generated_at": "2026-02-27T05:36:06.562564+00:00",
+      "size_bytes": 2522,
+      "summary": {
+        "generated_at": "2026-02-27T05:36:06.562564+00:00"
+      },
+      "updated_at": "2026-02-27T05:36:06.566268+00:00"
+    },
+    {
+      "name": "telegram_phase_d_run_report_e2e.json",
+      "path": "docs/evidence/telegram_phase_d_run_report_e2e.json",
+      "generated_at": null,
+      "size_bytes": 632,
+      "summary": {},
+      "updated_at": "2026-02-27T05:35:55.422268+00:00"
+    },
+    {
+      "name": "telegram_phase_d_hardening_report.json",
+      "path": "docs/evidence/telegram_phase_d_hardening_report.json",
+      "generated_at": "2026-02-27T05:05:41.849281+00:00",
+      "size_bytes": 433,
+      "summary": {
+        "generated_at": "2026-02-27T05:05:41.849281+00:00"
+      },
+      "updated_at": "2026-02-27T05:05:41.846269+00:00"
+    },
+    {
+      "name": "telegram_phase_d_run_report.json",
+      "path": "docs/evidence/telegram_phase_d_run_report.json",
+      "generated_at": null,
+      "size_bytes": 626,
+      "summary": {},
+      "updated_at": "2026-02-27T04:51:51.218265+00:00"
+    },
+    {
+      "name": "telegram_phase_c_run_report.json",
+      "path": "docs/evidence/telegram_phase_c_run_report.json",
+      "generated_at": null,
+      "size_bytes": 317,
+      "summary": {},
+      "updated_at": "2026-02-27T04:20:36.106271+00:00"
+    },
+    {
+      "name": "offline_docker_full_analysis_20.json",
+      "path": "docs/evidence/offline_docker_full_analysis_20.json",
+      "generated_at": "2026-02-26T20:16:46.777734+00:00",
+      "size_bytes": 7385,
+      "summary": {
+        "generated_at": "2026-02-26T20:16:46.777734+00:00",
+        "summary": {
+          "runs": 20,
+          "success_count": 20,
+          "success_rate": 1.0,
+          "fallback_count": 0,
+          "fallback_rate": 0.0,
+          "docker_backend_count": 20,
+          "docker_backend_ratio": 1.0,
+          "retry_total": 0,
+          "avg_total_latency_ms": 679.254,
+          "p95_total_latency_ms": 719.365,
+          "failure_type_distribution": {
+            "none": 20
+          }
+        },
+        "mode": "offline-fixture"
+      },
+      "updated_at": "2026-02-26T20:16:46.774271+00:00"
+    },
+    {
+      "name": "run_report_latest.json",
+      "path": "docs/evidence/run_report_latest.json",
+      "generated_at": "2026-02-26T20:16:33.961966+00:00",
+      "size_bytes": 858,
+      "summary": {
+        "generated_at": "2026-02-26T20:16:33.961966+00:00",
+        "summary": {
+          "runs": 1,
+          "success_count": 1,
+          "success_rate": 1.0,
+          "fallback_count": 0,
+          "fallback_rate": 0.0,
+          "docker_backend_count": 1,
+          "docker_backend_ratio": 1.0,
+          "retry_total": 0,
+          "avg_total_latency_ms": 778.283,
+          "p95_total_latency_ms": 778.283,
+          "failure_type_distribution": {
+            "none": 1
+          }
+        },
+        "mode": "offline-fixture"
+      },
+      "updated_at": "2026-02-26T20:16:33.958271+00:00"
+    }
+  ],
+  "degradation_states": [
+    {
+      "state_key": "no_monitor_push",
+      "status": "recovered",
+      "reason": "push_success_rate >= 99.00%",
+      "triggered_at": "2026-02-27T05:52:51.765213+00:00",
+      "recovered_at": "2026-02-27T05:52:54.792786+00:00",
+      "updated_at": "2026-02-27T05:52:54.792786+00:00"
+    }
+  ],
+  "tier_distribution": {
+    "execution-ready": 25
+  },
+  "guarded_tier_distribution": {}
+}

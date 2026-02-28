@@ -1,0 +1,163 @@
+{
+  "generated_at": "2026-02-28T04:42:01.726142+00:00",
+  "scope": "Upgrade7 P2-C strategy tier matrix",
+  "strategy_tiers_covered": [
+    "research-only",
+    "alert-only",
+    "execution-ready"
+  ],
+  "tier_matrix": [
+    {
+      "strategy_tier": "research-only",
+      "job_id": "job-13d034c2",
+      "route_strategy": "multi_channel",
+      "watch_event_strategy_tier": "research-only",
+      "pushed_count": 0,
+      "dedupe_suppressed_count": 0,
+      "dispatch_counts": {
+        "telegram": 0,
+        "email": 0,
+        "wecom": 0,
+        "webhook": 0
+      },
+      "targets": {
+        "telegram": [],
+        "email": [],
+        "wecom": [],
+        "webhook": [],
+        "webhook_id_reference": "wh-fc86c886"
+      },
+      "notification_state_matrix": [
+        {
+          "state": "suppressed",
+          "suppressed_reason": "strategy_tier_guard_research_only",
+          "count": 4
+        }
+      ],
+      "audit_counts": {
+        "strategy_tier_decision": 1,
+        "strategy_tier_guarded": 1,
+        "degrade_skip": 0
+      },
+      "runtime_metrics": {
+        "seed_runtime_metric": true,
+        "seed_strategy_tier": "research-only",
+        "seed_enable_triggered_research": true
+      },
+      "scan_kwargs_seen": {
+        "enable_triggered_research": true,
+        "strategy_tier": "research-only"
+      }
+    },
+    {
+      "strategy_tier": "alert-only",
+      "job_id": "job-dd27827b",
+      "route_strategy": "multi_channel",
+      "watch_event_strategy_tier": "alert-only",
+      "pushed_count": 1,
+      "dedupe_suppressed_count": 0,
+      "dispatch_counts": {
+        "telegram": 1,
+        "email": 1,
+        "wecom": 1,
+        "webhook": 1
+      },
+      "targets": {
+        "telegram": [
+          "chat-p2c"
+        ],
+        "email": [
+          "ops@example.com"
+        ],
+        "wecom": [
+          "wecom-bot-1"
+        ],
+        "webhook": [
+          "wh-4f3da91c"
+        ],
+        "webhook_id_reference": "wh-4f3da91c"
+      },
+      "notification_state_matrix": [
+        {
+          "state": "delivered",
+          "suppressed_reason": "",
+          "count": 4
+        }
+      ],
+      "audit_counts": {
+        "strategy_tier_decision": 1,
+        "strategy_tier_guarded": 0,
+        "degrade_skip": 1
+      },
+      "runtime_metrics": {
+        "seed_runtime_metric": true,
+        "seed_strategy_tier": "alert-only",
+        "seed_enable_triggered_research": false
+      },
+      "scan_kwargs_seen": {
+        "enable_triggered_research": false,
+        "strategy_tier": "alert-only"
+      }
+    },
+    {
+      "strategy_tier": "execution-ready",
+      "job_id": "job-88a56afa",
+      "route_strategy": "multi_channel",
+      "watch_event_strategy_tier": "execution-ready",
+      "pushed_count": 1,
+      "dedupe_suppressed_count": 0,
+      "dispatch_counts": {
+        "telegram": 1,
+        "email": 1,
+        "wecom": 1,
+        "webhook": 1
+      },
+      "targets": {
+        "telegram": [
+          "chat-p2c"
+        ],
+        "email": [
+          "ops@example.com"
+        ],
+        "wecom": [
+          "wecom-bot-1"
+        ],
+        "webhook": [
+          "wh-597c555f"
+        ],
+        "webhook_id_reference": "wh-597c555f"
+      },
+      "notification_state_matrix": [
+        {
+          "state": "delivered",
+          "suppressed_reason": "",
+          "count": 4
+        }
+      ],
+      "audit_counts": {
+        "strategy_tier_decision": 1,
+        "strategy_tier_guarded": 0,
+        "degrade_skip": 0
+      },
+      "runtime_metrics": {
+        "seed_runtime_metric": true,
+        "seed_strategy_tier": "execution-ready",
+        "seed_enable_triggered_research": true
+      },
+      "scan_kwargs_seen": {
+        "enable_triggered_research": true,
+        "strategy_tier": "execution-ready"
+      }
+    }
+  ],
+  "tier_distribution": {
+    "research-only": 1,
+    "alert-only": 1,
+    "execution-ready": 1
+  },
+  "guarded_tier_distribution": {
+    "research-only": 1,
+    "alert-only": 0,
+    "execution-ready": 0
+  }
+}

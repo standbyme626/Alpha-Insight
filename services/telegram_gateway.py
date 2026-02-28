@@ -20,6 +20,7 @@ from agents.telegram_nlu_planner import (
     plan_from_text,
     sanitize_user_text,
 )
+from core.strategy_tier import DEFAULT_STRATEGY_TIER, normalize_strategy_tier
 from services.runtime_controls import RuntimeLimits
 from services.telegram_actions import TelegramActions
 from services.telegram_store import TelegramTaskStore
@@ -87,6 +88,7 @@ class TelegramGateway:
             "alerts",
             "bulk",
             "webhook",
+            "route",
             "pref",
         }
         self._gray_release_enabled = gray_release_enabled
@@ -540,6 +542,9 @@ class TelegramGateway:
             merged_slots["template"] = template
             merged_slots["mode"] = mode
             merged_slots["threshold"] = threshold
+            merged_slots["strategy_tier"] = normalize_strategy_tier(
+                str(merged_slots.get("strategy_tier", DEFAULT_STRATEGY_TIER))
+            )
         if pending.intent == "stop_job":
             symbol = str(merged_slots.get("symbol", "")).upper()
             if symbol:
@@ -573,6 +578,8 @@ class TelegramGateway:
                 "result": result,
                 "run_id": run_id,
                 "error": error,
+                "route_strategy": str(record.slots.get("route_strategy", "dual_channel")),
+                "strategy_tier": normalize_strategy_tier(str(record.slots.get("strategy_tier", DEFAULT_STRATEGY_TIER))),
             },
         )
 
@@ -620,6 +627,7 @@ class TelegramGateway:
                 threshold=float(slots.get("threshold", 0.03)),
                 template=str(slots.get("template", "volatility")),
                 route_strategy=str(slots.get("route_strategy", "dual_channel")),
+                strategy_tier=normalize_strategy_tier(str(slots.get("strategy_tier", DEFAULT_STRATEGY_TIER))),
             )
             return None
         if record.intent == "analyze_snapshot":
@@ -1170,6 +1178,7 @@ class TelegramGateway:
                 threshold=0.03,
                 template="volatility",
                 route_strategy="dual_channel",
+                strategy_tier=DEFAULT_STRATEGY_TIER,
             )
             self._store.update_bot_update_status(
                 update_id=update_id,
@@ -1435,6 +1444,9 @@ class TelegramGateway:
                             threshold=float(parsed.args.get("threshold", "0.03")),
                             template=str(parsed.args.get("template", "volatility")),
                             route_strategy=str(parsed.args.get("route_strategy", "dual_channel")),
+                            strategy_tier=normalize_strategy_tier(
+                                str(parsed.args.get("strategy_tier", DEFAULT_STRATEGY_TIER))
+                            ),
                         )
                 elif parsed.name == "list":
                     result = await self._actions.handle_list(chat_id=chat_id)
@@ -1484,6 +1496,13 @@ class TelegramGateway:
                         url=str(parsed.args.get("url", "")),
                         secret=str(parsed.args.get("secret", "")),
                         webhook_id=str(parsed.args.get("webhook_id", "")),
+                    )
+                elif parsed.name == "route":
+                    result = await self._actions.handle_route(
+                        chat_id=chat_id,
+                        action=str(parsed.args["action"]),
+                        channel=str(parsed.args.get("channel", "")),
+                        target=str(parsed.args.get("target", "")),
                     )
                 elif parsed.name == "pref":
                     result = await self._actions.handle_pref(
@@ -1980,9 +1999,13 @@ class TelegramGateway:
 
             await self._execute_nl_request(update_id=update_id, request_id=request_id)
             if carry_hit and carry_symbol:
+                carry_period = str(plan.slots.get("period", "1mo")).strip().lower() or "1mo"
                 await self._actions.send_error_message(
                     chat_id=chat_id,
-                    text=f"默认沿用标的：{carry_symbol}。如需切换请回复：换标的 TSLA。",
+                    text=(
+                        f"已沿用上次上下文：标的 {carry_symbol}，周期 {carry_period}。\n"
+                        "如需切换，请直接回复“换标的 TSLA”或“分析 TSLA 一个月走势”。"
+                    ),
                 )
                 self._store.record_metric(metric_name="symbol_carry_over_hit_rate", metric_value=1.0)
             return True

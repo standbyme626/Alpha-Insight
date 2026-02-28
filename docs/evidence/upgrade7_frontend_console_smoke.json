@@ -1,0 +1,74 @@
+{
+  "generated_at": "2026-02-28T04:42:02.101889+00:00",
+  "db_path": "storage/telegram_gateway_live.db",
+  "counts": {
+    "runs": 12,
+    "alerts": 20,
+    "evidence": 28,
+    "degradation_states": 1
+  },
+  "samples": {
+    "run_ids": [
+      "run-32115d410648",
+      "run-98cb093cd9b5",
+      "run-b47f175301f0-dup-test",
+      "run-ea4965059215",
+      "run-d13b023eee4e"
+    ],
+    "alert_event_ids": [
+      "evt-0fc3f57595",
+      "evt-ad05e76031",
+      "evt-c42aa6d859",
+      "evt-dddff15fd1",
+      "evt-0325ed27cf"
+    ],
+    "evidence_names": [
+      "upgrade7_frontend_resources.json",
+      "upgrade7_p2_strategy_tier_matrix.json",
+      "upgrade7_p2_channel_adapter_matrix.json",
+      "upgrade7_p2_fault_injection_budget.json",
+      "upgrade7_p2_latency_error_budget_summary.json",
+      "upgrade7_frontend_console_smoke.json",
+      "upgrade7_connector_reliability.json",
+      "upgrade7_config_layering_validation.json"
+    ],
+    "degradation_state_keys": [
+      "no_monitor_push"
+    ]
+  },
+  "tier_governance": {
+    "tier_distribution": {
+      "execution-ready": 20
+    },
+    "guarded_tier_distribution": {}
+  },
+  "frontend_contract": {
+    "resources": [
+      "runs",
+      "alerts",
+      "evidence",
+      "degradation_states"
+    ],
+    "typed_client": "ui.typed_resource_client.FrontendResourceClient",
+    "console_entry": "ui.upgrade7_console.py",
+    "next_console_entry": "web_console/app/(dashboard)/runs/page.tsx",
+    "next_console_routes": [
+      "/runs",
+      "/alerts",
+      "/evidence",
+      "/governance"
+    ],
+    "reference_mapping": {
+      "next-shadcn-dashboard-starter": [
+        "sidebar layout shell",
+        "app router dashboard route organization"
+      ],
+      "nextjs-fastapi-template": [
+        "typed client pattern (lib/client.ts + server route bridge)"
+      ],
+      "react-admin/refine": [
+        "resource-first navigation (runs/alerts/evidence/governance)"
+      ]
+    }
+  }
+}

@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any, Iterable
 from uuid import uuid4
 
+from core.strategy_tier import DEFAULT_STRATEGY_TIER, normalize_strategy_tier
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -59,6 +61,7 @@ class WatchJobRecord:
     scope: str
     group_id: str | None
     route_strategy: str
+    strategy_tier: str
     template_id: str | None
     enabled: bool
     next_run_at: str
@@ -81,6 +84,7 @@ class DueWatchJob:
     scope: str
     group_id: str | None
     route_strategy: str
+    strategy_tier: str
     next_run_at: str
 
 
@@ -221,6 +225,7 @@ class AlertHubRecord:
     chat_id: str
     symbol: str
     priority: str
+    strategy_tier: str
     channel: str
     status: str
     suppressed_reason: str | None
@@ -345,6 +350,7 @@ class TelegramTaskStore:
                     scope TEXT NOT NULL DEFAULT 'single',
                     group_id TEXT,
                     route_strategy TEXT NOT NULL DEFAULT 'dual_channel',
+                    strategy_tier TEXT NOT NULL DEFAULT 'execution-ready',
                     template_id TEXT,
                     enabled INTEGER NOT NULL,
                     next_run_at TEXT NOT NULL,
@@ -368,6 +374,7 @@ class TelegramTaskStore:
                     reason TEXT NOT NULL,
                     rule TEXT NOT NULL,
                     priority TEXT NOT NULL DEFAULT 'medium',
+                    strategy_tier TEXT NOT NULL DEFAULT 'execution-ready',
                     bucket_ts TEXT NOT NULL,
                     dedupe_key TEXT NOT NULL UNIQUE,
                     pushed INTEGER NOT NULL,
@@ -670,8 +677,10 @@ class TelegramTaskStore:
             self._ensure_column(conn, "watch_jobs", "scope", "TEXT NOT NULL DEFAULT 'single'")
             self._ensure_column(conn, "watch_jobs", "group_id", "TEXT")
             self._ensure_column(conn, "watch_jobs", "route_strategy", "TEXT NOT NULL DEFAULT 'dual_channel'")
+            self._ensure_column(conn, "watch_jobs", "strategy_tier", "TEXT NOT NULL DEFAULT 'execution-ready'")
             self._ensure_column(conn, "watch_jobs", "template_id", "TEXT")
             self._ensure_column(conn, "watch_events", "priority", "TEXT NOT NULL DEFAULT 'medium'")
+            self._ensure_column(conn, "watch_events", "strategy_tier", "TEXT NOT NULL DEFAULT 'execution-ready'")
             self._ensure_column(conn, "notifications", "suppressed_reason", "TEXT")
             self._ensure_column(conn, "nl_requests", "archived_at", "TEXT")
 
@@ -2299,7 +2308,7 @@ class TelegramTaskStore:
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT we.event_id, wj.chat_id, wj.symbol, we.priority, n.channel, n.state, n.suppressed_reason, n.last_error,
+                SELECT we.event_id, wj.chat_id, wj.symbol, we.priority, we.strategy_tier, n.channel, n.state, n.suppressed_reason, n.last_error,
                        we.trigger_ts, n.updated_at
                 FROM notifications n
                 JOIN watch_events we ON we.event_id = n.event_id
@@ -2316,6 +2325,7 @@ class TelegramTaskStore:
                 chat_id=str(row["chat_id"]),
                 symbol=str(row["symbol"]),
                 priority=str(row["priority"]),
+                strategy_tier=normalize_strategy_tier(str(row["strategy_tier"]) if row["strategy_tier"] else DEFAULT_STRATEGY_TIER),
                 channel=str(row["channel"]),
                 status=str(row["state"]),
                 suppressed_reason=str(row["suppressed_reason"]) if row["suppressed_reason"] else None,
@@ -2399,6 +2409,7 @@ class TelegramTaskStore:
         scope: str = "single",
         group_id: str | None = None,
         route_strategy: str = "dual_channel",
+        strategy_tier: str = DEFAULT_STRATEGY_TIER,
         template_id: str | None = None,
         market: str = "auto",
         threshold: float = 0.03,
@@ -2416,20 +2427,22 @@ class TelegramTaskStore:
             and existing.market == market
             and existing.scope == scope
             and existing.route_strategy == route_strategy
+            and existing.strategy_tier == normalize_strategy_tier(strategy_tier)
             and existing.group_id == group_id
         ):
             return existing
 
         job_id = f"job-{uuid4().hex[:8]}"
+        normalized_tier = normalize_strategy_tier(strategy_tier)
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO watch_jobs(
-                    job_id, chat_id, symbol, market, interval_sec, threshold, mode, scope, group_id, route_strategy, template_id,
+                    job_id, chat_id, symbol, market, interval_sec, threshold, mode, scope, group_id, route_strategy, strategy_tier, template_id,
                     enabled, next_run_at,
                     created_at, updated_at, last_run_at, last_triggered_at, last_error
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, NULL, NULL, NULL)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, NULL, NULL, NULL)
                 """,
                 (
                     job_id,
@@ -2442,6 +2455,7 @@ class TelegramTaskStore:
                     scope,
                     group_id,
                     route_strategy,
+                    normalized_tier,
                     template_id,
                     next_run_at,
                     now_iso,
@@ -2454,7 +2468,7 @@ class TelegramTaskStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT job_id, chat_id, symbol, market, interval_sec, threshold, mode, scope, group_id, route_strategy, template_id, enabled,
+                SELECT job_id, chat_id, symbol, market, interval_sec, threshold, mode, scope, group_id, route_strategy, strategy_tier, template_id, enabled,
                        next_run_at, created_at, updated_at, last_run_at, last_triggered_at, last_error
                 FROM watch_jobs
                 WHERE job_id = ?
@@ -2474,6 +2488,7 @@ class TelegramTaskStore:
             scope=str(row["scope"]) if row["scope"] else "single",
             group_id=str(row["group_id"]) if row["group_id"] else None,
             route_strategy=str(row["route_strategy"]) if row["route_strategy"] else "dual_channel",
+            strategy_tier=normalize_strategy_tier(str(row["strategy_tier"]) if row["strategy_tier"] else DEFAULT_STRATEGY_TIER),
             template_id=str(row["template_id"]) if row["template_id"] else None,
             enabled=bool(int(row["enabled"])),
             next_run_at=str(row["next_run_at"]),
@@ -2488,7 +2503,7 @@ class TelegramTaskStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT job_id, chat_id, symbol, market, interval_sec, threshold, mode, scope, group_id, route_strategy, template_id, enabled,
+                SELECT job_id, chat_id, symbol, market, interval_sec, threshold, mode, scope, group_id, route_strategy, strategy_tier, template_id, enabled,
                        next_run_at, created_at, updated_at, last_run_at, last_triggered_at, last_error
                 FROM watch_jobs
                 WHERE chat_id = ? AND symbol = ? AND enabled = 1
@@ -2510,6 +2525,7 @@ class TelegramTaskStore:
             scope=str(row["scope"]) if row["scope"] else "single",
             group_id=str(row["group_id"]) if row["group_id"] else None,
             route_strategy=str(row["route_strategy"]) if row["route_strategy"] else "dual_channel",
+            strategy_tier=normalize_strategy_tier(str(row["strategy_tier"]) if row["strategy_tier"] else DEFAULT_STRATEGY_TIER),
             template_id=str(row["template_id"]) if row["template_id"] else None,
             enabled=bool(int(row["enabled"])),
             next_run_at=str(row["next_run_at"]),
@@ -2525,7 +2541,7 @@ class TelegramTaskStore:
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT job_id, chat_id, symbol, market, interval_sec, threshold, mode, scope, group_id, route_strategy, template_id, enabled,
+                SELECT job_id, chat_id, symbol, market, interval_sec, threshold, mode, scope, group_id, route_strategy, strategy_tier, template_id, enabled,
                        next_run_at, created_at, updated_at, last_run_at, last_triggered_at, last_error
                 FROM watch_jobs
                 WHERE {where_clause}
@@ -2545,6 +2561,7 @@ class TelegramTaskStore:
                 scope=str(row["scope"]) if row["scope"] else "single",
                 group_id=str(row["group_id"]) if row["group_id"] else None,
                 route_strategy=str(row["route_strategy"]) if row["route_strategy"] else "dual_channel",
+                strategy_tier=normalize_strategy_tier(str(row["strategy_tier"]) if row["strategy_tier"] else DEFAULT_STRATEGY_TIER),
                 template_id=str(row["template_id"]) if row["template_id"] else None,
                 enabled=bool(int(row["enabled"])),
                 next_run_at=str(row["next_run_at"]),
@@ -2589,7 +2606,7 @@ class TelegramTaskStore:
             conn.execute("BEGIN IMMEDIATE")
             rows = conn.execute(
                 """
-                SELECT job_id, chat_id, symbol, market, interval_sec, threshold, mode, scope, group_id, route_strategy, next_run_at
+                SELECT job_id, chat_id, symbol, market, interval_sec, threshold, mode, scope, group_id, route_strategy, strategy_tier, next_run_at
                 FROM watch_jobs
                 WHERE enabled = 1 AND next_run_at <= ?
                 ORDER BY next_run_at ASC
@@ -2624,6 +2641,9 @@ class TelegramTaskStore:
                         scope=str(row["scope"]) if row["scope"] else "single",
                         group_id=str(row["group_id"]) if row["group_id"] else None,
                         route_strategy=str(row["route_strategy"]) if row["route_strategy"] else "dual_channel",
+                        strategy_tier=normalize_strategy_tier(
+                            str(row["strategy_tier"]) if row["strategy_tier"] else DEFAULT_STRATEGY_TIER
+                        ),
                         next_run_at=previous_next_run_at,
                     )
                 )
@@ -2675,7 +2695,8 @@ class TelegramTaskStore:
             row = conn.execute(
                 """
                 SELECT we.event_id, we.job_id, we.trigger_ts, we.price, we.pct_change, we.reason, we.rule, we.run_id, we.priority, we.dedupe_key,
-                       wj.chat_id, wj.symbol, wj.route_strategy
+                       we.strategy_tier,
+                       wj.chat_id, wj.symbol, wj.route_strategy, wj.strategy_tier AS job_strategy_tier
                 FROM watch_events we
                 JOIN watch_jobs wj ON wj.job_id = we.job_id
                 WHERE we.event_id = ?
@@ -2698,6 +2719,9 @@ class TelegramTaskStore:
             "chat_id": str(row["chat_id"]),
             "symbol": str(row["symbol"]),
             "route_strategy": str(row["route_strategy"]) if row["route_strategy"] else "dual_channel",
+            "strategy_tier": normalize_strategy_tier(
+                str(row["strategy_tier"] or row["job_strategy_tier"] or DEFAULT_STRATEGY_TIER)
+            ),
         }
 
     def record_watch_event_if_new(
@@ -2711,6 +2735,7 @@ class TelegramTaskStore:
         reason: str,
         rule: str,
         priority: str,
+        strategy_tier: str = DEFAULT_STRATEGY_TIER,
         run_id: str | None,
         bucket_minutes: int = 15,
     ) -> tuple[str, bool]:
@@ -2723,14 +2748,15 @@ class TelegramTaskStore:
         event_id = f"evt-{uuid4().hex[:10]}"
         now = _utc_now()
 
+        normalized_tier = normalize_strategy_tier(strategy_tier)
         with self._connect() as conn:
             cursor = conn.execute(
                 """
                 INSERT OR IGNORE INTO watch_events(
-                    event_id, job_id, trigger_ts, price, pct_change, reason, rule, priority, bucket_ts,
+                    event_id, job_id, trigger_ts, price, pct_change, reason, rule, priority, strategy_tier, bucket_ts,
                     dedupe_key, pushed, run_id, created_at
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
                 """,
                 (
                     event_id,
@@ -2741,6 +2767,7 @@ class TelegramTaskStore:
                     reason,
                     rule,
                     priority,
+                    normalized_tier,
                     bucket_ts,
                     dedupe_key,
                     run_id,

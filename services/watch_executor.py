@@ -10,7 +10,9 @@ from typing import Any, Awaitable, Callable, Protocol
 
 import aiohttp
 
-from agents.scanner_engine import ScanConfig, WatchlistRunResult, build_scan_trigger, format_signal_message, run_watchlist_cycle
+from agents.scanner_engine import ScanConfig, WatchlistRunResult, build_scan_trigger, run_watchlist_cycle
+from core.runtime_config import resolve_runtime_config
+from core.strategy_tier import resolve_strategy_tier
 from services.notification_channels import MultiChannelNotifier
 from services.runtime_controls import GlobalConcurrencyGate, RuntimeLimits
 from services.telegram_store import DueWatchJob, TelegramTaskStore
@@ -52,6 +54,8 @@ class WatchExecutor:
         self._enable_triggered_research = enable_triggered_research
         self._limits = limits or RuntimeLimits()
         self._global_gate = global_gate or GlobalConcurrencyGate(self._limits.global_concurrency)
+        # Startup fail-fast for layered runtime config.
+        self._runtime_config = resolve_runtime_config()
         if multi_channel_notifier is None:
             self._multi_channel = MultiChannelNotifier(
                 telegram=_TelegramTargetedSender(notifier),
@@ -63,18 +67,54 @@ class WatchExecutor:
     async def execute_job(self, job: DueWatchJob) -> WatchExecutionResult:
         self._store.record_metric(metric_name="monitor_executed", metric_value=1.0, tags={"job_id": job.job_id})
 
-        enable_research = self._enable_triggered_research and (
+        requested_enable_research = self._enable_triggered_research and (
             not self._store.is_degradation_active(state_key="disable_critical_research")
         )
-        if not enable_research:
+        strategy_decision = resolve_strategy_tier(
+            getattr(job, "strategy_tier", ""),
+            requested_enable_triggered_research=requested_enable_research,
+        )
+        if not strategy_decision.allow_triggered_research:
+            research_skip_reason = (
+                "disable_critical_research"
+                if not requested_enable_research
+                else strategy_decision.guard_reason or "strategy_tier_research_guard"
+            )
             self._store.add_audit_event(
                 event_type="degrade_skip",
                 chat_id=job.chat_id,
                 update_id=None,
                 action="critical_research",
-                reason="disable_critical_research",
-                metadata={"job_id": job.job_id, "symbol": job.symbol},
+                reason=research_skip_reason,
+                metadata={
+                    "job_id": job.job_id,
+                    "symbol": job.symbol,
+                    "strategy_tier": strategy_decision.tier,
+                    "requested_enable_triggered_research": requested_enable_research,
+                },
             )
+        self._store.add_audit_event(
+            event_type="strategy_tier_decision",
+            chat_id=job.chat_id,
+            update_id=None,
+            action="monitor_dispatch",
+            reason=strategy_decision.guard_reason or "strategy_tier_ok",
+            metadata={
+                "job_id": job.job_id,
+                "symbol": job.symbol,
+                **strategy_decision.to_dict(),
+            },
+        )
+        self._store.record_metric(
+            metric_name="strategy_tier_decision_total",
+            metric_value=1.0,
+            tags={
+                "job_id": job.job_id,
+                "tier": strategy_decision.tier,
+                "allow_research": str(strategy_decision.allow_triggered_research).lower(),
+                "allow_notifications": str(strategy_decision.allow_notification_dispatch).lower(),
+            },
+        )
 
         config = ScanConfig(
             watchlist=self._job_watchlist(job),
@@ -89,8 +129,13 @@ class WatchExecutor:
                 trigger=trigger,
                 mode=job.mode,
                 notifier=None,
-                enable_triggered_research=enable_research,
+                enable_triggered_research=strategy_decision.allow_triggered_research,
+                strategy_tier=strategy_decision.tier,
             )
+        runtime_metrics = getattr(result, "runtime_metrics", {})
+        if isinstance(runtime_metrics, dict):
+            runtime_metrics["strategy_tier"] = strategy_decision.tier
+            runtime_metrics["strategy_tier_decision"] = strategy_decision.to_dict()
 
         snapshot_by_symbol = {snapshot.signal.symbol: snapshot for snapshot in result.snapshots}
         pushed_count = 0
@@ -110,6 +155,7 @@ class WatchExecutor:
                 reason=signal.reason,
                 rule=signal.reason,
                 priority=str(signal.priority),
+                strategy_tier=strategy_decision.tier,
                 run_id=run_id,
                 bucket_minutes=self._dedupe_bucket_minutes,
             )
@@ -161,11 +207,47 @@ class WatchExecutor:
         chat_id = str(payload["chat_id"])
         job_id = str(payload["job_id"])
         symbol = str(payload["symbol"])
+        tier_decision = resolve_strategy_tier(
+            str(payload.get("strategy_tier", "")),
+            requested_enable_triggered_research=True,
+        )
         routes = self._resolve_routes(chat_id=chat_id, payload=payload, channel_filter=channel_filter)
         prefs = self._store.get_chat_preferences(chat_id=chat_id)
         priority = str(payload.get("priority", "medium")).lower()
         lane = self._lane_for_priority(priority)
         routes = self._sort_routes_for_priority(routes=routes, priority=priority)
+
+        if not tier_decision.allow_notification_dispatch:
+            for channel, _target in routes:
+                self._store.upsert_notification_state(
+                    event_id=event_id,
+                    channel=channel,
+                    state="suppressed",
+                    retry_count=retry_count,
+                    suppressed_reason=tier_decision.guard_reason,
+                    reason=tier_decision.guard_reason,
+                )
+                self._store.record_metric(
+                    metric_name="strategy_tier_guarded_total",
+                    metric_value=1.0,
+                    tags={"job_id": job_id, "channel": channel, "tier": tier_decision.tier},
+                )
+            self._store.add_audit_event(
+                event_type="strategy_tier_guarded",
+                chat_id=chat_id,
+                update_id=None,
+                action="monitor_push",
+                reason=tier_decision.guard_reason,
+                metadata={
+                    "event_id": event_id,
+                    "job_id": job_id,
+                    "symbol": symbol,
+                    "priority": priority,
+                    "tier": tier_decision.tier,
+                    "routes": [item[0] for item in routes],
+                },
+            )
+            return False
 
         if self._store.is_degradation_active(state_key="no_monitor_push"):
             for channel, _target in routes:
@@ -295,17 +377,27 @@ class WatchExecutor:
         route_strategy = str(payload.get("route_strategy", "dual_channel"))
         telegram_routes = self._store.list_notification_routes(chat_id=chat_id, enabled_only=True)
         selected: list[tuple[str, str]] = []
+
+        def _pick(channel: str) -> list[tuple[str, str]]:
+            return [(item.channel, item.target) for item in telegram_routes if item.channel == channel]
+
         if route_strategy == "telegram_only":
-            selected.extend((item.channel, item.target) for item in telegram_routes if item.channel == "telegram")
+            selected.extend(_pick("telegram"))
             if not any(channel == "telegram" for channel, _ in selected):
                 selected.append(("telegram", chat_id))
-        elif route_strategy == "dual_channel":
+        elif route_strategy == "email_only":
+            selected.extend(_pick("email"))
+        elif route_strategy == "wecom_only":
+            selected.extend(_pick("wecom"))
+        elif route_strategy in {"dual_channel", "multi_channel"}:
             selected.extend((item.channel, item.target) for item in telegram_routes if item.channel != "webhook")
             if not selected:
                 selected.append(("telegram", chat_id))
-        if route_strategy in {"webhook_only", "dual_channel"}:
+
+        if route_strategy in {"webhook_only", "dual_channel", "multi_channel"}:
             hooks = self._store.list_outbound_webhooks(chat_id=chat_id, enabled_only=True)
             selected.extend(("webhook", hook.webhook_id) for hook in hooks)
+
         if channel_filter:
             selected = [item for item in selected if item[0] == channel_filter]
             if not selected:
@@ -379,24 +471,22 @@ class WatchExecutor:
                 f"[降级摘要 (Degraded Summary)] {payload['symbol']} {round(float(payload['pct_change']) * 100, 2)}% "
                 f"price={round(float(payload['price']), 4)}"
             )
-        pseudo_signal = type(
-            "Signal",
-            (),
-            {
-                "symbol": payload["symbol"],
-                "timestamp": datetime.fromisoformat(str(payload["trigger_ts"])),
-                "price": float(payload["price"]),
-                "pct_change": float(payload["pct_change"]),
-                "rsi": 0.0,
-                "priority": "medium",
-                "reason": str(payload["reason"]),
-                "company_name": str(payload["symbol"]),
-            },
-        )()
-        text = format_signal_message(pseudo_signal)
-        if payload.get("run_id"):
-            text += f"\nrun_id={payload['run_id']}"
-        return text
+        priority = str(payload.get("priority", "medium")).lower()
+        if priority == "critical":
+            direction = "↑" if float(payload["pct_change"]) >= 0 else "↓"
+            run_ref = str(payload.get("run_id", "")).strip() or "N/A"
+            return (
+                f"[CRITICAL] {payload['symbol']} {direction}{round(float(payload['pct_change']) * 100, 2)}% "
+                f"price={round(float(payload['price']), 4)}\n"
+                "研究摘要-结论: 触发 critical 阈值，建议优先复核。\n"
+                f"研究摘要-证据: reason={payload['reason']} run_id={run_ref}\n"
+                f"研究摘要-动作: 发送 /analyze {payload['symbol']} 获取完整研究。"
+            )
+        direction = "↑" if float(payload["pct_change"]) >= 0 else "↓"
+        return (
+            f"[{priority.upper()}] {payload['symbol']} {direction}{round(float(payload['pct_change']) * 100, 2)}% "
+            f"price={round(float(payload['price']), 4)} reason={payload['reason']}"
+        )
 
     @staticmethod
     def _build_webhook_payload(payload: dict[str, Any]) -> str:
@@ -405,6 +495,7 @@ class WatchExecutor:
             "dedupe_key": payload.get("dedupe_key"),
             "run_id": payload.get("run_id"),
             "priority": payload.get("priority", "medium"),
+            "strategy_tier": payload.get("strategy_tier", "execution-ready"),
             "symbol": payload["symbol"],
             "job_id": payload["job_id"],
             "trigger_ts": payload["trigger_ts"],
