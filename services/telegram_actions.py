@@ -10,6 +10,14 @@ from typing import Any, Awaitable, Callable, Protocol
 
 from agents.workflow_engine import run_unified_research
 from core.strategy_tier import DEFAULT_STRATEGY_TIER, normalize_strategy_tier
+from services.news_digest import (
+    NewsDigest,
+    TopNewsItem,
+    build_news_digest_from_result,
+    format_cluster_lines,
+    format_top_news_lines,
+    redact_user_visible_payload,
+)
 from services.notification_channels import TelegramChannelAdapter
 from services.runtime_controls import GlobalConcurrencyGate, RuntimeLimits
 from services.telegram_chart_service import TelegramChartService
@@ -46,6 +54,13 @@ class TelegramActions:
         "chart_missing",
         "metrics unavailable",
     )
+    _FORBIDDEN_USER_KEYS = {
+        "schema_version",
+        "_schema_version",
+        "action_version",
+        "traceback",
+        "raw_error",
+    }
     _MAIN_MESSAGE_CHAR_LIMIT = 980
     _SUPPLEMENT_MESSAGE_CHAR_LIMIT = 420
     _ANALYZE_PROGRESS_TEXT = {
@@ -235,11 +250,7 @@ class TelegramActions:
         ret30: float | None,
         rsi: float | None,
         ma: float | None,
-        news_count: int,
-        news_window: str,
-        news_source: str,
-        run_id: str,
-        request_id: str | None,
+        news_digest: NewsDigest,
     ) -> tuple[str, str | None]:
         conclusion = cls._summary_sentence(summary)
         price_line = "价格位置: 缺少区间数据，建议补充历史K线。"
@@ -269,12 +280,22 @@ class TelegramActions:
         elif high is not None and low is not None:
             technical_line = f"技术证据: 近30天高低区间 {round(low, 4)}~{round(high, 4)}。"
 
-        news_line = f"新闻回显: {news_window} 共 {news_count} 条，来源={news_source}。"
-        if news_count <= 0:
-            news_line = f"新闻回显: {news_window} 暂无可用新闻，建议切换 30 天窗口。"
+        dominant_cluster = "其他"
+        if news_digest.event_distribution:
+            dominant_cluster = max(
+                news_digest.event_distribution.items(),
+                key=lambda item: int(item[1]),
+            )[0]
+        news_line = (
+            f"新闻回显: {news_digest.window_label} 共 {news_digest.total_count} 条，"
+            f"情绪{news_digest.sentiment_direction}（{news_digest.sentiment_range}），"
+            f"事件主轴={dominant_cluster}。"
+        )
+        if news_digest.total_count <= 0:
+            news_line = f"新闻回显: {news_digest.window_label} 暂无可用新闻，建议切换 30 天窗口。"
 
         next_action = (
-            f"下一步动作: 用下方按钮继续；也可直接输入“分析 {symbol} 近3个月”或“只看新闻”。"
+            f"下一步动作: 用下方按钮查看“新闻详单/事件聚类”；也可输入“分析 {symbol} 近3个月”。"
         )
         risk_line = "风险提示: 仅供研究与提醒，不构成投资建议。"
 
@@ -287,7 +308,6 @@ class TelegramActions:
             next_action,
             "类型: Snapshot Analysis",
             f"标的/周期: {symbol} {period}",
-            f"request_id(short)={(request_id or 'n/a')[-6:]} run_id={run_id or 'N/A'}",
         ]
         main_text = cls._clip_line("\n".join(main_lines), limit=cls._MAIN_MESSAGE_CHAR_LIMIT)
 
@@ -296,6 +316,9 @@ class TelegramActions:
             supplement_bits.append(f"区间判读: {range_hint}")
         if high is not None and low is not None:
             supplement_bits.append(f"Low/High={round(low, 4)}/{round(high, 4)}")
+        if news_digest.top_news:
+            sample = news_digest.top_news[0]
+            supplement_bits.append(f"新闻样本: {sample.title}（{sample.source}）")
         if supplement_bits:
             supplement = cls._clip_line(
                 "证据补充: " + " | ".join(supplement_bits),
@@ -320,6 +343,10 @@ class TelegramActions:
                 ("📰新闻(30天)", f"act|{ref}|news30"),
             ],
             [
+                ("📰新闻详单", f"act|{ref}|news_detail"),
+                ("🧩事件聚类", f"act|{ref}|news_cluster"),
+            ],
+            [
                 ("🔁重试", f"act|{ref}|retry"),
                 ("📄报告", f"act|{ref}|report"),
             ],
@@ -342,29 +369,71 @@ class TelegramActions:
     ) -> list[list[tuple[str, str]]]:
         return self._snapshot_buttons(request_id=request_id, chart_state=chart_state)
 
+    @classmethod
+    def _clean_key_metrics(cls, key_metrics: dict[str, Any]) -> dict[str, Any]:
+        cleaned = redact_user_visible_payload(key_metrics)
+        if not isinstance(cleaned, dict):
+            return {}
+        return cleaned
+
+    @staticmethod
+    def _news_digest_from_metrics(key_metrics: dict[str, Any]) -> NewsDigest:
+        raw = key_metrics.get("news_digest")
+        if not isinstance(raw, dict):
+            return NewsDigest(
+                window_days=7,
+                window_label="近7天",
+                total_count=0,
+                source_coverage=[],
+                event_distribution={"财报": 0, "监管": 0, "产品": 0, "宏观": 0, "其他": 0},
+                sentiment_score=50,
+                sentiment_direction="中性",
+                sentiment_range="45-55",
+                top_news=[],
+            )
+        event_distribution_raw = raw.get("event_distribution")
+        if not isinstance(event_distribution_raw, dict):
+            event_distribution_raw = {}
+        source_raw = raw.get("source_coverage")
+        source_coverage = source_raw if isinstance(source_raw, list) else []
+        top_news: list[TopNewsItem] = []
+        for item in raw.get("top_news", []):
+            if not isinstance(item, dict):
+                continue
+            top_news.append(
+                TopNewsItem(
+                    title=str(item.get("title", "")).strip(),
+                    published_at=str(item.get("published_at", "")).strip(),
+                    source=str(item.get("source", "")).strip(),
+                    impact=str(item.get("impact", "")).strip(),
+                    category=str(item.get("category", "")).strip(),
+                    sentiment=str(item.get("sentiment", "")).strip(),
+                )
+            )
+        return NewsDigest(
+            window_days=max(1, int(raw.get("window_days", 7))),
+            window_label=str(raw.get("window_label", "近7天")).strip() or "近7天",
+            total_count=max(0, int(raw.get("total_count", 0))),
+            source_coverage=[str(item).strip() for item in source_coverage if str(item).strip()],
+            event_distribution={
+                "财报": int(event_distribution_raw.get("财报", 0)),
+                "监管": int(event_distribution_raw.get("监管", 0)),
+                "产品": int(event_distribution_raw.get("产品", 0)),
+                "宏观": int(event_distribution_raw.get("宏观", 0)),
+                "其他": int(event_distribution_raw.get("其他", 0)),
+            },
+            sentiment_score=max(0, min(100, int(raw.get("sentiment_score", 50)))),
+            sentiment_direction=str(raw.get("sentiment_direction", "中性")).strip() or "中性",
+            sentiment_range=str(raw.get("sentiment_range", "45-55")).strip() or "45-55",
+            top_news=top_news[:5],
+        )
+
     @staticmethod
     def _extract_news(result: dict[str, Any], *, default_days: int = 7) -> tuple[int, str, str]:
-        news = result.get("news")
-        if not isinstance(news, list):
-            news = result.get("news_items")
-        if not isinstance(news, list):
-            fused = result.get("fused_insights")
-            if isinstance(fused, dict):
-                raw = fused.get("raw")
-                if isinstance(raw, dict):
-                    news = raw.get("news_items")
-        count = 0
-        source = "aggregated_news"
-        if isinstance(news, list):
-            count = len(news)
-            sources = [
-                str(item.get("source", "")).strip()
-                for item in news
-                if isinstance(item, dict) and str(item.get("source", "")).strip()
-            ]
-            if sources:
-                source = ",".join(list(dict.fromkeys(sources))[:2])
-        return count, f"近{default_days}天", source
+        digest = build_news_digest_from_result(result, window_days=default_days)
+        sources = digest.source_coverage[:2]
+        source_text = ",".join(sources) if sources else "aggregated_news"
+        return digest.total_count, digest.window_label, source_text
 
     async def send_inline_buttons(
         self,
@@ -392,7 +461,7 @@ class TelegramActions:
             header = "你可以这样使用我："
         return (
             f"{header}\n"
-            "能力卡 (Capability Card)\n"
+            "能力卡\n"
             "1) 快速分析：输入“分析 TSLA 一个月走势”\n"
             "2) 监控提醒：输入“帮我盯 TSLA 每小时”\n"
             "3) 查询任务：输入“看看我的监控列表”\n"
@@ -420,7 +489,7 @@ class TelegramActions:
     async def send_analysis_ack(self, *, chat_id: str, request_id: str) -> None:
         await self._send_text(
             chat_id=chat_id,
-            text=f"已受理请求，开始分析。request_id(short)={self._short_request_id(request_id)}",
+            text="已受理请求，开始分析。",
         )
 
     async def send_analysis_progress(
@@ -437,7 +506,7 @@ class TelegramActions:
             return
         dispatch = await self._channel.send_progress(
             chat_id=chat_id,
-            text=f"{stage_text}\nrequest_id(short)={self._short_request_id(request_id)}",
+            text=stage_text,
             reply_markup=None,
         )
         if not dispatch.delivered:
@@ -483,24 +552,24 @@ class TelegramActions:
         await self._send_text(
             chat_id=chat_id,
             text=(
-            "可用命令 (Available commands):\n"
-            "/analyze <symbol> - 运行统一研究并返回 run_id (run unified research)\n"
-            "/monitor <symbol> <interval> [volatility|price|rsi] - 创建监控任务 (create monitor job, legacy format)\n"
+            "可用命令：\n"
+            "/analyze <symbol> - 运行统一研究\n"
+            "/monitor <symbol> <interval> [volatility|price|rsi] - 创建监控任务（兼容旧格式）\n"
             "/monitor <symbol|sym1,sym2> <interval> [volatility|price|rsi] "
             "[telegram_only|webhook_only|dual_channel|email_only|wecom_only|multi_channel] "
             "[research-only|alert-only|execution-ready]\n"
-            "/list - 查看监控任务列表 (list monitor jobs)\n"
-            "/stop - 取消当前分析任务 (cancel current analysis task)\n"
-            "/stop <job_id|symbol> - 停止监控任务 (disable monitor job)\n"
-            "/report <run_id|request_id> [short|full] - 查询报告摘要 (query report summary)\n"
-            "/digest daily - 获取近24小时摘要 (last-24h summary)\n"
-            "/alerts [triggered|failed|suppressed] [limit] - 告警中心视图 (alert hub views)\n"
-            "/bulk <enable|disable|interval|threshold> <target|all> [value] - 批量任务操作 (bulk job operations)\n"
-            "/webhook <set|disable|list> ... - 管理 webhook 路由 (manage webhook route)\n"
-            "/route <set|disable|list> ... - 管理 telegram/email/wecom 路由 (manage channel routes)\n"
-            "/pref <summary|quiet|priority> <value> - 通知偏好设置 (notification preferences)\n"
-            "合规提示 (Compliance): 仅用于研究与提醒，不支持自动交易 (no auto-trading).\n"
-            "/help - 显示帮助 (show this help)"
+            "/list - 查看监控任务列表\n"
+            "/stop - 取消当前分析任务\n"
+            "/stop <job_id|symbol> - 停止监控任务\n"
+            "/report <run_id|request_id> [short|full] - 查询报告摘要\n"
+            "/digest daily - 获取近24小时摘要\n"
+            "/alerts [triggered|failed|suppressed] [limit] - 告警中心视图\n"
+            "/bulk <enable|disable|interval|threshold> <target|all> [value] - 批量任务操作\n"
+            "/webhook <set|disable|list> ... - 管理 webhook 路由\n"
+            "/route <set|disable|list> ... - 管理 telegram/email/wecom 路由\n"
+            "/pref <summary|quiet|priority> <value> - 通知偏好设置\n"
+            "合规提示：仅用于研究与提醒，不支持自动交易。\n"
+            "/help - 显示帮助"
             ),
         )
         return ActionResult(command="help")
@@ -526,7 +595,7 @@ class TelegramActions:
             status="queued",
         )
 
-        await self._send_text(chat_id=chat_id, text=f"请求已受理 (Request accepted). request_id={rid}")
+        await self._send_text(chat_id=chat_id, text="请求已受理，正在分析。")
         await self._run_analysis_request(
             request_id=rid,
             symbol=symbol,
@@ -577,7 +646,17 @@ class TelegramActions:
         high = self._metric_float(metrics, "window_high", "period_high")
         low = self._metric_float(metrics, "window_low", "period_low")
         ret30 = self._metric_float(metrics, "return_30d", "change_30d")
-        news_count, news_window, news_source = self._extract_news(result, default_days=news_window_days)
+        news_digest = build_news_digest_from_result(result, window_days=news_window_days)
+        report_metrics = self._clean_key_metrics(metrics)
+        report_metrics.update(
+            {
+                "news_digest": news_digest.to_dict(),
+                "news_total_count": news_digest.total_count,
+                "news_window_label": news_digest.window_label,
+                "news_sentiment_direction": news_digest.sentiment_direction,
+                "news_sentiment_range": news_digest.sentiment_range,
+            }
+        )
         if run_id:
             self._store.upsert_analysis_report(
                 run_id=run_id,
@@ -585,7 +664,7 @@ class TelegramActions:
                 chat_id=chat_id,
                 symbol=symbol,
                 summary=summary,
-                key_metrics=metrics,
+                key_metrics=report_metrics,
             )
         target_request_id = request_id or run_id
         chart_state = "none"
@@ -602,11 +681,7 @@ class TelegramActions:
             ret30=ret30,
             rsi=rsi,
             ma=ma,
-            news_count=news_count,
-            news_window=news_window,
-            news_source=news_source,
-            run_id=run_id,
-            request_id=target_request_id,
+            news_digest=news_digest,
         )
         evidence_visible = bool(supplement_text)
         self._store.record_metric(metric_name="evidence_visible_total", metric_value=1.0 if evidence_visible else 0.0)
@@ -629,8 +704,8 @@ class TelegramActions:
             await self._send_text(
                 chat_id=chat_id,
                 text=(
-                    f"图表生成中，请稍候。request_id(short)={(target_request_id or 'n/a')[-6:]}\n"
-                    "证据: 图表状态=生成中"
+                    "图表生成中，请稍候。\n"
+                    "证据：图表状态=生成中"
                 ),
                 buttons=self._snapshot_buttons(request_id=target_request_id, chart_state=chart_state),
             )
@@ -702,7 +777,7 @@ class TelegramActions:
                         chat_id=chat_id,
                         text=(
                             "图表已生成，可继续查看新闻或报告。\n"
-                            f"证据: 图表状态=已生成 | request_id(short)={(target_request_id or 'n/a')[-6:]}"
+                            "证据：图表状态=已生成"
                         ),
                         buttons=self._snapshot_buttons(request_id=target_request_id, chart_state=chart_state),
                     )
@@ -721,12 +796,12 @@ class TelegramActions:
                         ),
                         buttons=self._snapshot_buttons(request_id=target_request_id, chart_state=chart_state),
                     )
-            if news_count <= 0:
+            if news_digest.total_count <= 0:
                 await self._send_text(
                     chat_id=chat_id,
                     text=(
-                        f"新闻回显: news_count=0 时间窗={news_window} 来源=aggregated_news\n"
-                        "近7天未抓到新闻，可选：扩到30天 / 重试。"
+                        f"新闻回显：{news_digest.window_label} 暂无新闻。\n"
+                        "可选：扩到30天窗口或重试。"
                     ),
                     buttons=self._snapshot_buttons(request_id=target_request_id, chart_state=chart_state),
                 )
@@ -747,12 +822,12 @@ class TelegramActions:
         strategy_tier: str = DEFAULT_STRATEGY_TIER,
     ) -> ActionResult:
         if not self._store.can_chat_monitor(chat_id=chat_id):
-            await self._send_text(chat_id=chat_id, text="无权限 (Permission denied): 当前 chat 不允许创建监控任务。")
+            await self._send_text(chat_id=chat_id, text="无权限：当前会话不允许创建监控任务。")
             return ActionResult(command="monitor")
 
         active_jobs = self._store.count_active_watch_jobs(chat_id=chat_id)
         if active_jobs >= self._limits.max_watch_jobs_per_chat:
-            await self._send_text(chat_id=chat_id, text=f"配额超限 (Quota exceeded): 单 chat 最大监控任务数为 {self._limits.max_watch_jobs_per_chat}。")
+            await self._send_text(chat_id=chat_id, text=f"配额超限：当前会话最多可创建 {self._limits.max_watch_jobs_per_chat} 个监控任务。")
             self._store.add_audit_event(
                 event_type="quota_exceeded",
                 chat_id=chat_id,
@@ -788,9 +863,9 @@ class TelegramActions:
         await self._send_text(
             chat_id=chat_id,
             text=(
-            f"监控已创建 (Monitor created): scope={scope} symbols={','.join(symbol_list)} every {job.interval_sec}s template={template} "
-            f"mode={job.mode} threshold={job.threshold} route={route_strategy} tier={job.strategy_tier} "
-            f"job_id={job.job_id} next_run_at={job.next_run_at}"
+            f"监控已创建：范围={scope} 标的={','.join(symbol_list)} 周期={job.interval_sec}s 模板={template} "
+            f"模式={job.mode} 阈值={job.threshold} 路由={route_strategy} 策略层级={job.strategy_tier} "
+            f"任务ID={job.job_id} 下次执行={job.next_run_at}"
             ),
         )
         return ActionResult(command="monitor")
@@ -799,57 +874,106 @@ class TelegramActions:
         self._store.record_metric(metric_name="report_lookup_total", metric_value=1.0)
         report = self._store.get_analysis_report(report_id=target_id, chat_id=chat_id)
         if report is None:
-            await self._send_text(chat_id=chat_id, text=f"未找到报告 (No report found) `{target_id}`。")
+            await self._send_text(chat_id=chat_id, text=f"未找到报告：{target_id}")
             return ActionResult(command="report")
 
-        metrics_line, _ = self._render_key_metrics(report.key_metrics)
-        metrics_suffix = f"\n关键指标 (Key metrics): {metrics_line}" if metrics_line else ""
+        safe_metrics = self._clean_key_metrics(report.key_metrics)
+        metrics_line, _ = self._render_key_metrics(safe_metrics)
         summary = report.summary[:220] if detail == "short" else report.summary[:1200]
-        help_suffix = "" if detail == "full" else f"\n查看完整摘要请用 (Use) `/report {target_id} full`."
-        evidence_suffix = ""
-        if detail == "full":
-            evidence = self._store.list_nl_execution_evidence(request_id=report.request_id, limit=10)
-            evidence_count = len(evidence)
-            confidence = "high" if metrics_line and "Missing" not in metrics_line else "medium"
-            metric_source_keys = sorted([str(key) for key in report.key_metrics.keys()])
-            data_window = str(report.key_metrics.get("data_window") or "unknown")
-            fallback_reason = str(report.key_metrics.get("fallback_reason") or "").strip()
-            fallback_line = f"\n- fallback_reason={fallback_reason}" if fallback_reason else ""
-            evidence_suffix = (
-                "\n证据块 (Evidence):\n"
-                f"- data_window={data_window}\n"
-                f"- source=request_id:{report.request_id}\n"
-                f"- metric_source_keys={','.join(metric_source_keys)}\n"
-                f"- confidence_label={confidence}\n"
-                f"- execution_events={evidence_count}"
-                f"{fallback_line}"
+        digest = self._news_digest_from_metrics(safe_metrics)
+        if detail == "short":
+            message = (
+                "报告摘要\n"
+                f"标的：{report.symbol}\n"
+                f"结论：{summary}\n"
+                f"关键指标：{metrics_line or '暂无关键指标'}\n"
+                f"新闻概览：{digest.window_label} 共 {digest.total_count} 条，情绪{digest.sentiment_direction}（{digest.sentiment_range}）\n"
+                f"如需完整证据，请输入：/report {target_id} full"
             )
-        await self._send_text(
-            chat_id=chat_id,
-            text=(
-            f"报告摘要 (Report summary)\nrun_id={report.run_id}\nrequest_id={report.request_id}\n"
-            f"symbol={report.symbol}\nsummary={summary}{metrics_suffix}{evidence_suffix}{help_suffix}"
-            ),
+            await self._send_text(chat_id=chat_id, text=message)
+            self._store.record_metric(metric_name="report_lookup_success", metric_value=1.0)
+            return ActionResult(command="report")
+
+        evidence = self._store.list_nl_execution_evidence(request_id=report.request_id, limit=10)
+        evidence_count = len(evidence)
+        data_window = str(safe_metrics.get("data_window") or "unknown")
+        fallback_reason = str(safe_metrics.get("fallback_reason") or "").strip()
+        fallback_line = f"\n- 回退原因：{fallback_reason}" if fallback_reason else ""
+        source_line = "、".join(digest.source_coverage) if digest.source_coverage else "无"
+        cluster_block = "\n".join(format_cluster_lines(digest))
+        top5_block = "\n".join(format_top_news_lines(digest))
+        full_text = (
+            "报告摘要（完整版）\n"
+            f"标的：{report.symbol}\n"
+            f"结论：{summary}\n"
+            f"关键指标：{metrics_line or '暂无关键指标'}\n"
+            "\n证据块：\n"
+            f"- 数据窗口：{data_window}\n"
+            f"- 执行事件数：{evidence_count}"
+            f"{fallback_line}\n"
+            "\n新闻证据块：\n"
+            f"- 时间窗：{digest.window_label}\n"
+            f"- 总条数：{digest.total_count}\n"
+            f"- 来源覆盖：{source_line}\n"
+            f"- 情绪方向：{digest.sentiment_direction}（{digest.sentiment_range}）\n"
+            "- 事件分布：\n"
+            f"{cluster_block}\n"
+            "- Top5 摘要：\n"
+            f"{top5_block}"
         )
+        await self._send_text(chat_id=chat_id, text=self._clip_line(full_text, limit=3400))
         self._store.record_metric(metric_name="report_lookup_success", metric_value=1.0)
         return ActionResult(command="report")
+
+    async def handle_news_detail(self, *, chat_id: str, target_id: str) -> ActionResult:
+        report = self._store.get_analysis_report(report_id=target_id, chat_id=chat_id)
+        if report is None:
+            await self._send_text(chat_id=chat_id, text="未找到对应分析记录。")
+            return ActionResult(command="news_detail")
+        digest = self._news_digest_from_metrics(self._clean_key_metrics(report.key_metrics))
+        text = (
+            f"新闻详单（{digest.window_label}）\n"
+            f"总条数：{digest.total_count}\n"
+            f"情绪方向：{digest.sentiment_direction}（{digest.sentiment_range}）\n"
+            + "\n".join(format_top_news_lines(digest))
+        )
+        await self._send_text(chat_id=chat_id, text=self._clip_line(text, limit=3400))
+        return ActionResult(command="news_detail")
+
+    async def handle_news_cluster(self, *, chat_id: str, target_id: str) -> ActionResult:
+        report = self._store.get_analysis_report(report_id=target_id, chat_id=chat_id)
+        if report is None:
+            await self._send_text(chat_id=chat_id, text="未找到对应分析记录。")
+            return ActionResult(command="news_cluster")
+        digest = self._news_digest_from_metrics(self._clean_key_metrics(report.key_metrics))
+        source_line = "、".join(digest.source_coverage) if digest.source_coverage else "无"
+        text = (
+            f"事件聚类（{digest.window_label}）\n"
+            f"总条数：{digest.total_count}\n"
+            f"来源覆盖：{source_line}\n"
+            f"情绪方向：{digest.sentiment_direction}（{digest.sentiment_range}）\n"
+            "分布：\n"
+            + "\n".join(format_cluster_lines(digest))
+        )
+        await self._send_text(chat_id=chat_id, text=self._clip_line(text, limit=2600))
+        return ActionResult(command="news_cluster")
 
     async def handle_digest(self, *, chat_id: str, period: str) -> ActionResult:
         digest = self._store.build_daily_digest(chat_id=chat_id) if period == "daily" else {}
         if not digest:
-            await self._send_text(chat_id=chat_id, text="摘要周期不支持 (Digest period is not supported).")
+            await self._send_text(chat_id=chat_id, text="暂不支持该摘要周期。")
             return ActionResult(command="digest")
 
         latest = digest.get("latest_reports") or []
         lines = [
-            "每日报告 / Daily digest (last 24h)",
+            "每日报告（近24小时）",
             f"active_jobs={digest['active_jobs']}",
             f"alerts_triggered={digest['alerts_triggered']}",
             f"delivered_notifications={digest['delivered_notifications']}",
             f"completed_analyses={digest['completed_analyses']}",
         ]
         if latest:
-            lines.append("最新报告 (latest_reports):")
+            lines.append("最新报告：")
             for item in latest:
                 lines.append(f"- {item['symbol']} run_id={item['run_id']}")
         await self._send_text(chat_id=chat_id, text="\n".join(lines))
@@ -859,18 +983,18 @@ class TelegramActions:
     async def handle_list(self, *, chat_id: str) -> ActionResult:
         jobs = self._store.list_watch_jobs(chat_id=chat_id, include_disabled=False)
         if not jobs:
-            await self._send_text(chat_id=chat_id, text="当前无活跃监控任务 (No active monitor jobs)。可用 /monitor <symbol> <interval> 创建。")
+            await self._send_text(chat_id=chat_id, text="当前无活跃监控任务。可用 /monitor <symbol> <interval> 创建。")
             return ActionResult(command="list")
 
-        lines = ["活跃监控任务 (Active monitor jobs):"]
+        lines = ["活跃监控任务："]
         for job in jobs:
             last_triggered_at, last_pct_change = self._store.get_recent_watch_event_summary(job_id=job.job_id)
-            recent = "none"
+            recent = "无"
             if last_triggered_at is not None and last_pct_change is not None:
                 recent = f"{last_triggered_at} ({round(last_pct_change * 100, 2)}%)"
             lines.append(
-                f"- {job.job_id} {job.symbol} every {job.interval_sec}s "
-                f"next={job.next_run_at} route={job.route_strategy} tier={job.strategy_tier} last_triggered={recent}"
+                f"- {job.job_id} {job.symbol} 每{job.interval_sec}s "
+                f"下次={job.next_run_at} 路由={job.route_strategy} 层级={job.strategy_tier} 最近触发={recent}"
             )
         await self._send_text(chat_id=chat_id, text="\n".join(lines))
         return ActionResult(command="list")
@@ -878,17 +1002,17 @@ class TelegramActions:
     async def handle_alerts(self, *, chat_id: str, view: str, limit: int) -> ActionResult:
         rows = self._store.list_alert_hub(chat_id=chat_id, view=view, limit=limit)
         if not rows:
-            await self._send_text(chat_id=chat_id, text=f"视图 {view} 暂无告警记录 (No alert records).")
+            await self._send_text(chat_id=chat_id, text=f"视图 {view} 暂无告警记录。")
             return ActionResult(command="alerts")
-        lines = [f"告警中心 (Alert Hub) view={view} (latest {limit})"]
+        lines = [f"告警中心 view={view}（最近 {limit} 条）"]
         for row in rows:
             extra = ""
             if row.suppressed_reason:
-                extra = f" suppressed={row.suppressed_reason}"
+                extra = f" 抑制原因={row.suppressed_reason}"
             elif row.last_error:
-                extra = f" error={row.last_error[:80]}"
+                extra = f" 错误={row.last_error[:80]}"
             lines.append(
-                f"- {row.event_id} {row.symbol} {row.priority} tier={row.strategy_tier} {row.channel}:{row.status}{extra}"
+                f"- {row.event_id} {row.symbol} {row.priority} 层级={row.strategy_tier} {row.channel}:{row.status}{extra}"
             )
         await self._send_text(chat_id=chat_id, text="\n".join(lines))
         return ActionResult(command="alerts")
@@ -1001,7 +1125,7 @@ class TelegramActions:
             await self._send_text(chat_id=chat_id, text=f"未匹配到活跃监控任务 (No active monitor job matched): {target}")
             return ActionResult(command="stop")
 
-        await self._send_text(chat_id=chat_id, text=f"已停止监控任务 (Stopped) {disabled} 个，target={target}")
+        await self._send_text(chat_id=chat_id, text=f"已停止监控任务 {disabled} 个，target={target}")
         return ActionResult(command="stop")
 
     async def process_due_analysis_recovery(self, *, limit: int = 10) -> int:
@@ -1056,7 +1180,17 @@ class TelegramActions:
             high = self._metric_float(key_metrics, "window_high", "period_high")
             low = self._metric_float(key_metrics, "window_low", "period_low")
             ret30 = self._metric_float(key_metrics, "return_30d", "change_30d")
-            news_count, news_window, news_source = self._extract_news(result, default_days=7)
+            news_digest = build_news_digest_from_result(result, window_days=7)
+            report_metrics = self._clean_key_metrics(key_metrics)
+            report_metrics.update(
+                {
+                    "news_digest": news_digest.to_dict(),
+                    "news_total_count": news_digest.total_count,
+                    "news_window_label": news_digest.window_label,
+                    "news_sentiment_direction": news_digest.sentiment_direction,
+                    "news_sentiment_range": news_digest.sentiment_range,
+                }
+            )
             self._store.transition_analysis_request_status(
                 request_id=request_id,
                 from_statuses=("running",),
@@ -1070,8 +1204,8 @@ class TelegramActions:
                     request_id=request_id,
                     chat_id=chat_id,
                     symbol=symbol,
-                    summary=summary or "No summary",
-                    key_metrics=key_metrics,
+                    summary=summary or "暂无摘要",
+                    key_metrics=report_metrics,
                 )
             self._store.upsert_request_chart_state(request_id=request_id, chart_state="none")
             main_text, supplement_text = self._build_analysis_contract(
@@ -1084,11 +1218,7 @@ class TelegramActions:
                 ret30=ret30,
                 rsi=rsi,
                 ma=ma,
-                news_count=news_count,
-                news_window=news_window,
-                news_source=news_source,
-                run_id=run_id,
-                request_id=request_id,
+                news_digest=news_digest,
             )
             await self._send_text(
                 chat_id=chat_id,
@@ -1115,7 +1245,7 @@ class TelegramActions:
                 next_retry_at=datetime.now(timezone.utc) + timedelta(seconds=backoff_seconds),
                 last_error="analysis timeout",
             )
-            await self._send_text(chat_id=chat_id, text=f"分析超时 (Analysis timeout). request_id={request_id}. 结果将后台重试 (retried in background).")
+            await self._send_text(chat_id=chat_id, text="分析超时，结果将在后台自动重试。")
         except Exception as exc:
             self._store.transition_analysis_request_status(
                 request_id=request_id,
@@ -1124,7 +1254,7 @@ class TelegramActions:
                 run_id=None,
                 last_error=str(exc),
             )
-            await self._send_text(chat_id=chat_id, text=f"分析失败 (Analysis failed). request_id={request_id}, error={exc}")
+            await self._send_text(chat_id=chat_id, text="分析失败，请稍后重试。")
         finally:
             latency_ms = (time.perf_counter() - start) * 1000
             self._store.record_metric(metric_name="analysis_latency_ms", metric_value=latency_ms, tags={"chat_id": chat_id})

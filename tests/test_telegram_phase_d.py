@@ -118,7 +118,7 @@ async def test_help_contains_compliance_and_monitor_template(tmp_path) -> None: 
     update = {"update_id": 12001, "message": {"chat": {"id": "chat-d1"}, "from": {"id": 1}, "text": "/help"}}
     assert await gateway.process_update(update)
     message = sender.messages[-1][1]
-    assert "no auto-trading" in message
+    assert "不支持自动交易" in message
     assert "/monitor <symbol> <interval> [volatility|price|rsi]" in message
 
 
@@ -177,7 +177,7 @@ async def test_monitor_template_report_and_digest(tmp_path) -> None:  # noqa: AN
     assert "Trend up with moderate momentum" in sender.messages[-1][1]
 
     assert await gateway.process_update(digest_update)
-    assert "Daily digest (last 24h)" in sender.messages[-1][1]
+    assert "每日报告（近24小时）" in sender.messages[-1][1]
 
 
 @pytest.mark.asyncio
@@ -1206,7 +1206,7 @@ async def test_phase_b_analyze_snapshot_nl_returns_text_and_photo(tmp_path) -> N
 
     latest = next(item[1] for item in reversed(sender.messages) if "Snapshot Analysis" in item[1])
     assert "Snapshot Analysis" in latest
-    assert "run_id=run-b1" in latest
+    assert "run_id=" not in latest
     assert sender.photos
     assert sender.photos[-1][0] == "chat-b1"
     req = store.get_nl_request(request_id=request_id)
@@ -1351,15 +1351,10 @@ async def test_phase_d_analyze_snapshot_ack_then_result_order(tmp_path) -> None:
     with store._connect() as conn:  # noqa: SLF001
         row = conn.execute("SELECT request_id FROM bot_updates WHERE update_id = ?", (22001,)).fetchone()
     assert row is not None and row["request_id"]
-    request_id = str(row["request_id"])
-    short_id = request_id[-6:]
-
     texts = [item[1] for item in sender.messages]
     ack_idx = next(index for index, text in enumerate(texts) if "已受理请求，开始分析" in text)
-    progress_idx = next(index for index, text in enumerate(texts) if "阶段进度 1/4：识别标的" in text)
     result_idx = next(index for index, text in enumerate(texts) if "Snapshot Analysis" in text)
-    assert ack_idx < progress_idx < result_idx
-    assert f"request_id(short)={short_id}" in texts[ack_idx]
+    assert ack_idx < result_idx
 
 
 @pytest.mark.asyncio
@@ -1617,10 +1612,10 @@ async def test_phase_d_nl_list_jobs_and_daily_digest_intents(tmp_path) -> None: 
 
     assert await gateway.process_update({"update_id": 30001, "message": {"chat": {"id": "chat-dn1"}, "text": "/monitor TSLA 1h"}})
     assert await gateway.process_update({"update_id": 30002, "message": {"chat": {"id": "chat-dn1"}, "text": "看看我的监控列表"}})
-    assert "Active monitor jobs" in sender.messages[-1][1]
+    assert "活跃监控任务" in sender.messages[-1][1]
 
     assert await gateway.process_update({"update_id": 30003, "message": {"chat": {"id": "chat-dn1"}, "text": "给我每日报告"}})
-    assert "Daily digest" in sender.messages[-1][1]
+    assert "每日报告" in sender.messages[-1][1]
 
     with store._connect() as conn:  # noqa: SLF001
         list_row = conn.execute("SELECT request_id FROM bot_updates WHERE update_id = 30002").fetchone()
@@ -1788,7 +1783,7 @@ async def test_phase_d_blacklist_mode_allows_non_blocked_chat(tmp_path) -> None:
     gateway = TelegramGateway(store=store, actions=actions, access_mode="blacklist", blocked_chat_ids={"chat-blocked"})
 
     assert await gateway.process_update({"update_id": 30051, "message": {"chat": {"id": "chat-open"}, "text": "/help"}})
-    assert "Available commands" in sender.messages[-1][1]
+    assert "可用命令" in sender.messages[-1][1]
 
 
 @pytest.mark.asyncio
@@ -1915,8 +1910,8 @@ async def test_phase_s_report_full_contains_evidence_block(tmp_path) -> None:  #
 
     assert await gateway.process_update({"update_id": 30131, "message": {"chat": {"id": "chat-s4"}, "text": "分析 TSLA 一个月走势"}})
     assert await gateway.process_update({"update_id": 30132, "message": {"chat": {"id": "chat-s4"}, "text": "/report run-s-report full"}})
-    assert "证据块 (Evidence)" in sender.messages[-1][1]
-    assert "execution_events=" in sender.messages[-1][1]
+    assert "证据块：" in sender.messages[-1][1]
+    assert "执行事件数：" in sender.messages[-1][1]
     lowered = sender.messages[-1][1].lower()
     assert "schema_version" not in lowered
     assert "action_version" not in lowered
@@ -2038,7 +2033,7 @@ async def test_phase_p1_news_window_toggle_30_days_via_callback(tmp_path) -> Non
     assert await gateway.process_update(
         {"update_id": 30242, "callback_query": {"id": "cb-p1-news", "data": f"act|{req_id[-6:]}|news30", "message": {"chat": {"id": "chat-p1b"}}}}
     )
-    assert any("新闻回显: 近30天" in text for _, text in sender.messages)
+    assert any("新闻回显: 近30天" in text or "新闻回显: 近30天 共" in text for _, text in sender.messages)
 
 
 @pytest.mark.asyncio
@@ -2235,6 +2230,8 @@ async def test_phase_p2_buttons_include_followup_and_explanations(tmp_path) -> N
     callbacks = [str(button["callback_data"]) for row in inline for button in row]
     assert any(item.endswith("|period3mo") for item in callbacks)
     assert any(item.endswith("|news_only") for item in callbacks)
+    assert any(item.endswith("|news_detail") for item in callbacks)
+    assert any(item.endswith("|news_cluster") for item in callbacks)
     assert any(item.endswith("|set_monitor") for item in callbacks)
     assert any(item.endswith("|why_no_chart") for item in callbacks)
     assert any(item.endswith("|why_no_rsi") for item in callbacks)
@@ -2268,6 +2265,111 @@ async def test_phase_p2_explain_buttons_callback_reply(tmp_path) -> None:  # noq
     )
     assert "为什么不给RSI" in sender.messages[-1][1]
     assert "证据:" in sender.messages[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_phase_p2_news_detail_and_cluster_callbacks_render_content(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {
+            "run_id": "run-p2-news-actions",
+            "fused_insights": {"summary": "news detail and cluster"},
+            "metrics": {"data_close": 120.0, "technical_rsi_14": 52.0},
+            "news": [
+                {"title": "Q4 earnings beat estimates", "source": "WireA", "published_at": "2026-02-27T08:00:00+00:00"},
+                {"title": "Regulator opens probe into filings", "source": "WireB", "published_at": "2026-02-27T06:00:00+00:00"},
+                {"title": "New product launch gains traction", "source": "WireC", "published_at": "2026-02-26T09:00:00+00:00"},
+            ],
+            **kwargs,
+        }
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 303341, "message": {"chat": {"id": "chat-p2-news"}, "text": "分析 TSLA 一个月走势"}})
+    with store._connect() as conn:  # noqa: SLF001
+        row = conn.execute("SELECT request_id FROM bot_updates WHERE update_id = 303341").fetchone()
+    assert row is not None
+    req_id = str(row["request_id"])
+
+    assert await gateway.process_update(
+        {
+            "update_id": 303342,
+            "callback_query": {"id": "cb-p2-news-detail", "data": f"act|{req_id[-6:]}|news_detail", "message": {"chat": {"id": "chat-p2-news"}}},
+        }
+    )
+    assert "新闻详单" in sender.messages[-1][1]
+    assert "影响：" in sender.messages[-1][1]
+
+    assert await gateway.process_update(
+        {
+            "update_id": 303343,
+            "callback_query": {"id": "cb-p2-news-cluster", "data": f"act|{req_id[-6:]}|news_cluster", "message": {"chat": {"id": "chat-p2-news"}}},
+        }
+    )
+    assert "事件聚类" in sender.messages[-1][1]
+    assert "分布：" in sender.messages[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_phase_p2_report_full_filters_forbidden_metric_keys(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": "run-p2-report-filter", **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    store.upsert_analysis_report(
+        run_id="run-p2-report-filter",
+        request_id="req-p2-report-filter",
+        chat_id="chat-p2-report",
+        symbol="TSLA",
+        summary="report filter check",
+        key_metrics={
+            "data_close": 101.0,
+            "technical_rsi_14": 54.0,
+            "schema_version": "telegram_nlu_plan_v2",
+            "action_version": "v2",
+            "_schema_version": "telegram_nlu_plan_v2",
+            "traceback": "xxx",
+            "raw_error": "yyy",
+            "news_digest": {
+                "window_days": 7,
+                "window_label": "近7天",
+                "total_count": 1,
+                "source_coverage": ["WireA"],
+                "event_distribution": {"财报": 1, "监管": 0, "产品": 0, "宏观": 0, "其他": 0},
+                "sentiment_score": 60,
+                "sentiment_direction": "偏多",
+                "sentiment_range": "55-65",
+                "top_news": [
+                    {
+                        "title": "earnings beat",
+                        "published_at": "2026-02-27 08:00",
+                        "source": "WireA",
+                        "impact": "偏利多，关注业绩兑现与预期差。",
+                        "category": "财报",
+                        "sentiment": "偏多",
+                    }
+                ],
+            },
+        },
+    )
+
+    assert await gateway.process_update(
+        {"update_id": 303344, "message": {"chat": {"id": "chat-p2-report"}, "text": "/report run-p2-report-filter full"}}
+    )
+    lowered = sender.messages[-1][1].lower()
+    assert "schema_version" not in lowered
+    assert "action_version" not in lowered
+    assert "_schema_version" not in lowered
+    assert "traceback" not in lowered
+    assert "raw_error" not in lowered
 
 
 @pytest.mark.asyncio

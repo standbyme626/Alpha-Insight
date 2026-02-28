@@ -41,13 +41,6 @@ _SYMBOL_ALIAS_MAP: dict[str, list[str]] = {
     "apple": ["AAPL"],
 }
 
-
-def _mask_chat_id(chat_id: str) -> str:
-    if len(chat_id) <= 4:
-        return "***"
-    return f"{chat_id[:2]}***{chat_id[-2:]}"
-
-
 class TelegramGateway:
     _CLARIFY_SLOT_WHITELIST = {"symbol", "period", "interval", "template", "market"}
     _GENERAL_CONVERSATION_INTENTS = {"greeting", "capability", "help", "how_to_start"}
@@ -396,7 +389,7 @@ class TelegramGateway:
         event.set()
         await self._actions.send_error_message(
             chat_id=chat_id,
-            text=f"已发送取消信号，处理中。request_id(short)={self._short_request_id(running.request_id)}",
+            text="已发送取消信号，正在处理中。",
         )
         self._store.update_bot_update_status(
             update_id=update_id,
@@ -466,10 +459,7 @@ class TelegramGateway:
         if existing.status in {"queued", "executing"}:
             await self._actions.send_error_message(
                 chat_id=chat_id,
-                text=(
-                    "同会话已有相同分析进行中，已复用该请求。\n"
-                    f"request_id(short)={self._short_request_id(existing.request_id)}"
-                ),
+                text="同会话已有相同分析进行中，已复用该请求。",
             )
             self._store.record_metric(metric_name="analysis_singleflight_hit_total", metric_value=1.0, tags={"state": "inflight"})
             self._store.update_bot_update_status(
@@ -489,7 +479,7 @@ class TelegramGateway:
             chat_id=chat_id,
             text=(
                 "同会话短窗复用最近分析结果，避免重复重算。\n"
-                f"request_id(short)={self._short_request_id(existing.request_id)} {run_hint}"
+                f"{run_hint}"
             ),
             buttons=self._actions.build_snapshot_buttons(
                 request_id=existing.request_id,
@@ -792,7 +782,7 @@ class TelegramGateway:
                 )
                 await self._actions.send_error_message(
                     chat_id=record.chat_id,
-                    text=f"任务已取消。request_id(short)={self._short_request_id(record.request_id)}",
+                    text="任务已取消。",
                 )
                 self._add_execution_evidence(
                     record=record,
@@ -930,6 +920,8 @@ class TelegramGateway:
             "chart",
             "news7",
             "news30",
+            "news_detail",
+            "news_cluster",
             "retry",
             "report",
             "period3mo",
@@ -1111,7 +1103,7 @@ class TelegramGateway:
         self._store.mark_pending_candidate_selection(request_id=record.request_id, status="resolved")
         await self._actions.send_error_message(
             chat_id=chat_id,
-            text=f"已选择标的 {chosen_symbol}，开始分析。request_id(short)={self._short_request_id(record.request_id)}",
+            text=f"已选择标的 {chosen_symbol}，开始分析。",
         )
         await self._execute_nl_request(update_id=update_id, request_id=record.request_id)
         return True
@@ -1147,7 +1139,7 @@ class TelegramGateway:
         if record.status in {"executing", "pending_confirm", "clarify_pending"}:
             await self._actions.send_error_message(
                 chat_id=chat_id,
-                text=f"请求正在生成中，请稍候。request_id(short)={self._short_request_id(record.request_id)}",
+                text="请求正在生成中，请稍候。",
             )
             self._store.update_bot_update_status(
                 update_id=update_id,
@@ -1163,6 +1155,26 @@ class TelegramGateway:
                 update_id=update_id,
                 status="processed",
                 command="request_action_report",
+                request_id=record.request_id,
+                error=None,
+            )
+            return True
+        if action == "news_detail":
+            await self._actions.handle_news_detail(chat_id=chat_id, target_id=record.request_id)
+            self._store.update_bot_update_status(
+                update_id=update_id,
+                status="processed",
+                command="request_action_news_detail",
+                request_id=record.request_id,
+                error=None,
+            )
+            return True
+        if action == "news_cluster":
+            await self._actions.handle_news_cluster(chat_id=chat_id, target_id=record.request_id)
+            self._store.update_bot_update_status(
+                update_id=update_id,
+                status="processed",
+                command="request_action_news_cluster",
                 request_id=record.request_id,
                 error=None,
             )
@@ -1261,7 +1273,6 @@ class TelegramGateway:
         text = str(message.get("text", "")).strip()
         callback_data = str(callback_query.get("data", "")).strip()
 
-        print(f"[gateway] handling update={update_id} chat={_mask_chat_id(chat_id)}")
         self._store.record_metric(metric_name="command_total", metric_value=1.0, tags={"chat_id": chat_id})
 
         try:
@@ -1812,7 +1823,7 @@ class TelegramGateway:
                         chat_id=chat_id,
                         text=(
                             "30秒内重复请求已合并：已生成。\n"
-                            f"request_id(short)={self._short_request_id(duplicate_record.request_id)} {run_hint}"
+                            f"{run_hint}"
                         ),
                         buttons=self._actions.build_snapshot_buttons(
                             request_id=duplicate_record.request_id,
@@ -1820,10 +1831,9 @@ class TelegramGateway:
                         ),
                     )
                 else:
-                    pending_hint = duplicate_request_id or "n/a"
                     await self._actions.send_error_message(
                         chat_id=chat_id,
-                        text=f"30秒内重复请求已合并：生成中。request_id(short)={self._short_request_id(pending_hint)}",
+                        text="30秒内重复请求已合并：生成中。",
                     )
                 self._store.update_bot_update_status(
                     update_id=update_id,
@@ -1907,8 +1917,7 @@ class TelegramGateway:
                 await self._actions.send_inline_buttons(
                     chat_id=chat_id,
                     text=(
-                        f"标的 `{alias}` 命中多个候选，请在 5 分钟内点选按钮：\n"
-                        f"request_id(short)={self._short_request_id(request_id)}"
+                        f"标的 `{alias}` 命中多个候选，请在 5 分钟内点选按钮："
                     ),
                     buttons=buttons,
                 )

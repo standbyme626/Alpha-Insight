@@ -138,7 +138,7 @@ async def test_monitor_list_stop_lifecycle_via_gateway(tmp_path) -> None:  # noq
     assert active_jobs[0].symbol == "TSLA"
 
     assert await gateway.process_update(list_update)
-    assert any("Active monitor jobs" in item[1] for item in sender.messages)
+    assert any("活跃监控任务" in item[1] for item in sender.messages)
 
     assert await gateway.process_update(stop_update)
     assert store.list_watch_jobs(chat_id="chat-b1") == []
