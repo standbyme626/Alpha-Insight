@@ -338,16 +338,27 @@ class TelegramGateway:
         await self._actions.send_error_message(
             chat_id=chat_id,
             text=(
-                f"已降级为命令提示模式 (Fallback to command hints): {reason}\n"
-                "请使用命令：/analyze <symbol> 或 /monitor <symbol> <interval>"
+                f"当前进入命令兜底模式：{reason}\n"
+                "你可以直接输入：/analyze <symbol> 或 /monitor <symbol> <interval>"
             ),
         )
 
     async def _send_nl_reject(self, *, chat_id: str, reason: str, template: str) -> None:
         await self._actions.send_error_message(
             chat_id=chat_id,
-            text=f"请求已拒绝 (Rejected): {reason}\n可复制命令模板 (Command template): {template}",
+            text=f"请求已拒绝：{reason}\n可复制命令模板：{template}",
         )
+
+    async def _handle_low_confidence_dialogue(self, *, chat_id: str) -> None:
+        self._store.record_metric(metric_name="nl_low_confidence_dialogue_total", metric_value=1.0)
+        await self._actions.send_error_message(
+            chat_id=chat_id,
+            text=(
+                "我还没完全理解你的意思。\n"
+                "你是想做「行情分析 / 设置监控 / 查看报告」哪一种？"
+            ),
+        )
+        await self._actions.handle_general_conversation(chat_id=chat_id, intent="capability")
 
     async def _send_pending_confirm_prompt(self, *, chat_id: str, request_id: str) -> None:
         short_id = request_id[-6:]
@@ -1955,6 +1966,23 @@ class TelegramGateway:
 
             if plan.confidence < 0.75 or plan.reject_reason is not None:
                 reject_reason = plan.reject_reason or "low_confidence"
+                if reject_reason == "low_confidence":
+                    self._store.set_nl_request_status(
+                        request_id=request_id,
+                        to_status="rejected",
+                        reject_reason=reject_reason,
+                        last_error=plan.explain,
+                    )
+                    self._store.record_metric(metric_name="nl_intent_reject", metric_value=1.0, tags={"reason": reject_reason})
+                    await self._handle_low_confidence_dialogue(chat_id=chat_id)
+                    self._store.update_bot_update_status(
+                        update_id=update_id,
+                        status="processed",
+                        command="nl_low_confidence_dialogue",
+                        request_id=request_id,
+                        error=None,
+                    )
+                    return True
                 self._store.set_nl_request_status(
                     request_id=request_id,
                     to_status="rejected",

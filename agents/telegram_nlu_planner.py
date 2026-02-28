@@ -196,7 +196,24 @@ def detect_general_conversation_intent(text: str) -> str | None:
     if not lowered:
         return None
 
-    if any(keyword in lowered for keyword in ("你会什么", "能做什么", "能力", "capability", "what can you do")):
+    if any(
+        keyword in lowered
+        for keyword in (
+            "你会什么",
+            "你可以做什么",
+            "可以做什么",
+            "都能做什么",
+            "都可以做什么",
+            "你能帮我什么",
+            "你可以帮我什么",
+            "有哪些功能",
+            "功能有哪些",
+            "能做什么",
+            "能力",
+            "capability",
+            "what can you do",
+        )
+    ):
         return "capability"
     if any(keyword in lowered for keyword in ("怎么开始", "如何开始", "新手", "从哪开始", "how to start", "start guide")):
         return "how_to_start"

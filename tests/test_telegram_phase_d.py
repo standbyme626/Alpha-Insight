@@ -123,7 +123,7 @@ async def test_help_contains_compliance_and_monitor_template(tmp_path) -> None: 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("text", ["你好", "你会什么", "怎么用"])
+@pytest.mark.parametrize("text", ["你好", "你会什么", "你可以做什么", "怎么用"])
 async def test_phase_d_general_conversation_returns_capability_card(tmp_path, text) -> None:  # noqa: ANN001
     store = TelegramTaskStore(tmp_path / "telegram.db")
     sender = FakeChatSender()
