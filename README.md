@@ -53,6 +53,39 @@ Alpha-Insight 是一个基于 LangGraph 的多 Agent 量化投研系统，支持
 
 - [升级5.md](升级5.md)
 - [升级6.md](升级6.md)
+- [升级8.md](升级8.md)
+
+## Upgrade8（进行中，Telegram 优先）
+
+Upgrade8 聚焦“产品可感知升级”，在 Upgrade7 工程底座上优先解决首屏结论、自然对话与信息可信度问题。
+
+### 体验契约
+
+- 首屏四段卡片：区间表现、原因摘要、证据三件套、动作按钮
+- 每请求最多两条核心消息：`进度（单条可编辑） + 最终结果`
+- 默认隐藏内部字段（`run_id/request_id/schema/action`），仅调试模式可见
+- 自然问法优先：低置信度先澄清（标的/市场/周期），再执行
+
+### 新闻与公告扩源（分阶段）
+
+- P0（优先）：HKEX RSS、SEC RSS、Investing RSS
+- P1（增强）：Nasdaq RSS、PR Newswire、Business Wire、Seeking Alpha
+- P2（宏观脉冲）：FRED 发布日历、Fed 发布日程、NY Fed 经济日历
+
+官方入口：
+
+- HKEX RSS: <https://www.hkex.com.hk/Services/RSS-Feeds?sc_lang=en>
+- SEC RSS: <https://www.sec.gov/about/rss-feeds>
+- Investing RSS: <https://www.investing.com/webmaster-tools/rss>
+- Nasdaq RSS: <https://www.nasdaq.com/nasdaq-rss-feeds>
+- PR Newswire: <https://www.prnewswire.com/rss/>
+- Business Wire: <https://www.businesswire.com/help/feed-options>
+- Seeking Alpha Feeds: <https://about.seekingalpha.com/feeds>
+- FRED Calendar: <https://fred.stlouisfed.org/releases/calendar>
+- Federal Reserve Schedule: <https://www.federalreserve.gov/data/releaseschedule.htm>
+- NY Fed Calendar: <https://www.newyorkfed.org/research/calendars/nationalecon_cal>
+
+实施与验收详见：[升级8.md](升级8.md)。
 
 ### 当前业务流程图（Telegram / 双语）
 
