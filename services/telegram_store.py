@@ -283,6 +283,29 @@ class ChatPreferenceRecord:
     updated_at: str
 
 
+@dataclass
+class PulseSubscriptionRecord:
+    chat_id: str
+    interval_hours: int
+    schedule_token: str
+
+
+@dataclass
+class PulseWatchEventRecord:
+    symbol: str
+    trigger_ts: str
+    pct_change: float
+    priority: str
+
+
+@dataclass
+class DegradationEventRecord:
+    state_key: str
+    event_type: str
+    reason: str | None
+    created_at: str
+
+
 class TelegramTaskStore:
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)
@@ -586,6 +609,20 @@ class TelegramTaskStore:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS market_pulse_dispatches (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id TEXT NOT NULL,
+                    pulse_key TEXT NOT NULL,
+                    schedule_token TEXT NOT NULL,
+                    window_start TEXT NOT NULL,
+                    window_end TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(chat_id, pulse_key)
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS audit_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     event_type TEXT NOT NULL,
@@ -709,6 +746,7 @@ class TelegramTaskStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_ts ON audit_events(created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_analysis_reports_chat_created ON analysis_reports(chat_id, created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_notification_routes_chat_enabled ON notification_routes(chat_id, enabled)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_market_pulse_dispatches_chat_created ON market_pulse_dispatches(chat_id, created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_nl_requests_chat_status ON nl_requests(chat_id, status)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_nl_requests_text_dedupe ON nl_requests(chat_id, text_dedupe_key)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_nl_requests_intent_dedupe ON nl_requests(chat_id, intent_dedupe_key)")
@@ -2421,6 +2459,132 @@ class TelegramTaskStore:
             )
         return self.get_chat_preferences(chat_id=chat_id)
 
+    def list_pulse_subscriptions(self) -> list[PulseSubscriptionRecord]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT chat_id, digest_schedule
+                FROM chat_preferences
+                WHERE digest_schedule LIKE 'pulse:%'
+                """
+            ).fetchall()
+        subscriptions: list[PulseSubscriptionRecord] = []
+        for row in rows:
+            chat_id = str(row["chat_id"])
+            schedule_token = str(row["digest_schedule"] or "").strip().lower()
+            interval = schedule_token.split(":", 1)[1] if ":" in schedule_token else ""
+            if interval == "1h":
+                interval_hours = 1
+            elif interval == "4h":
+                interval_hours = 4
+            else:
+                continue
+            subscriptions.append(
+                PulseSubscriptionRecord(
+                    chat_id=chat_id,
+                    interval_hours=interval_hours,
+                    schedule_token=schedule_token,
+                )
+            )
+        return subscriptions
+
+    def claim_market_pulse_dispatch(
+        self,
+        *,
+        chat_id: str,
+        pulse_key: str,
+        schedule_token: str,
+        window_start: datetime,
+        window_end: datetime,
+    ) -> bool:
+        now = _utc_now()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO market_pulse_dispatches(
+                    chat_id, pulse_key, schedule_token, window_start, window_end, created_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(chat_id),
+                    str(pulse_key),
+                    str(schedule_token),
+                    _isoformat(window_start),
+                    _isoformat(window_end),
+                    now,
+                ),
+            )
+        return cursor.rowcount > 0
+
+    def list_watch_events_for_chat(
+        self,
+        *,
+        chat_id: str,
+        since: datetime,
+        until: datetime | None = None,
+        limit: int = 200,
+    ) -> list[PulseWatchEventRecord]:
+        until_iso = _isoformat(until or _utc_now_dt())
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT wj.symbol AS symbol, we.trigger_ts, we.pct_change, we.priority
+                FROM watch_events we
+                JOIN watch_jobs wj ON wj.job_id = we.job_id
+                WHERE wj.chat_id = ?
+                  AND we.trigger_ts >= ?
+                  AND we.trigger_ts < ?
+                ORDER BY we.trigger_ts DESC
+                LIMIT ?
+                """,
+                (str(chat_id), _isoformat(since), until_iso, max(1, int(limit))),
+            ).fetchall()
+        return [
+            PulseWatchEventRecord(
+                symbol=str(row["symbol"]),
+                trigger_ts=str(row["trigger_ts"]),
+                pct_change=float(row["pct_change"]),
+                priority=str(row["priority"]),
+            )
+            for row in rows
+        ]
+
+    def list_analysis_report_metrics(
+        self,
+        *,
+        chat_id: str,
+        since: datetime,
+        until: datetime | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        until_iso = _isoformat(until or _utc_now_dt())
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT key_metrics
+                FROM analysis_reports
+                WHERE chat_id = ?
+                  AND created_at >= ?
+                  AND created_at < ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (str(chat_id), _isoformat(since), until_iso, max(1, int(limit))),
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            raw = row["key_metrics"]
+            if raw is None:
+                continue
+            try:
+                payload = json.loads(str(raw))
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                out.append(payload)
+        return out
+
     def bulk_update_watch_jobs(
         self,
         *,
@@ -3156,6 +3320,26 @@ class TelegramTaskStore:
             row = conn.execute(query, tuple(params)).fetchone()
         return int(row["c"])
 
+    def latest_metric_value(self, *, metric_name: str, since: datetime | None = None) -> float | None:
+        since_iso = _isoformat(since) if since else None
+        query = (
+            "SELECT metric_value FROM metric_events "
+            "WHERE metric_name = ? "
+        )
+        params: list[Any] = [metric_name]
+        if since_iso:
+            query += "AND created_at >= ? "
+            params.append(since_iso)
+        query += "ORDER BY created_at DESC LIMIT 1"
+        with self._connect() as conn:
+            row = conn.execute(query, tuple(params)).fetchone()
+        if row is None:
+            return None
+        try:
+            return float(row["metric_value"])
+        except (TypeError, ValueError):
+            return None
+
     def metric_tag_topk(self, *, metric_name: str, tag_key: str, limit: int = 3) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -3183,6 +3367,45 @@ class TelegramTaskStore:
             counter[value] = counter.get(value, 0) + 1
         ranked = sorted(counter.items(), key=lambda item: (-item[1], item[0]))
         return [{"reason": reason, "count": count} for reason, count in ranked[: max(1, int(limit))]]
+
+    def list_degradation_states(self) -> list[DegradationState]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT state_key, status, triggered_at, recovered_at, reason, updated_at
+                FROM degradation_states
+                ORDER BY updated_at DESC
+                """
+            ).fetchall()
+        return [
+            DegradationState(
+                state_key=str(row["state_key"]),
+                status=str(row["status"]),
+                triggered_at=str(row["triggered_at"]) if row["triggered_at"] else None,
+                recovered_at=str(row["recovered_at"]) if row["recovered_at"] else None,
+                reason=str(row["reason"]) if row["reason"] else None,
+                updated_at=str(row["updated_at"]),
+            )
+            for row in rows
+        ]
+
+    def get_latest_degradation_event(self, *, event_type: str | None = None) -> DegradationEventRecord | None:
+        query = "SELECT state_key, event_type, reason, created_at FROM degradation_events"
+        params: list[Any] = []
+        if event_type:
+            query += " WHERE event_type = ?"
+            params.append(str(event_type))
+        query += " ORDER BY created_at DESC LIMIT 1"
+        with self._connect() as conn:
+            row = conn.execute(query, tuple(params)).fetchone()
+        if row is None:
+            return None
+        return DegradationEventRecord(
+            state_key=str(row["state_key"]),
+            event_type=str(row["event_type"]),
+            reason=str(row["reason"]) if row["reason"] else None,
+            created_at=str(row["created_at"]),
+        )
 
     def get_degradation_state(self, *, state_key: str) -> DegradationState | None:
         with self._connect() as conn:

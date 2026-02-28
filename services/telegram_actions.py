@@ -710,7 +710,7 @@ class TelegramActions:
             "/bulk <enable|disable|interval|threshold> <target|all> [value] - 批量任务操作\n"
             "/webhook <set|disable|list> ... - 管理 webhook 路由\n"
             "/route <set|disable|list> ... - 管理 telegram/email/wecom 路由\n"
-            "/pref <summary|quiet|priority> <value> - 通知偏好设置\n"
+            "/pref <summary|quiet|priority|pulse> <value> - 通知偏好设置（pulse=off|1h|4h）\n"
             "合规提示：仅用于研究与提醒，不支持自动交易。\n"
             "/help - 显示帮助"
             ),
@@ -718,19 +718,55 @@ class TelegramActions:
         return ActionResult(command="help")
 
     async def handle_status(self, *, chat_id: str) -> ActionResult:
+        now = datetime.now(timezone.utc)
+        since_24h = now - timedelta(hours=24)
         active_jobs = self._store.count_active_watch_jobs(chat_id=chat_id)
-        digest = self._store.build_daily_digest(chat_id=chat_id)
+        digest = self._store.build_daily_digest(chat_id=chat_id, now=now)
         triggered = int(digest.get("alerts_triggered", 0))
         delivered = int(digest.get("delivered_notifications", 0))
+        push_attempt = self._store.count_metric_events(metric_name="push_attempt", since=since_24h)
+        push_success = self._store.count_metric_events(metric_name="push_success", since=since_24h)
+        success_rate = (push_success / max(1, push_attempt)) * 100 if push_attempt > 0 else 0.0
         retry_depth = int(self._store.count_retry_queue_depth())
+        dlq = int(self._store.count_dlq())
         chart_degrade = "是" if self._store.is_degradation_active(state_key="chart_text_only") else "否"
         nl_degrade = "是" if self._store.is_degradation_active(state_key="nl_command_hint_mode") else "否"
         monitor_degrade = "是" if self._store.is_degradation_active(state_key="no_monitor_push") else "否"
+        active_states = [item.state_key for item in self._store.list_degradation_states() if item.status == "active"]
+        data_source_state = "正常"
+        if active_states:
+            data_source_state = "降级中(" + ",".join(active_states[:3]) + ")"
+        latest_delivery_latency = self._store.latest_metric_value(metric_name="lane_dispatch_latency_ms", since=since_24h)
+        latency_text = f"{latest_delivery_latency:.1f}ms" if latest_delivery_latency is not None else "N/A"
+        incident = self._store.get_latest_degradation_event(event_type="triggered")
+        recover = self._store.get_latest_degradation_event(event_type="recovered")
+        incident_text = (
+            f"{incident.state_key} @ {self._format_timestamp(incident.created_at)}"
+            if incident is not None
+            else "无"
+        )
+        recover_text = (
+            f"{recover.state_key} @ {self._format_timestamp(recover.created_at)}"
+            if recover is not None
+            else "无"
+        )
+        pref = self._store.get_chat_preferences(chat_id=chat_id)
+        pulse_schedule = str(pref.digest_schedule or "").strip().lower()
+        if pulse_schedule.startswith("pulse:"):
+            pulse_text = pulse_schedule.split(":", 1)[1]
+        else:
+            pulse_text = "off"
         text = (
             "运行状态（7x24）\n"
             f"- 活跃监控任务：{active_jobs}\n"
             f"- 近24h触发告警：{triggered}\n"
             f"- 近24h已投递通知：{delivered}\n"
+            f"- 24h投递成功率：{success_rate:.1f}%（成功={push_success}/尝试={push_attempt}，重试队列={retry_depth}，DLQ={dlq}）\n"
+            f"- 数据源状态：{data_source_state}\n"
+            f"- 最近投递延迟：{latency_text}\n"
+            f"- 最近异常：{incident_text}\n"
+            f"- 最近恢复：{recover_text}\n"
+            f"- 脉冲订阅：{pulse_text}\n"
             f"- 重试队列深度：{retry_depth}\n"
             f"- 图表降级中：{chart_degrade}\n"
             f"- NL兜底模式：{nl_degrade}\n"
@@ -1261,10 +1297,23 @@ class TelegramActions:
             pref = self._store.upsert_chat_preferences(chat_id=chat_id, min_priority=value)
         elif setting == "quiet":
             pref = self._store.upsert_chat_preferences(chat_id=chat_id, quiet_hours=None if value == "off" else value)
+        elif setting == "pulse":
+            digest_schedule = None if value == "off" else f"pulse:{value}"
+            pref = self._store.upsert_chat_preferences(chat_id=chat_id, digest_schedule=digest_schedule)
         else:
             await self._send_text(chat_id=chat_id, text="不支持的偏好设置 (Unsupported preference setting).")
             return ActionResult(command="pref")
-        await self._send_text(chat_id=chat_id, text=f"偏好已更新 (Preference updated): summary={pref.summary_mode} priority={pref.min_priority} quiet={pref.quiet_hours or 'off'}")
+        pulse_text = "off"
+        if pref.digest_schedule and str(pref.digest_schedule).startswith("pulse:"):
+            pulse_text = str(pref.digest_schedule).split(":", 1)[1]
+        await self._send_text(
+            chat_id=chat_id,
+            text=(
+                "偏好已更新 (Preference updated): "
+                f"summary={pref.summary_mode} priority={pref.min_priority} "
+                f"quiet={pref.quiet_hours or 'off'} pulse={pulse_text}"
+            ),
+        )
         return ActionResult(command="pref")
 
     async def handle_stop(self, *, chat_id: str, target: str, target_type: str) -> ActionResult:

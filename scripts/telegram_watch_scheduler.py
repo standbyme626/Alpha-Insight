@@ -8,6 +8,7 @@ from pathlib import Path
 import aiohttp
 
 from services.notification_channels import MultiChannelNotifier
+from services.market_pulse import MarketPulsePublisher
 from services.reliability_governor import GovernorConfig, ReliabilityGovernor
 from services.runtime_controls import GlobalConcurrencyGate, RuntimeLimits
 from services.scheduler import TelegramWatchScheduler
@@ -91,10 +92,12 @@ async def _main() -> int:
             analysis_p95_threshold_ms=float(os.getenv("TELEGRAM_SLO_ANALYSIS_P95_MS", "90000")),
         ),
     )
+    pulse_publisher = MarketPulsePublisher(store=store, sender=notifier)
     scheduler = TelegramWatchScheduler(
         store=store,
         executor=executor,
         governor=governor,
+        pulse_publisher=pulse_publisher,
         poll_interval_seconds=args.poll_interval_seconds,
         batch_size=args.batch_size,
     )

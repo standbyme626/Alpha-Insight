@@ -224,6 +224,36 @@ async def test_status_command_returns_runtime_summary(tmp_path) -> None:  # noqa
 
 
 @pytest.mark.asyncio
+async def test_upgrade8_p2_status_card_and_pulse_subscription_are_visible(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": "run-status-p2", **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    store.record_metric(metric_name="push_attempt", metric_value=1.0)
+    store.record_metric(metric_name="push_attempt", metric_value=1.0)
+    store.record_metric(metric_name="push_success", metric_value=1.0)
+    store.record_metric(metric_name="lane_dispatch_latency_ms", metric_value=128.5, tags={"channel": "telegram", "lane": "fast"})
+    store.set_degradation_state(state_key="chart_text_only", status="active", reason="chart_render_fail_rate")
+    store.set_degradation_state(state_key="chart_text_only", status="recovered", reason="chart_recovered")
+
+    assert await gateway.process_update({"update_id": 12021, "message": {"chat": {"id": "chat-status-p2"}, "text": "/pref pulse 1h"}})
+    assert await gateway.process_update({"update_id": 12022, "message": {"chat": {"id": "chat-status-p2"}, "text": "/status"}})
+    text = sender.messages[-1][1]
+    assert "24h投递成功率" in text
+    assert "数据源状态" in text
+    assert "最近投递延迟" in text
+    assert "最近异常" in text
+    assert "最近恢复" in text
+    assert "脉冲订阅" in text
+    assert "1h" in text
+
+
+@pytest.mark.asyncio
 async def test_multi_channel_routing_keeps_single_channel_failure_isolated(tmp_path) -> None:  # noqa: ANN001
     store = TelegramTaskStore(tmp_path / "telegram.db")
     store.upsert_telegram_chat(chat_id="chat-d3", user_id="3", username="u3")
@@ -912,6 +942,12 @@ def test_parse_d456_commands() -> None:
     assert not isinstance(parsed_pref, CommandError)
     assert parsed_pref.name == "pref"
     assert parsed_pref.args["value"] == "critical"
+
+    parsed_pulse_pref = parse_telegram_command("/pref pulse 1h")
+    assert not isinstance(parsed_pulse_pref, CommandError)
+    assert parsed_pulse_pref.name == "pref"
+    assert parsed_pulse_pref.args["setting"] == "pulse"
+    assert parsed_pulse_pref.args["value"] == "1h"
 
 
 @pytest.mark.asyncio

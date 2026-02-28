@@ -1,0 +1,13 @@
+{
+  "evidence_id": "upgrade8_p2_scheduler_pulse_hook",
+  "date": "2026-02-28",
+  "scope": "Upgrade8 P2 scheduler integration",
+  "tests": [
+    "tests/test_telegram_phase_b.py::test_scheduler_runs_market_pulse_publisher_hook"
+  ],
+  "contract": {
+    "scheduler_hook": "TelegramWatchScheduler.run_once -> pulse_publisher.publish_due",
+    "tick_output": "pulse_notifications"
+  },
+  "status": "passed"
+}

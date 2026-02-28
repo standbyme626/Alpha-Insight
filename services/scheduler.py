@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Callable
+from typing import Callable, Protocol
 
 from services.reliability_governor import ReliabilityGovernor
 from services.telegram_store import TelegramTaskStore
@@ -17,6 +17,12 @@ class SchedulerTickResult:
     pushed_notifications: int
     dedupe_suppressed_count: int
     retried_notifications: int
+    pulse_notifications: int = 0
+
+
+class PulsePublisher(Protocol):
+    async def publish_due(self, *, now: datetime) -> int:
+        ...
 
 
 class TelegramWatchScheduler:
@@ -26,6 +32,7 @@ class TelegramWatchScheduler:
         store: TelegramTaskStore,
         executor: WatchExecutor,
         governor: ReliabilityGovernor | None = None,
+        pulse_publisher: PulsePublisher | None = None,
         poll_interval_seconds: float = 1.0,
         batch_size: int = 20,
         now_provider: Callable[[], datetime] | None = None,
@@ -33,6 +40,7 @@ class TelegramWatchScheduler:
         self._store = store
         self._executor = executor
         self._governor = governor or ReliabilityGovernor(store=store)
+        self._pulse_publisher = pulse_publisher
         self._poll_interval_seconds = poll_interval_seconds
         self._batch_size = batch_size
         self._now_provider = now_provider or (lambda: datetime.now(timezone.utc))
@@ -57,6 +65,9 @@ class TelegramWatchScheduler:
         if hasattr(self._executor, "process_retry_queue"):
             retried_notifications = await self._executor.process_retry_queue(limit=self._batch_size)
         self._governor.evaluate(now=self._now_provider())
+        pulse_notifications = 0
+        if self._pulse_publisher is not None:
+            pulse_notifications = max(0, int(await self._pulse_publisher.publish_due(now=self._now_provider())))
 
         return SchedulerTickResult(
             claimed_jobs=len(jobs),
@@ -64,6 +75,7 @@ class TelegramWatchScheduler:
             pushed_notifications=pushed_notifications,
             dedupe_suppressed_count=dedupe_suppressed_count,
             retried_notifications=retried_notifications,
+            pulse_notifications=pulse_notifications,
         )
 
     async def run_forever(self) -> None:

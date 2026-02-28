@@ -1,0 +1,19 @@
+{
+  "evidence_id": "upgrade8_p2_market_pulse_subscription",
+  "date": "2026-02-28",
+  "scope": "Upgrade8 P2 market pulse subscription + proactive push",
+  "tests": [
+    "tests/test_market_pulse.py::test_market_pulse_publish_due_sends_once_per_window_and_contains_sections"
+  ],
+  "contract": {
+    "subscription": "pref pulse off|1h|4h",
+    "delivery_mode": "opt-in only",
+    "payload_sections": [
+      "Top movers",
+      "news theme delta",
+      "risk hints"
+    ],
+    "dispatch_dedupe": "chat_id + schedule_token + window_end"
+  },
+  "status": "passed"
+}

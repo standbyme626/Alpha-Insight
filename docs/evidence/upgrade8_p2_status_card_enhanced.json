@@ -1,0 +1,17 @@
+{
+  "evidence_id": "upgrade8_p2_status_card_enhanced",
+  "date": "2026-02-28",
+  "scope": "Upgrade8 P2 status card enhancement",
+  "tests": [
+    "tests/test_telegram_phase_d.py::test_upgrade8_p2_status_card_and_pulse_subscription_are_visible"
+  ],
+  "required_lines": [
+    "24h delivery success",
+    "data source state",
+    "latest delivery latency",
+    "latest incident",
+    "latest recovery",
+    "pulse subscription"
+  ],
+  "status": "passed"
+}

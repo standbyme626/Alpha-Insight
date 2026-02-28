@@ -1,0 +1,14 @@
+{
+  "evidence_id": "upgrade8_p2_regression_gate",
+  "date": "2026-02-28",
+  "scope": "Upgrade8 P2 regression gate",
+  "tests": {
+    "targeted": "pytest -q tests/test_telegram_phase_b.py tests/test_telegram_phase_d.py tests/test_market_pulse.py",
+    "full": "pytest -q"
+  },
+  "results": {
+    "targeted": "110 passed",
+    "full": "216 passed"
+  },
+  "status": "passed"
+}

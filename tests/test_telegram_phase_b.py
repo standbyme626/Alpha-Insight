@@ -177,6 +177,40 @@ async def test_scheduler_restores_and_executes_due_jobs(tmp_path) -> None:  # no
 
 
 @pytest.mark.asyncio
+async def test_scheduler_runs_market_pulse_publisher_hook(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    base_time = datetime(2026, 2, 27, 0, 0, tzinfo=timezone.utc)
+
+    class FakeExecutor:
+        async def execute_job(self, job: DueWatchJob):  # noqa: ANN001
+            class _Result:
+                pushed_count = 0
+                dedupe_suppressed_count = 0
+
+            return _Result()
+
+    class FakePulsePublisher:
+        def __init__(self) -> None:
+            self.calls: list[datetime] = []
+
+        async def publish_due(self, *, now: datetime) -> int:
+            self.calls.append(now)
+            return 2
+
+    pulse = FakePulsePublisher()
+    scheduler = TelegramWatchScheduler(
+        store=store,
+        executor=FakeExecutor(),
+        pulse_publisher=pulse,
+        now_provider=lambda: base_time,
+        poll_interval_seconds=0.01,
+    )
+    out = await scheduler.run_once()
+    assert len(pulse.calls) == 1
+    assert out.pulse_notifications == 2
+
+
+@pytest.mark.asyncio
 async def test_watch_executor_dedupes_events_within_bucket(tmp_path) -> None:  # noqa: ANN001
     store = TelegramTaskStore(tmp_path / "telegram.db")
     store.upsert_telegram_chat(chat_id="chat-b3", user_id="u-2", username="gamma")

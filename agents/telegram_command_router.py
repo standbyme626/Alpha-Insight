@@ -317,7 +317,7 @@ def parse_telegram_command(text: str) -> CommandRoute | CommandError:
 
     if command == "/pref":
         if len(parts) < 3:
-            return CommandError("用法 (Usage): /pref <summary|quiet|priority> <value>")
+            return CommandError("用法 (Usage): /pref <summary|quiet|priority|pulse> <value>")
         setting = parts[1].strip().lower()
         value = parts[2].strip().lower()
         if setting == "summary":
@@ -339,6 +339,10 @@ def parse_telegram_command(text: str) -> CommandRoute | CommandError:
             if not (0 <= start <= 23 and 0 <= end <= 23):
                 return CommandError("quiet 时段必须在 00-23 范围 (Quiet hours must use 00-23 range).")
             return CommandRoute(name="pref", args={"setting": "quiet", "value": f"{start:02d}-{end:02d}"})
-        return CommandError("偏好键必须是 summary|quiet|priority (Preference key must be ...).")
+        if setting == "pulse":
+            if value not in {"off", "1h", "4h"}:
+                return CommandError("pulse 偏好必须是 off|1h|4h (Pulse preference must be off|1h|4h).")
+            return CommandRoute(name="pref", args={"setting": "pulse", "value": value})
+        return CommandError("偏好键必须是 summary|quiet|priority|pulse (Preference key must be ...).")
 
     return CommandError(f"不支持的命令 (Unsupported command): {parts[0]}. 请使用 /help 查看可用命令 (Use /help to see available commands).")
