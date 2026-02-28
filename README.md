@@ -56,6 +56,58 @@ Alpha-Insight 是一个“研究 + 监控 + 推送”的量化投研系统：
 
 ---
 
+## 用户使用手册（Telegram，含自然语言）
+
+### 1) 首次使用（5 分钟）
+1. 启动服务：
+```bash
+bash scripts/telegram_stack.sh restart
+bash scripts/telegram_stack.sh status
+```
+2. 打开 Telegram，进入你的 Bot 会话。
+3. 发送 `/start`（展示能力卡）或 `/help`（展示命令清单）。
+4. 发送 `/status`，确认系统在线并能返回运行状态。
+
+### 2) 命令版与自然语言版（等价入口）
+| 目标 | 命令版 | 自然语言版（NL） | 后端入口 |
+|---|---|---|---|
+| 快速分析 | `/analyze TSLA` | `分析 TSLA 最近一个月走势并给关键价位` | `TelegramGateway -> TelegramActions.handle_analyze_snapshot` |
+| 创建监控 | `/monitor TSLA 1h rsi` | `帮我盯 TSLA，每小时提醒，按 RSI` | `TelegramGateway -> TelegramActions.handle_monitor` |
+| 查看任务 | `/list` | `看看我的监控列表` | `TelegramActions.handle_list` |
+| 停止任务 | `/stop TSLA` 或 `/stop job-xxxx` | `停止 TSLA 的提醒` | `TelegramActions.handle_stop` |
+| 告警中心 | `/alerts failed 20` | `看失败告警前20条` | `TelegramActions.handle_alerts` |
+| 报告查询 | `/report <run_id> full` | `给我上次分析的完整报告` | `TelegramActions.handle_report` |
+| 日摘要 | `/digest daily` | `给我今天摘要` | `TelegramActions.handle_digest` |
+| 路由设置 | `/route set email your@mail.com` | `把告警加到邮箱` | `TelegramActions.handle_route` |
+
+说明：自然语言解析由 `agents/telegram_nlu_planner.py::plan_from_text` 完成，命令解析由 `agents/telegram_command_router.py::parse_telegram_command` 完成。
+
+### 3) 推荐实操流程（新用户）
+1. `分析 0700.HK 近30天并给我K线`  
+期望输出：Card A/B/C/D + 可点击按钮（K线/新闻/提醒/更多）。
+2. `帮我盯 0700.HK 每小时波动提醒`  
+期望输出：返回 `job_id`、下次执行时间、策略层级与路由策略。
+3. `看看我的监控列表`  
+期望输出：活跃任务、最近触发、下次执行。
+4. `看下系统状态` 或 `/status`  
+期望输出：24h 推送成功率、重试队列、DLQ、降级状态。
+
+### 4) 分析结果怎么读（Card A/B/C/D）
+- Card A（区间表现）：近 30 交易日涨跌幅、涨跌额、区间高低、振幅、最大回撤、现价位置。
+- Card B（解释层）：技术一句话（含 MA10/MA20、支撑/压力）+ 新闻主题 Top3。
+- Card C（证据层）：行情源、新闻覆盖、指标口径、图表说明。
+- Card D（动作层）：按钮入口（K线、新闻、提醒、更多）。
+
+### 5) 常见自然语言模板（可直接复制）
+- `分析 AAPL 最近3个月，给我关键支撑和压力。`
+- `分析 9988.HK，重点看新闻情绪和监管主题。`
+- `帮我监控 TSLA，每4小时提醒，走 alert-only。`
+- `把提醒改成 email_only。`
+- `暂停这个监控任务。`
+- `给我最近失败告警。`
+
+---
+
 ## Feature Mapping（功能 -> 代码位置）
 | 用户功能 | 代码位置（文件 + 关键函数/类） |
 |---|---|
@@ -79,30 +131,30 @@ Alpha-Insight 是一个“研究 + 监控 + 推送”的量化投研系统：
 
 ```mermaid
 graph TD
-    U[User Telegram / Frontend] --> TG[Telegram Gateway\nservices/telegram_gateway.py]
-    TG --> TA[Telegram Actions\nservices/telegram_actions.py]
-    TA --> WF[Unified Workflow\nagents/workflow_engine.py]
-    WF --> MD[Market Data\ntools/market_data.py]
-    WF --> ND[News Data\ntools/news_data.py]
-    WF --> SB[Sandbox Manager\ncore/sandbox_manager.py]
+    U[用户入口 User<br/>Telegram / 前端 Frontend] --> TG[电报网关 Telegram Gateway<br/>services/telegram_gateway.py]
+    TG --> TA[动作层 Telegram Actions<br/>services/telegram_actions.py]
+    TA --> WF[统一研究链路 Unified Workflow<br/>agents/workflow_engine.py]
+    WF --> MD[行情数据 Market Data<br/>tools/market_data.py]
+    WF --> ND[新闻数据 News Data<br/>tools/news_data.py]
+    WF --> SB[沙箱管理 Sandbox Manager<br/>core/sandbox_manager.py]
 
-    TG --> TS[(TelegramTaskStore\nSQLite)]
+    TG --> TS[(任务存储 TelegramTaskStore<br/>SQLite)]
     TA --> TS
 
-    SCH[Watch Scheduler\nservices/scheduler.py] --> WE[Watch Executor\nservices/watch_executor.py]
+    SCH[调度器 Watch Scheduler<br/>services/scheduler.py] --> WE[执行器 Watch Executor<br/>services/watch_executor.py]
     WE --> TS
-    WE --> NC[Notification Channels\nservices/notification_channels.py]
-    NC --> TEL[Telegram API]
-    NC --> WEBH[Webhook/Email/WeCom]
+    WE --> NC[通知通道 Notification Channels<br/>services/notification_channels.py]
+    NC --> TEL[电报接口 Telegram API]
+    NC --> WEBH[外部路由 Webhook / Email / WeCom]
 
-    SCH --> RG[Reliability Governor\nservices/reliability_governor.py]
+    SCH --> RG[可靠性治理 Reliability Governor<br/>services/reliability_governor.py]
     RG --> TS
-    SCH --> MP[Market Pulse\nservices/market_pulse.py]
+    SCH --> MP[市场脉冲 Market Pulse<br/>services/market_pulse.py]
     MP --> NC
 
-    TS --> FE1[Streamlit UI\nui/upgrade7_console.py]
+    TS --> FE1[Streamlit 控制台 Streamlit UI<br/>ui/upgrade7_console.py]
     TS --> EXP[scripts/upgrade7_frontend_resources_export.py]
-    EXP --> FE2[Next.js Console\nweb_console]
+    EXP --> FE2[Next.js 控制台 Next.js Console<br/>web_console]
 ```
 
 ---
@@ -111,24 +163,24 @@ graph TD
 
 ```mermaid
 sequenceDiagram
-    participant User as Telegram User
-    participant GW as TelegramGateway
-    participant ACT as TelegramActions
-    participant WF as run_unified_research
-    participant MKT as market_data/news_data
-    participant STORE as TelegramTaskStore
+    participant User as 用户 User
+    participant GW as 电报网关 TelegramGateway
+    participant ACT as 动作层 TelegramActions
+    participant WF as 统一研究 run_unified_research
+    participant MKT as 数据层 market_data/news_data
+    participant STORE as 存储 TelegramTaskStore
     participant TGAPI as Telegram API
 
-    User->>GW: /analyze TSLA 或 NL 输入
-    GW->>STORE: enqueue/update request
-    GW->>ACT: handle_analyze_snapshot(...)
-    ACT->>TGAPI: 进度消息(send_progress / edit)
-    ACT->>WF: run_unified_research(request,symbol,period)
-    WF->>MKT: 行情 + 新闻 + 指标
-    WF-->>ACT: result(metrics,fused_insights,tool_results)
-    ACT->>ACT: 计算 Card A/B/C/D + 技术价位 + 新闻主题
-    ACT->>STORE: upsert_analysis_report / dedupe final message
-    ACT->>TGAPI: 发送主结果 + 按钮
+    User->>GW: /analyze TSLA 或 自然语言 NL
+    GW->>STORE: 入队并更新请求 enqueue/update request
+    GW->>ACT: 触发快照分析 handle_analyze_snapshot(...)
+    ACT->>TGAPI: 发送进度（可编辑）send_progress/edit
+    ACT->>WF: 执行研究 run_unified_research(request,symbol,period)
+    WF->>MKT: 拉取行情/新闻/指标 fetch market/news/metrics
+    WF-->>ACT: 返回结果 result(metrics,fused_insights,tool_results)
+    ACT->>ACT: 生成 Card A/B/C/D 与关键价位/主题
+    ACT->>STORE: 写入报告并做最终消息去重
+    ACT->>TGAPI: 发送主结果 + 按钮 send final card + actions
     ACT->>STORE: 记录指标/状态/证据元数据
 ```
 
