@@ -198,6 +198,24 @@ class RequestChartStateRecord:
 
 
 @dataclass
+class RequestProgressMessageRecord:
+    request_id: str
+    chat_id: str
+    message_id: int | None
+    last_stage: str | None
+    updated_at: str
+
+
+@dataclass
+class FinalMessageDispatchRecord:
+    request_id: str
+    final_schema_version: str
+    message_id: int | None
+    sent_at: str
+    updated_at: str
+
+
+@dataclass
 class ConversationArchiveRecord:
     archive_id: int
     scope_key: str
@@ -625,6 +643,29 @@ class TelegramTaskStore:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS request_progress_messages (
+                    request_id TEXT PRIMARY KEY,
+                    chat_id TEXT NOT NULL,
+                    message_id INTEGER,
+                    last_stage TEXT,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS final_message_dispatches (
+                    request_id TEXT NOT NULL,
+                    final_schema_version TEXT NOT NULL,
+                    message_id INTEGER,
+                    sent_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(request_id, final_schema_version)
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS conversation_archives (
                     archive_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     scope_key TEXT NOT NULL,
@@ -674,6 +715,7 @@ class TelegramTaskStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_candidate_chat_status ON pending_candidate_selection(chat_id, status)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_candidate_expires ON pending_candidate_selection(expires_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_conversation_archives_scope_created ON conversation_archives(scope_key, created_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_final_dispatch_request ON final_message_dispatches(request_id)")
             self._ensure_column(conn, "watch_jobs", "scope", "TEXT NOT NULL DEFAULT 'single'")
             self._ensure_column(conn, "watch_jobs", "group_id", "TEXT")
             self._ensure_column(conn, "watch_jobs", "route_strategy", "TEXT NOT NULL DEFAULT 'dual_channel'")
@@ -1578,6 +1620,118 @@ class TelegramTaskStore:
             request_id=str(row["request_id"]),
             chart_state=str(row["chart_state"]),
             chart_updated_at=str(row["chart_updated_at"]),
+        )
+
+    def upsert_request_progress_message(
+        self,
+        *,
+        request_id: str,
+        chat_id: str,
+        message_id: int | None,
+        last_stage: str | None,
+    ) -> None:
+        now_iso = _utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO request_progress_messages(request_id, chat_id, message_id, last_stage, updated_at)
+                VALUES(?, ?, ?, ?, ?)
+                ON CONFLICT(request_id) DO UPDATE SET
+                    chat_id = excluded.chat_id,
+                    message_id = excluded.message_id,
+                    last_stage = excluded.last_stage,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    str(request_id),
+                    str(chat_id),
+                    int(message_id) if message_id is not None else None,
+                    str(last_stage) if last_stage is not None else None,
+                    now_iso,
+                ),
+            )
+
+    def get_request_progress_message(self, *, request_id: str) -> RequestProgressMessageRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT request_id, chat_id, message_id, last_stage, updated_at
+                FROM request_progress_messages
+                WHERE request_id = ?
+                LIMIT 1
+                """,
+                (str(request_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        return RequestProgressMessageRecord(
+            request_id=str(row["request_id"]),
+            chat_id=str(row["chat_id"]),
+            message_id=int(row["message_id"]) if row["message_id"] is not None else None,
+            last_stage=str(row["last_stage"]) if row["last_stage"] is not None else None,
+            updated_at=str(row["updated_at"]),
+        )
+
+    def claim_final_message_dispatch(self, *, request_id: str, final_schema_version: str) -> bool:
+        now_iso = _utc_now()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO final_message_dispatches(request_id, final_schema_version, message_id, sent_at, updated_at)
+                VALUES(?, ?, NULL, ?, ?)
+                """,
+                (str(request_id), str(final_schema_version), now_iso, now_iso),
+            )
+        return cursor.rowcount > 0
+
+    def mark_final_message_dispatched(
+        self,
+        *,
+        request_id: str,
+        final_schema_version: str,
+        message_id: int | None,
+    ) -> None:
+        now_iso = _utc_now()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE final_message_dispatches
+                SET message_id = COALESCE(?, message_id),
+                    updated_at = ?
+                WHERE request_id = ? AND final_schema_version = ?
+                """,
+                (
+                    int(message_id) if message_id is not None else None,
+                    now_iso,
+                    str(request_id),
+                    str(final_schema_version),
+                ),
+            )
+
+    def get_final_message_dispatch(
+        self,
+        *,
+        request_id: str,
+        final_schema_version: str,
+    ) -> FinalMessageDispatchRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT request_id, final_schema_version, message_id, sent_at, updated_at
+                FROM final_message_dispatches
+                WHERE request_id = ? AND final_schema_version = ?
+                LIMIT 1
+                """,
+                (str(request_id), str(final_schema_version)),
+            ).fetchone()
+        if row is None:
+            return None
+        return FinalMessageDispatchRecord(
+            request_id=str(row["request_id"]),
+            final_schema_version=str(row["final_schema_version"]),
+            message_id=int(row["message_id"]) if row["message_id"] is not None else None,
+            sent_at=str(row["sent_at"]),
+            updated_at=str(row["updated_at"]),
         )
 
     def mark_pending_candidate_selection(self, *, request_id: str, status: str) -> bool:

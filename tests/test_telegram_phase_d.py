@@ -23,12 +23,33 @@ class FakeChatSender:
         self.photos: list[tuple[str, str, str]] = []
         self.keyboards: list[tuple[str, dict[str, object]]] = []
         self.chat_actions: list[tuple[str, str]] = []
+        self.edits: list[tuple[str, int, str]] = []
+        self._message_id_counter = 0
+        self._message_index_by_id: dict[int, int] = {}
 
     async def send_text(self, chat_id: str, text: str, reply_markup: dict[str, object] | None = None) -> dict[str, object]:
+        self._message_id_counter += 1
+        message_id = self._message_id_counter
+        self._message_index_by_id[message_id] = len(self.messages)
         self.messages.append((chat_id, text))
         if reply_markup is not None:
             self.keyboards.append((chat_id, reply_markup))
-        return {"ok": True}
+        return {"ok": True, "result": {"message_id": message_id}}
+
+    async def edit_message_text(
+        self,
+        chat_id: str,
+        message_id: int,
+        text: str,
+        reply_markup: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        self.edits.append((chat_id, int(message_id), text))
+        idx = self._message_index_by_id.get(int(message_id))
+        if idx is not None and 0 <= idx < len(self.messages):
+            self.messages[idx] = (chat_id, text)
+        if reply_markup is not None:
+            self.keyboards.append((chat_id, reply_markup))
+        return {"ok": True, "result": {"message_id": int(message_id)}}
 
     async def send_photo(self, chat_id: str, image_path: str, caption: str = "") -> dict[str, object]:
         self.photos.append((chat_id, image_path, caption))
@@ -1229,6 +1250,7 @@ async def test_phase_b_analyze_snapshot_nl_returns_text_and_photo(tmp_path) -> N
     latest = next(item[1] for item in reversed(sender.messages) if "Snapshot Analysis" in item[1])
     assert "Snapshot Analysis" in latest
     assert "run_id=" not in latest
+    assert "request_id=" not in latest
     assert sender.photos
     assert sender.photos[-1][0] == "chat-b1"
     req = store.get_nl_request(request_id=request_id)
@@ -1569,6 +1591,71 @@ async def test_phase_d_send_progress_updates_can_be_disabled(tmp_path) -> None: 
     messages = [item[1] for item in sender.messages]
     assert any("已受理请求，开始分析" in item for item in messages)
     assert not any("阶段进度" in item for item in messages)
+
+
+@pytest.mark.asyncio
+async def test_upgrade8_p0_progress_uses_single_message_with_edit_updates(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+    limits = RuntimeLimits(send_progress_updates=True)
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {
+            "run_id": "run-progress-edit",
+            "fused_insights": {"summary": "progress update"},
+            "metrics": {"data_close": 110.0, "window_low": 95.0, "window_high": 115.0},
+            **kwargs,
+        }
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5, limits=limits)
+    gateway = TelegramGateway(store=store, actions=actions, limits=limits)
+
+    assert await gateway.process_update({"update_id": 230045, "message": {"chat": {"id": "chat-progress-edit"}, "text": "分析 TSLA 一个月走势"}})
+    progress_msgs = [text for _, text in sender.messages if "阶段进度" in text]
+    assert len(progress_msgs) == 1
+    assert "阶段进度 4/4：图表处理" in progress_msgs[0]
+    assert len(sender.edits) >= 1
+
+
+@pytest.mark.asyncio
+async def test_upgrade8_p0_final_card_is_idempotent_on_request_and_schema(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {
+            "run_id": "run-final-idem",
+            "fused_insights": {"summary": "idempotent final card"},
+            "metrics": {
+                "data_close": 88.0,
+                "window_low": 80.0,
+                "window_high": 92.0,
+                "return_30d": 0.05,
+            },
+            **kwargs,
+        }
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    await actions.handle_analyze_snapshot(
+        chat_id="chat-final-idem",
+        symbol="TSLA",
+        period="1mo",
+        interval="1d",
+        need_chart=False,
+        need_news=True,
+        request_id="req-final-idem",
+    )
+    await actions.handle_analyze_snapshot(
+        chat_id="chat-final-idem",
+        symbol="TSLA",
+        period="1mo",
+        interval="1d",
+        need_chart=False,
+        need_news=True,
+        request_id="req-final-idem",
+    )
+    final_cards = [text for _, text in sender.messages if "Card A｜区间表现" in text]
+    assert len(final_cards) == 1
 
 
 @pytest.mark.asyncio
@@ -2092,11 +2179,11 @@ async def test_phase_p1_news_window_toggle_30_days_via_callback(tmp_path) -> Non
     assert await gateway.process_update(
         {"update_id": 30242, "callback_query": {"id": "cb-p1-news", "data": f"act|{req_id[-6:]}|news30", "message": {"chat": {"id": "chat-p1b"}}}}
     )
-    assert any("新闻回显: 近30天" in text or "新闻回显: 近30天 共" in text for _, text in sender.messages)
+    assert any("窗口=近30天" in text for _, text in sender.messages)
 
 
 @pytest.mark.asyncio
-async def test_phase_p1_dedupe_echoes_ready_state_and_run_id(tmp_path) -> None:  # noqa: ANN001
+async def test_phase_p1_dedupe_echoes_ready_state_without_internal_ids(tmp_path) -> None:  # noqa: ANN001
     store = TelegramTaskStore(tmp_path / "telegram.db")
     sender = FakeChatSender()
     calls = {"n": 0}
@@ -2118,7 +2205,8 @@ async def test_phase_p1_dedupe_echoes_ready_state_and_run_id(tmp_path) -> None: 
     assert await gateway.process_update({"update_id": 30252, "message": {"chat": {"id": "chat-p1c"}, "text": "分析 TSLA 一个月走势"}})
     assert calls["n"] == 1
     assert "复用最近分析结果" in sender.messages[-1][1]
-    assert "run_id=run-p1-dedupe-1" in sender.messages[-1][1]
+    assert "run_id=" not in sender.messages[-1][1].lower()
+    assert "request_id=" not in sender.messages[-1][1].lower()
 
 
 @pytest.mark.asyncio
@@ -2170,15 +2258,13 @@ async def test_upgrade7_user_response_contract_baseline_and_density(tmp_path) ->
     gateway = TelegramGateway(store=store, actions=actions)
 
     assert await gateway.process_update({"update_id": 30306, "message": {"chat": {"id": "chat-u7a"}, "text": "分析 TSLA 一个月走势"}})
-    contract_msgs = [text for _, text in sender.messages if "结论:" in text or "证据补充:" in text]
-    assert 1 <= len(contract_msgs) <= 2
-    main = next(text for text in contract_msgs if "结论:" in text)
-    assert "结论:" in main
-    assert "价格位置:" in main
-    assert "技术证据:" in main
-    assert "新闻回显:" in main
-    assert "风险提示:" in main
-    assert "下一步动作:" in main
+    contract_msgs = [text for _, text in sender.messages if "Card A｜区间表现" in text]
+    assert len(contract_msgs) == 1
+    main = contract_msgs[0]
+    assert "Card A｜区间表现" in main
+    assert "Card B｜原因摘要" in main
+    assert "Card C｜证据三件套" in main
+    assert "Card D｜动作入口" in main
     assert len(main) <= 1200
     lowered = main.lower()
     assert "schema_version" not in lowered
@@ -2205,11 +2291,11 @@ async def test_upgrade7_analyze_command_and_snapshot_have_same_contract_shape(tm
     gateway = TelegramGateway(store=store, actions=actions)
 
     assert await gateway.process_update({"update_id": 30307, "message": {"chat": {"id": "chat-u7b"}, "text": "/analyze TSLA"}})
-    cmd_msg = next(text for _, text in reversed(sender.messages) if "结论:" in text)
+    cmd_msg = next(text for _, text in reversed(sender.messages) if "Card A｜区间表现" in text)
     assert await gateway.process_update({"update_id": 30308, "message": {"chat": {"id": "chat-u7c"}, "text": "分析 TSLA 一个月走势"}})
-    snapshot_msg = next(text for _, text in reversed(sender.messages) if "结论:" in text)
+    snapshot_msg = next(text for _, text in reversed(sender.messages) if "Card A｜区间表现" in text)
 
-    for label in ("结论:", "价格位置:", "技术证据:", "新闻回显:", "风险提示:", "下一步动作:", "类型: Snapshot Analysis"):
+    for label in ("Card A｜区间表现", "Card B｜原因摘要", "Card C｜证据三件套", "Card D｜动作入口", "类型: Snapshot Analysis"):
         assert label in cmd_msg
         assert label in snapshot_msg
 
@@ -2237,7 +2323,7 @@ async def test_upgrade7_context_carry_prompt_is_explicit_and_switchable(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_phase_p2_snapshot_output_order_and_evidence_visible(tmp_path) -> None:  # noqa: ANN001
+async def test_upgrade8_p0_snapshot_card_contains_first_screen_required_fields(tmp_path) -> None:  # noqa: ANN001
     store = TelegramTaskStore(tmp_path / "telegram.db")
     sender = FakeChatSender()
 
@@ -2250,9 +2336,16 @@ async def test_phase_p2_snapshot_output_order_and_evidence_visible(tmp_path) -> 
                 "technical_rsi_14": 56.0,
                 "window_low": 180.0,
                 "window_high": 220.0,
+                "return_30d": 0.1,
+                "max_drawdown_30d": -0.08,
+                "market_data_source": "AlphaFeed",
+                "market_data_updated_at": "2026-02-28T09:30:00+00:00",
                 "data_window": "2026-01-28 ~ 2026-02-27",
             },
-            "news": [{"title": "news", "source": "wire"}],
+            "news": [
+                {"title": "earnings beat", "source": "WireA", "published_at": "2026-02-27T08:00:00+00:00"},
+                {"title": "regulator probe", "source": "WireB", "published_at": "2026-02-27T07:00:00+00:00"},
+            ],
             **kwargs,
         }
 
@@ -2260,20 +2353,24 @@ async def test_phase_p2_snapshot_output_order_and_evidence_visible(tmp_path) -> 
     gateway = TelegramGateway(store=store, actions=actions)
 
     assert await gateway.process_update({"update_id": 30311, "message": {"chat": {"id": "chat-p2b"}, "text": "分析 TSLA 一个月走势"}})
-    msg = next(text for _, text in reversed(sender.messages) if "结论:" in text)
-    idx_conclusion = msg.find("结论:")
-    idx_price = msg.find("价格位置:")
-    idx_tech = msg.find("技术证据:")
-    idx_news = msg.find("新闻回显:")
-    idx_risk = msg.find("风险提示:")
-    idx_next = msg.find("下一步动作:")
-    assert -1 not in {idx_conclusion, idx_price, idx_tech, idx_news, idx_risk, idx_next}
-    assert idx_conclusion < idx_price < idx_tech < idx_news < idx_risk < idx_next
-    assert "类型: Snapshot Analysis" in msg
+    msg = next(text for _, text in reversed(sender.messages) if "Card A｜区间表现" in text)
+    assert "近30天：" in msg
+    assert "涨跌额" in msg
+    assert "区间：低" in msg
+    assert "振幅" in msg
+    assert "最大回撤" in msg
+    assert "现价区间位置：" in msg
+    assert "Card B｜原因摘要" in msg
+    assert "技术：" in msg
+    assert "新闻：" in msg
+    assert "Card C｜证据三件套" in msg
+    assert "行情源=" in msg
+    assert "新闻源覆盖=" in msg
+    assert "指标口径=" in msg
 
 
 @pytest.mark.asyncio
-async def test_phase_p2_buttons_include_followup_and_explanations(tmp_path) -> None:  # noqa: ANN001
+async def test_upgrade8_p0_snapshot_buttons_collapsed_to_four_primary_actions(tmp_path) -> None:  # noqa: ANN001
     store = TelegramTaskStore(tmp_path / "telegram.db")
     sender = FakeChatSender()
 
@@ -2286,14 +2383,45 @@ async def test_phase_p2_buttons_include_followup_and_explanations(tmp_path) -> N
     assert await gateway.process_update({"update_id": 30321, "message": {"chat": {"id": "chat-p2c"}, "text": "分析 TSLA 一个月走势"}})
     inline = sender.keyboards[-1][1].get("inline_keyboard")
     assert isinstance(inline, list)
+    labels = [str(button["text"]) for row in inline for button in row]
+    callbacks = [str(button["callback_data"]) for row in inline for button in row]
+    assert labels == ["📈K线", "📰新闻", "🔔提醒", "更多"]
+    assert any(item.endswith("|chart") for item in callbacks)
+    assert any(item.endswith("|news") for item in callbacks)
+    assert any(item.endswith("|alert") for item in callbacks)
+    assert any(item.endswith("|more") for item in callbacks)
+
+
+@pytest.mark.asyncio
+async def test_upgrade8_p0_more_button_keeps_legacy_followup_actions(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": "run-p0-more", "metrics": {"data_close": 88.0}, **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 30325, "message": {"chat": {"id": "chat-p0-more"}, "text": "分析 TSLA 一个月走势"}})
+    with store._connect() as conn:  # noqa: SLF001
+        row = conn.execute("SELECT request_id FROM bot_updates WHERE update_id = 30325").fetchone()
+    assert row is not None and row["request_id"]
+    req_id = str(row["request_id"])
+    assert await gateway.process_update(
+        {
+            "update_id": 30326,
+            "callback_query": {"id": "cb-p0-more", "data": f"act|{req_id[-6:]}|more", "message": {"chat": {"id": "chat-p0-more"}}},
+        }
+    )
+    inline = sender.keyboards[-1][1].get("inline_keyboard")
+    assert isinstance(inline, list)
     callbacks = [str(button["callback_data"]) for row in inline for button in row]
     assert any(item.endswith("|period3mo") for item in callbacks)
-    assert any(item.endswith("|news_only") for item in callbacks)
     assert any(item.endswith("|news_detail") for item in callbacks)
     assert any(item.endswith("|news_cluster") for item in callbacks)
-    assert any(item.endswith("|set_monitor") for item in callbacks)
-    assert any(item.endswith("|why_no_chart") for item in callbacks)
-    assert any(item.endswith("|why_no_rsi") for item in callbacks)
+    assert any(item.endswith("|retry") for item in callbacks)
+    assert any(item.endswith("|report") for item in callbacks)
 
 
 @pytest.mark.asyncio

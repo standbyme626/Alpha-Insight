@@ -9,7 +9,7 @@ from services.runtime_controls import GlobalConcurrencyGate, RuntimeLimits
 from services.telegram_actions import TelegramActions
 from services.telegram_gateway import TelegramGateway
 from services.telegram_store import TelegramTaskStore
-from tools.telegram import send_chat_action, send_photo, send_text
+from tools.telegram import edit_message_text, send_chat_action, send_photo, send_text
 
 
 class TelegramChatSender:
@@ -24,6 +24,21 @@ class TelegramChatSender:
 
     async def send_chat_action(self, chat_id: str, action: str = "typing") -> dict[str, object]:
         return await send_chat_action(self._bot_token, chat_id, action)
+
+    async def edit_message_text(
+        self,
+        chat_id: str,
+        message_id: int,
+        text: str,
+        reply_markup: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        return await edit_message_text(
+            self._bot_token,
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            reply_markup=reply_markup,
+        )
 
 
 def parse_args() -> argparse.Namespace:
@@ -81,7 +96,7 @@ async def _main() -> int:
         allowed_commands=_parse_csv_set(
             os.getenv(
                 "TELEGRAM_ALLOWED_COMMANDS",
-                "help,analyze,monitor,list,stop,report,digest,alerts,bulk,webhook,pref",
+                "help,analyze,monitor,list,stop,report,digest,alerts,bulk,webhook,route,pref",
             )
         ),
         gray_release_enabled=os.getenv("TELEGRAM_GRAY_RELEASE_ENABLED", "false").strip().lower() in {"1", "true", "yes"},

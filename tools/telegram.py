@@ -85,9 +85,43 @@ async def send_progress(
     bot_token: str,
     chat_id: str,
     text: str,
+    message_id: int | None = None,
     reply_markup: dict[str, Any] | None = None,
 ) -> dict:
+    if message_id is not None:
+        return await edit_message_text(
+            bot_token,
+            chat_id=chat_id,
+            message_id=int(message_id),
+            text=text,
+            reply_markup=reply_markup,
+        )
     return await send_text(bot_token, chat_id, text, reply_markup=reply_markup)
+
+
+async def edit_message_text(
+    bot_token: str,
+    *,
+    chat_id: str,
+    message_id: int,
+    text: str,
+    reply_markup: dict[str, Any] | None = None,
+) -> dict:
+    base_url = os.getenv("TELEGRAM_API_BASE_URL", "https://api.telegram.org").rstrip("/")
+    url = f"{base_url}/bot{bot_token}/editMessageText"
+    payload: dict[str, Any] = {
+        "chat_id": chat_id,
+        "message_id": int(message_id),
+        "text": text,
+    }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, timeout=30) as response:
+            data = await response.json(content_type=None)
+            if response.status >= 400 or not data.get("ok"):
+                raise TelegramError(f"Telegram editMessageText failed: {data}")
+            return data
 
 
 class TelegramNotifier:
@@ -103,8 +137,34 @@ class TelegramNotifier:
     async def send_chat_action(self, action: str = "typing") -> dict[str, Any]:
         return await send_chat_action(self._bot_token, self._chat_id, action)
 
-    async def send_progress(self, text: str, reply_markup: dict[str, Any] | None = None) -> dict[str, Any]:
-        return await send_progress(self._bot_token, self._chat_id, text, reply_markup=reply_markup)
+    async def send_progress(
+        self,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+        message_id: int | None = None,
+    ) -> dict[str, Any]:
+        return await send_progress(
+            self._bot_token,
+            self._chat_id,
+            text,
+            message_id=message_id,
+            reply_markup=reply_markup,
+        )
+
+    async def edit_message_text(
+        self,
+        chat_id: str,
+        message_id: int,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return await edit_message_text(
+            self._bot_token,
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            reply_markup=reply_markup,
+        )
 
 
 async def dispatch_notifications(

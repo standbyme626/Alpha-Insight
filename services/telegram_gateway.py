@@ -495,16 +495,11 @@ class TelegramGateway:
             )
             return True
 
-        report = self._store.get_analysis_report(report_id=existing.request_id, chat_id=chat_id)
-        run_hint = f"run_id={report.run_id}" if report else "run_id=N/A"
         chart_state_rec = self._store.get_request_chart_state(request_id=existing.request_id)
         chart_state = chart_state_rec.chart_state if chart_state_rec else "none"
         await self._actions.send_inline_buttons(
             chat_id=chat_id,
-            text=(
-                "同会话短窗复用最近分析结果，避免重复重算。\n"
-                f"{run_hint}"
-            ),
+            text="同会话短窗复用最近分析结果，避免重复重算。",
             buttons=self._actions.build_snapshot_buttons(
                 request_id=existing.request_id,
                 chart_state=chart_state,
@@ -941,7 +936,11 @@ class TelegramGateway:
         request_ref = parts[1].strip()
         action = parts[2].strip().lower()
         if not request_ref or action not in {
+            "home",
             "chart",
+            "news",
+            "alert",
+            "more",
             "news7",
             "news30",
             "news_detail",
@@ -1187,6 +1186,55 @@ class TelegramGateway:
                 error=None,
             )
             return True
+        if action == "home":
+            chart_state_rec = self._store.get_request_chart_state(request_id=record.request_id)
+            chart_state = chart_state_rec.chart_state if chart_state_rec else "none"
+            await self._actions.send_inline_buttons(
+                chat_id=chat_id,
+                text="主入口：请选择下一步。",
+                buttons=self._actions.build_snapshot_buttons(
+                    request_id=record.request_id,
+                    chart_state=chart_state,
+                ),
+            )
+            self._store.update_bot_update_status(
+                update_id=update_id,
+                status="processed",
+                command="request_action_home",
+                request_id=record.request_id,
+                error=None,
+            )
+            return True
+        if action == "news":
+            await self._actions.send_inline_buttons(
+                chat_id=chat_id,
+                text="新闻入口：可切换窗口或查看详单/聚类。",
+                buttons=self._actions.build_snapshot_news_buttons(request_id=record.request_id),
+            )
+            self._store.update_bot_update_status(
+                update_id=update_id,
+                status="processed",
+                command="request_action_news_menu",
+                request_id=record.request_id,
+                error=None,
+            )
+            return True
+        if action == "more":
+            await self._actions.send_inline_buttons(
+                chat_id=chat_id,
+                text="更多入口：报告、重试与解释。",
+                buttons=self._actions.build_snapshot_more_buttons(request_id=record.request_id),
+            )
+            self._store.update_bot_update_status(
+                update_id=update_id,
+                status="processed",
+                command="request_action_more_menu",
+                request_id=record.request_id,
+                error=None,
+            )
+            return True
+        if action == "alert":
+            action = "set_monitor"
         if action == "report":
             await self._actions.handle_report(chat_id=chat_id, target_id=record.request_id, detail="full")
             self._store.update_bot_update_status(
@@ -1878,16 +1926,11 @@ class TelegramGateway:
                     else None
                 )
                 if duplicate_record is not None and duplicate_record.status == "completed":
-                    report = self._store.get_analysis_report(report_id=duplicate_record.request_id, chat_id=chat_id)
-                    run_hint = f"run_id={report.run_id}" if report else "run_id=N/A"
                     chart_state_record = self._store.get_request_chart_state(request_id=duplicate_record.request_id)
                     chart_state = chart_state_record.chart_state if chart_state_record else "none"
                     await self._actions.send_inline_buttons(
                         chat_id=chat_id,
-                        text=(
-                            "30秒内重复请求已合并：已生成。\n"
-                            f"{run_hint}"
-                        ),
+                        text="30秒内重复请求已合并：已生成。",
                         buttons=self._actions.build_snapshot_buttons(
                             request_id=duplicate_record.request_id,
                             chart_state=chart_state,

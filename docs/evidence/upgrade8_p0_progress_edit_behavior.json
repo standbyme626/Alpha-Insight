@@ -1,0 +1,23 @@
+{
+  "evidence_id": "upgrade8_p0_progress_edit_behavior",
+  "generated_at": "2026-02-28T10:00:45Z",
+  "contract": {
+    "progress_message_count_per_request": 1,
+    "mechanism": "send initial progress then edit same Telegram message_id",
+    "stages": [
+      "阶段进度 1/4：识别标的",
+      "阶段进度 2/4：拉取行情",
+      "阶段进度 3/4：融合新闻",
+      "阶段进度 4/4：图表处理"
+    ]
+  },
+  "persistence": {
+    "table": "request_progress_messages",
+    "primary_key": "request_id",
+    "fields": ["chat_id", "message_id", "last_stage", "updated_at"]
+  },
+  "validated_by_tests": [
+    "test_upgrade8_p0_progress_uses_single_message_with_edit_updates",
+    "test_phase_d_send_progress_updates_can_be_disabled"
+  ]
+}

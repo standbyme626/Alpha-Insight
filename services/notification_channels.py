@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -18,6 +19,15 @@ class ChatSender(Protocol):
     ) -> dict[str, Any]:
         ...
 
+    async def edit_message_text(
+        self,
+        chat_id: str,
+        message_id: int,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        ...
+
 
 @dataclass
 class ChannelDispatchResult:
@@ -29,8 +39,26 @@ class ChannelDispatchResult:
 class TelegramChannelAdapter:
     """Adapter for Telegram-like sender objects used by gateway/actions."""
 
+    _FORBIDDEN_USER_TOKENS = (
+        "traceback",
+        "schema_version",
+        "action_version",
+        "raw_error",
+        "_plan_steps",
+    )
+    _MAX_TEXT_CHARS = 1200
+
     def __init__(self, sender: ChatSender):
         self._sender = sender
+
+    @classmethod
+    def _apply_user_response_contract(cls, text: str) -> str:
+        sanitized = str(text or "")
+        for token in cls._FORBIDDEN_USER_TOKENS:
+            sanitized = re.sub(re.escape(token), "内部细节", sanitized, flags=re.IGNORECASE)
+        if len(sanitized) > cls._MAX_TEXT_CHARS:
+            sanitized = f"{sanitized[: cls._MAX_TEXT_CHARS - 1]}…"
+        return sanitized
 
     async def send_text(
         self,
@@ -40,7 +68,11 @@ class TelegramChannelAdapter:
         reply_markup: dict[str, Any] | None = None,
     ) -> ChannelDispatchResult:
         try:
-            payload = await self._sender.send_text(chat_id, text, reply_markup=reply_markup)
+            payload = await self._sender.send_text(
+                chat_id,
+                self._apply_user_response_contract(text),
+                reply_markup=reply_markup,
+            )
             return ChannelDispatchResult(delivered=True, payload=payload)
         except Exception as exc:  # pragma: no cover
             return ChannelDispatchResult(delivered=False, error=str(exc))
@@ -66,9 +98,19 @@ class TelegramChannelAdapter:
         *,
         chat_id: str,
         text: str,
+        message_id: int | None = None,
         reply_markup: dict[str, Any] | None = None,
     ) -> ChannelDispatchResult:
-        return await self.send_text(chat_id=chat_id, text=text, reply_markup=reply_markup)
+        sanitized = self._apply_user_response_contract(text)
+        if message_id is not None:
+            editor = getattr(self._sender, "edit_message_text", None)
+            if callable(editor):
+                try:
+                    payload = await editor(chat_id, int(message_id), sanitized, reply_markup=reply_markup)
+                    return ChannelDispatchResult(delivered=True, payload=payload)
+                except Exception as exc:  # pragma: no cover
+                    return ChannelDispatchResult(delivered=False, error=str(exc))
+        return await self.send_text(chat_id=chat_id, text=sanitized, reply_markup=reply_markup)
 
     async def send_chat_action(
         self,
@@ -117,8 +159,11 @@ class MultiChannelNotifier:
         sender = self._senders.get(channel)
         if sender is None:
             return DispatchResult(channel=channel, target=target, delivered=False, error="channel_not_configured")
+        payload_text = text
+        if channel == "telegram":
+            payload_text = TelegramChannelAdapter._apply_user_response_contract(text)
         try:
-            await sender.send_text(target, text)
+            await sender.send_text(target, payload_text)
             return DispatchResult(channel=channel, target=target, delivered=True, error=None)
         except Exception as exc:  # pragma: no cover
             return DispatchResult(channel=channel, target=target, delivered=False, error=str(exc))

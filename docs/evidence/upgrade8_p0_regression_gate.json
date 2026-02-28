@@ -1,0 +1,18 @@
+{
+  "evidence_id": "upgrade8_p0_regression_gate",
+  "generated_at": "2026-02-28T10:00:45Z",
+  "commands": [
+    {
+      "cmd": "pytest -q tests/test_telegram_phase_d.py",
+      "result": "80 passed"
+    },
+    {
+      "cmd": "pytest -q tests/test_telegram_phase_a.py tests/test_telegram_phase_b.py tests/test_telegram_phase_c.py tests/test_telegram_phase_d.py",
+      "result": "123 passed"
+    }
+  ],
+  "gates": {
+    "telegram_phase_regression": "pass",
+    "upgrade8_p0_contract_tests": "pass"
+  }
+}

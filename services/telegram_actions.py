@@ -61,7 +61,8 @@ class TelegramActions:
         "traceback",
         "raw_error",
     }
-    _MAIN_MESSAGE_CHAR_LIMIT = 980
+    _FINAL_SCHEMA_VERSION = "telegram_snapshot_v3"
+    _MAIN_MESSAGE_CHAR_LIMIT = 1180
     _SUPPLEMENT_MESSAGE_CHAR_LIMIT = 420
     _ANALYZE_PROGRESS_TEXT = {
         "identify_symbol": "阶段进度 1/4：识别标的",
@@ -112,7 +113,7 @@ class TelegramActions:
         chat_id: str,
         text: str,
         buttons: list[list[tuple[str, str]]] | None = None,
-    ) -> None:
+    ) -> dict[str, Any] | None:
         safe_text = self._sanitize_user_copy(text)
         blocked = safe_text != text
         if blocked:
@@ -121,6 +122,7 @@ class TelegramActions:
         dispatch = await self._channel.send_text(chat_id=chat_id, text=safe_text, reply_markup=reply_markup)
         if not dispatch.delivered:
             raise RuntimeError(f"telegram_send_text_failed:{dispatch.error or 'unknown_error'}")
+        return dispatch.payload if isinstance(dispatch.payload, dict) else None
 
     @classmethod
     def _sanitize_user_copy(cls, text: str) -> str:
@@ -147,6 +149,20 @@ class TelegramActions:
         if not rows:
             return None
         return {"inline_keyboard": rows}
+
+    @staticmethod
+    def _extract_message_id(payload: dict[str, Any] | None) -> int | None:
+        if not isinstance(payload, dict):
+            return None
+        result = payload.get("result")
+        if isinstance(result, dict):
+            value = result.get("message_id")
+        else:
+            value = payload.get("message_id")
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _render_key_metrics(metrics: dict[str, Any]) -> tuple[str, str]:
@@ -237,6 +253,81 @@ class TelegramActions:
             return value
         return f"{value[: max(1, limit - 1)]}…"
 
+    @staticmethod
+    def _format_signed_pct(value: float | None) -> str:
+        if value is None:
+            return "N/A"
+        return f"{value * 100:+.2f}%"
+
+    @staticmethod
+    def _format_signed_price(value: float | None) -> str:
+        if value is None:
+            return "N/A"
+        return f"{value:+.4f}"
+
+    @staticmethod
+    def _format_timestamp(value: str) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            return "未知时间"
+        candidate = normalized.replace("Z", "+00:00")
+        try:
+            dt = datetime.fromisoformat(candidate)
+            return dt.strftime("%Y-%m-%d %H:%M")
+        except ValueError:
+            return normalized[:16]
+
+    @staticmethod
+    def _position_label(ratio: float | None) -> str:
+        if ratio is None:
+            return "数据不足"
+        if ratio >= 0.8:
+            return "高位"
+        if ratio <= 0.2:
+            return "低位"
+        return "中位"
+
+    @staticmethod
+    def _technical_sentence(*, latest_close: float | None, ma: float | None, rsi: float | None) -> str:
+        if rsi is not None and rsi >= 65:
+            return "短线偏强，若放量站稳前高可延续上行；高位波动风险上升。"
+        if rsi is not None and rsi <= 35:
+            return "短线偏弱，若收复10日均线并放量可转中性；否则延续震荡偏弱。"
+        if ma is not None and latest_close is not None:
+            if latest_close >= ma:
+                return "短线中性偏强，若继续站稳20日均线可确认转强；需防冲高回落。"
+            return "短线中性偏弱，若重回20日均线上方可改善；否则仍偏震荡。"
+        return "短线中性，待价格与量能给出方向触发条件。"
+
+    @staticmethod
+    def _news_sentence(news_digest: NewsDigest) -> str:
+        if news_digest.total_count <= 0:
+            return f"主题覆盖不足（{news_digest.window_label}），可能遗漏重大事件。"
+        ranked = sorted(
+            ((name, int(count)) for name, count in news_digest.event_distribution.items() if int(count) > 0),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        topics = [name for name, _ in ranked[:3]] or ["其他"]
+        topic_text = " / ".join(topics)
+        return (
+            f"主题Top3：{topic_text}（{news_digest.window_label} {news_digest.total_count} 条），"
+            f"整体情绪{news_digest.sentiment_direction}。"
+        )
+
+    @classmethod
+    def _final_schema_version_for_snapshot(
+        cls,
+        *,
+        period: str,
+        news_window_days: int,
+        need_chart: bool,
+    ) -> str:
+        return (
+            f"{cls._FINAL_SCHEMA_VERSION}|period={str(period).lower()}|news_window={int(news_window_days)}|"
+            f"need_chart={1 if need_chart else 0}"
+        )
+
     @classmethod
     def _build_analysis_contract(
         cls,
@@ -248,83 +339,60 @@ class TelegramActions:
         high: float | None,
         low: float | None,
         ret30: float | None,
+        max_drawdown: float | None,
         rsi: float | None,
         ma: float | None,
+        market_source: str,
+        market_updated_at: str,
+        indicator_spec: str,
+        chart_note: str | None,
         news_digest: NewsDigest,
     ) -> tuple[str, str | None]:
         conclusion = cls._summary_sentence(summary)
-        price_line = "价格位置: 缺少区间数据，建议补充历史K线。"
-        range_hint = ""
+        rise_fall_amount: float | None = None
+        if latest_close is not None and ret30 is not None and abs(1.0 + ret30) > 1e-9:
+            base_price = latest_close / (1.0 + ret30)
+            rise_fall_amount = latest_close - base_price
+
+        amplitude: float | None = None
+        ratio: float | None = None
         if latest_close is not None and high is not None and low is not None and high > low:
             ratio = (latest_close - low) / (high - low)
-            if ratio >= 0.8:
-                range_hint = "接近区间上沿"
-            elif ratio <= 0.2:
-                range_hint = "接近区间下沿"
-            else:
-                range_hint = "位于区间中部"
-            price_line = (
-                f"价格位置: 最新价 {round(latest_close, 4)}，"
-                f"30天区间 {round(low, 4)}~{round(high, 4)}，{range_hint}。"
-            )
-        elif latest_close is not None and ret30 is not None:
-            price_line = f"价格位置: 最新价 {round(latest_close, 4)}，近30天涨跌 {round(ret30 * 100, 2)}%。"
-        elif latest_close is not None:
-            price_line = f"价格位置: 最新价 {round(latest_close, 4)}，区间数据不足。"
+            if low > 0:
+                amplitude = (high - low) / low
 
-        technical_line = "技术证据: 指标不足，暂不输出方向性技术结论。"
-        if rsi is not None:
-            technical_line = f"技术证据: RSI14={round(rsi, 2)}，当前更适合跟踪确认信号。"
-        elif ma is not None and latest_close is not None:
-            technical_line = f"技术证据: MA20={round(ma, 4)}，当前价 {round(latest_close, 4)}。"
-        elif high is not None and low is not None:
-            technical_line = f"技术证据: 近30天高低区间 {round(low, 4)}~{round(high, 4)}。"
+        if max_drawdown is None and high is not None and low is not None and high > 0:
+            max_drawdown = (low - high) / high
 
-        dominant_cluster = "其他"
-        if news_digest.event_distribution:
-            dominant_cluster = max(
-                news_digest.event_distribution.items(),
-                key=lambda item: int(item[1]),
-            )[0]
-        news_line = (
-            f"新闻回显: {news_digest.window_label} 共 {news_digest.total_count} 条，"
-            f"情绪{news_digest.sentiment_direction}（{news_digest.sentiment_range}），"
-            f"事件主轴={dominant_cluster}。"
-        )
-        if news_digest.total_count <= 0:
-            news_line = f"新闻回显: {news_digest.window_label} 暂无可用新闻，建议切换 30 天窗口。"
-
-        next_action = (
-            f"下一步动作: 用下方按钮查看“新闻详单/事件聚类”；也可输入“分析 {symbol} 近3个月”。"
-        )
-        risk_line = "风险提示: 仅供研究与提醒，不构成投资建议。"
-
+        source_line = "、".join(news_digest.source_coverage[:3]) if news_digest.source_coverage else "无"
         main_lines = [
-            f"结论: {conclusion}",
-            cls._clip_line(price_line, limit=180),
-            cls._clip_line(technical_line, limit=180),
-            cls._clip_line(news_line, limit=180),
-            risk_line,
-            next_action,
-            "类型: Snapshot Analysis",
-            f"标的/周期: {symbol} {period}",
+            f"{symbol}｜近30天（{cls._period_window(period)})",
+            "",
+            "Card A｜区间表现",
+            f"近30天：{cls._format_signed_pct(ret30)}（涨跌额 {cls._format_signed_price(rise_fall_amount)}）",
+            (
+                f"区间：低 {round(low, 4)} / 高 {round(high, 4)}（振幅 "
+                f"{(amplitude * 100):.2f}%）｜最大回撤 {cls._format_signed_pct(max_drawdown)}"
+                if low is not None and high is not None and amplitude is not None
+                else f"区间：低 {round(low, 4) if low is not None else 'N/A'} / 高 {round(high, 4) if high is not None else 'N/A'}"
+            ),
+            f"现价区间位置：{cls._position_label(ratio)}",
+            "",
+            "Card B｜原因摘要",
+            f"技术：{cls._technical_sentence(latest_close=latest_close, ma=ma, rsi=rsi)}",
+            f"新闻：{cls._news_sentence(news_digest)}",
+            "",
+            "Card C｜证据三件套",
+            f"行情源={market_source}（更新至 {cls._format_timestamp(market_updated_at)}）",
+            f"新闻源覆盖={source_line}（窗口={news_digest.window_label}）",
+            f"指标口径={indicator_spec}",
+            *(["图表说明=" + chart_note] if chart_note else []),
+            "",
+            "Card D｜动作入口",
+            "按钮：📈K线｜📰新闻｜🔔提醒｜更多",
+            f"类型: Snapshot Analysis｜结论: {conclusion}",
         ]
         main_text = cls._clip_line("\n".join(main_lines), limit=cls._MAIN_MESSAGE_CHAR_LIMIT)
-
-        supplement_bits = []
-        if range_hint:
-            supplement_bits.append(f"区间判读: {range_hint}")
-        if high is not None and low is not None:
-            supplement_bits.append(f"Low/High={round(low, 4)}/{round(high, 4)}")
-        if news_digest.top_news:
-            sample = news_digest.top_news[0]
-            supplement_bits.append(f"新闻样本: {sample.title}（{sample.source}）")
-        if supplement_bits:
-            supplement = cls._clip_line(
-                "证据补充: " + " | ".join(supplement_bits),
-                limit=cls._SUPPLEMENT_MESSAGE_CHAR_LIMIT,
-            )
-            return main_text, supplement
         return main_text, None
 
     def _snapshot_buttons(
@@ -336,29 +404,35 @@ class TelegramActions:
         if not request_id:
             return []
         ref = request_id[-6:]
+        return [[
+            (self._chart_state_label(chart_state), f"act|{ref}|chart"),
+            ("📰新闻", f"act|{ref}|news"),
+            ("🔔提醒", f"act|{ref}|alert"),
+            ("更多", f"act|{ref}|more"),
+        ]]
+
+    @staticmethod
+    def _snapshot_news_buttons(request_id: str | None) -> list[list[tuple[str, str]]]:
+        if not request_id:
+            return []
+        ref = request_id[-6:]
         return [
-            [
-                (self._chart_state_label(chart_state), f"act|{ref}|chart"),
-                ("📰新闻(7天)", f"act|{ref}|news7"),
-                ("📰新闻(30天)", f"act|{ref}|news30"),
-            ],
-            [
-                ("📰新闻详单", f"act|{ref}|news_detail"),
-                ("🧩事件聚类", f"act|{ref}|news_cluster"),
-            ],
-            [
-                ("🔁重试", f"act|{ref}|retry"),
-                ("📄报告", f"act|{ref}|report"),
-            ],
-            [
-                ("🗓️近3个月", f"act|{ref}|period3mo"),
-                ("📰只看新闻", f"act|{ref}|news_only"),
-                ("🔔设置监控", f"act|{ref}|set_monitor"),
-            ],
-            [
-                ("❓为什么不给K线", f"act|{ref}|why_no_chart"),
-                ("❓为什么不给RSI", f"act|{ref}|why_no_rsi"),
-            ],
+            [("📰新闻(7天)", f"act|{ref}|news7"), ("📰新闻(30天)", f"act|{ref}|news30")],
+            [("📰新闻详单", f"act|{ref}|news_detail"), ("🧩事件聚类", f"act|{ref}|news_cluster")],
+            [("返回主菜单", f"act|{ref}|home")],
+        ]
+
+    @staticmethod
+    def _snapshot_more_buttons(request_id: str | None) -> list[list[tuple[str, str]]]:
+        if not request_id:
+            return []
+        ref = request_id[-6:]
+        return [
+            [("🔁重试", f"act|{ref}|retry"), ("📄报告", f"act|{ref}|report")],
+            [("📰新闻详单", f"act|{ref}|news_detail"), ("🧩事件聚类", f"act|{ref}|news_cluster")],
+            [("🗓️近3个月", f"act|{ref}|period3mo"), ("📰只看新闻", f"act|{ref}|news_only")],
+            [("❓为什么不给K线", f"act|{ref}|why_no_chart"), ("❓为什么不给RSI", f"act|{ref}|why_no_rsi")],
+            [("返回主菜单", f"act|{ref}|home")],
         ]
 
     def build_snapshot_buttons(
@@ -368,6 +442,12 @@ class TelegramActions:
         chart_state: str,
     ) -> list[list[tuple[str, str]]]:
         return self._snapshot_buttons(request_id=request_id, chart_state=chart_state)
+
+    def build_snapshot_news_buttons(self, *, request_id: str | None) -> list[list[tuple[str, str]]]:
+        return self._snapshot_news_buttons(request_id=request_id)
+
+    def build_snapshot_more_buttons(self, *, request_id: str | None) -> list[list[tuple[str, str]]]:
+        return self._snapshot_more_buttons(request_id=request_id)
 
     @classmethod
     def _clean_key_metrics(cls, key_metrics: dict[str, Any]) -> dict[str, Any]:
@@ -490,9 +570,30 @@ class TelegramActions:
         return ActionResult(command=f"conversation_{intent}")
 
     async def send_analysis_ack(self, *, chat_id: str, request_id: str) -> None:
-        await self._send_text(
+        if not self._limits.send_progress_updates:
+            await self._send_text(
+                chat_id=chat_id,
+                text="已受理请求，开始分析。",
+            )
+            return
+        progress_state = self._store.get_request_progress_message(request_id=request_id)
+        progress_message_id = progress_state.message_id if progress_state is not None else None
+        dispatch = await self._channel.send_progress(
             chat_id=chat_id,
             text="已受理请求，开始分析。",
+            message_id=progress_message_id,
+            reply_markup=None,
+        )
+        if not dispatch.delivered:
+            raise RuntimeError(f"telegram_send_progress_failed:{dispatch.error or 'unknown_error'}")
+        resolved_message_id = progress_message_id
+        if resolved_message_id is None:
+            resolved_message_id = self._extract_message_id(dispatch.payload if isinstance(dispatch.payload, dict) else None)
+        self._store.upsert_request_progress_message(
+            request_id=request_id,
+            chat_id=chat_id,
+            message_id=resolved_message_id,
+            last_stage="ack",
         )
 
     async def send_analysis_progress(
@@ -507,13 +608,25 @@ class TelegramActions:
         stage_text = self._ANALYZE_PROGRESS_TEXT.get(stage)
         if not stage_text:
             return
+        progress_state = self._store.get_request_progress_message(request_id=request_id)
+        progress_message_id = progress_state.message_id if progress_state is not None else None
         dispatch = await self._channel.send_progress(
             chat_id=chat_id,
             text=stage_text,
+            message_id=progress_message_id,
             reply_markup=None,
         )
         if not dispatch.delivered:
             raise RuntimeError(f"telegram_send_progress_failed:{dispatch.error or 'unknown_error'}")
+        resolved_message_id = progress_message_id
+        if resolved_message_id is None:
+            resolved_message_id = self._extract_message_id(dispatch.payload if isinstance(dispatch.payload, dict) else None)
+        self._store.upsert_request_progress_message(
+            request_id=request_id,
+            chat_id=chat_id,
+            message_id=resolved_message_id,
+            last_stage=stage,
+        )
 
     async def _send_chat_action(self, *, chat_id: str, action: str = "typing") -> None:
         dispatch = await self._channel.send_chat_action(chat_id=chat_id, action=action)
@@ -669,12 +782,12 @@ class TelegramActions:
         summary = str(((result.get("fused_insights") or {}).get("summary") or "")).strip() or "暂无摘要。"
         metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
         latest_close = self._metric_float(metrics, "latest_close", "data_close")
-        data_window = str(metrics.get("data_window") or self._period_window(period))
         rsi = self._metric_float(metrics, "technical_rsi_14", "rsi14")
         ma = self._metric_float(metrics, "technical_ma_20", "ma20")
         high = self._metric_float(metrics, "window_high", "period_high")
         low = self._metric_float(metrics, "window_low", "period_low")
         ret30 = self._metric_float(metrics, "return_30d", "change_30d")
+        max_drawdown = self._metric_float(metrics, "max_drawdown_30d", "max_drawdown")
         news_digest = build_news_digest_from_result(result, window_days=news_window_days)
         report_metrics = self._clean_key_metrics(metrics)
         report_metrics.update(
@@ -686,58 +799,28 @@ class TelegramActions:
                 "news_sentiment_range": news_digest.sentiment_range,
             }
         )
-        if run_id:
+        target_request_id = request_id or run_id
+        if run_id and target_request_id:
             self._store.upsert_analysis_report(
                 run_id=run_id,
-                request_id=request_id or run_id,
+                request_id=target_request_id,
                 chat_id=chat_id,
                 symbol=symbol,
                 summary=summary,
                 key_metrics=report_metrics,
             )
-        target_request_id = request_id or run_id
+
         chart_state = "none"
+        chart_path = None
+        chart_error = None
+        chart_note: str | None = None
         if target_request_id:
             self._store.upsert_request_chart_state(request_id=target_request_id, chart_state="none")
-        metric_line, missing_reason = self._render_key_metrics(metrics)
-        main_text, supplement_text = self._build_analysis_contract(
-            symbol=symbol,
-            period=period,
-            summary=summary,
-            latest_close=latest_close,
-            high=high,
-            low=low,
-            ret30=ret30,
-            rsi=rsi,
-            ma=ma,
-            news_digest=news_digest,
-        )
-        evidence_visible = bool(supplement_text)
-        self._store.record_metric(metric_name="evidence_visible_total", metric_value=1.0 if evidence_visible else 0.0)
-
-        menu_buttons = self._snapshot_buttons(request_id=target_request_id, chart_state=chart_state)
-
-        await self._send_text(chat_id=chat_id, text=main_text, buttons=menu_buttons)
-        if supplement_text and not need_chart:
-            await self._send_text(chat_id=chat_id, text=supplement_text)
-        self._store.record_metric(metric_name="analysis_response_total", metric_value=1.0)
-        if missing_reason:
-            self._store.record_metric(metric_name="analysis_explainable_total", metric_value=1.0)
-        elif metric_line:
-            self._store.record_metric(metric_name="analysis_explainable_total", metric_value=1.0)
 
         if need_chart:
             chart_state = "rendering"
             if target_request_id:
                 self._store.upsert_request_chart_state(request_id=target_request_id, chart_state=chart_state)
-            await self._send_text(
-                chat_id=chat_id,
-                text=(
-                    "图表生成中，请稍候。\n"
-                    "证据：图表状态=生成中"
-                ),
-                buttons=self._snapshot_buttons(request_id=target_request_id, chart_state=chart_state),
-            )
             chart_candidate = self._chart_service.extract_chart_path(result)
             chart_path, chart_size, chart_error = self._chart_service.ensure_chart_within_limit(chart_candidate)
             if chart_size is not None:
@@ -745,7 +828,6 @@ class TelegramActions:
             chart_reason = self._resolve_chart_failure_reason(latest_close=latest_close, chart_error=chart_error)
             if chart_path is None and chart_reason == "artifact_missing":
                 self._store.record_metric(metric_name="chart_retry_attempted", metric_value=1.0)
-                await self._send_text(chat_id=chat_id, text="首次未取到图表产物，已自动重试一次。\n证据: 图表状态=重试中")
                 async with self._global_gate.acquire():
                     retry_result = await self._run_research_with_cancel(
                         cancel_event=cancel_event,
@@ -764,28 +846,14 @@ class TelegramActions:
                 if retry_path is not None:
                     chart_path = retry_path
                     chart_error = None
-                    chart_state = "ready"
-                    if target_request_id:
-                        self._store.upsert_request_chart_state(request_id=target_request_id, chart_state=chart_state)
                     self._store.record_metric(metric_name="chart_retry_success", metric_value=1.0)
                 else:
                     chart_error = retry_error
             if chart_path is None:
-                reason = self._resolve_chart_failure_reason(latest_close=latest_close, chart_error=chart_error)
                 chart_state = "failed"
-                if target_request_id:
-                    self._store.upsert_request_chart_state(request_id=target_request_id, chart_state=chart_state)
-                self._store.record_metric(metric_name="chart_render_fail_rate", metric_value=1.0, tags={"reason": reason})
-                await self._send_text(
-                    chat_id=chat_id,
-                    text=(
-                        "这次没能生成价格图表，我可以重试图表或只做新闻解读。\n"
-                        f"原因: {self._chart_reason_text(reason)}\n"
-                        f"证据: 图表状态=失败 | 时间窗={data_window}\n"
-                        f"可选: {self._chart_state_label(chart_state)} 📰新闻(7天|30天) 🔁重试 📄报告"
-                    ),
-                    buttons=self._snapshot_buttons(request_id=target_request_id, chart_state=chart_state),
-                )
+                chart_reason = self._resolve_chart_failure_reason(latest_close=latest_close, chart_error=chart_error)
+                self._store.record_metric(metric_name="chart_render_fail_rate", metric_value=1.0, tags={"reason": chart_reason})
+                chart_note = f"没能生成价格图表（{self._chart_reason_text(chart_reason)}）"
             else:
                 try:
                     dispatch = await asyncio.wait_for(
@@ -800,40 +868,71 @@ class TelegramActions:
                     dispatch = None
                 if dispatch is not None and dispatch.delivered:
                     chart_state = "ready"
-                    if target_request_id:
-                        self._store.upsert_request_chart_state(request_id=target_request_id, chart_state=chart_state)
-                    await self._send_text(
-                        chat_id=chat_id,
-                        text=(
-                            "图表已生成，可继续查看新闻或报告。\n"
-                            "证据：图表状态=已生成"
-                        ),
-                        buttons=self._snapshot_buttons(request_id=target_request_id, chart_state=chart_state),
-                    )
+                    chart_note = "图表已生成，可点击 📈K线 再次查看。"
                 else:
-                    reason = "send_photo_error"
                     chart_state = "failed"
-                    if target_request_id:
-                        self._store.upsert_request_chart_state(request_id=target_request_id, chart_state=chart_state)
-                    self._store.record_metric(metric_name="chart_render_fail_rate", metric_value=1.0, tags={"reason": reason})
-                    await self._send_text(
-                        chat_id=chat_id,
-                        text=(
-                            "图表发送能力不可用，已降级为文本说明。\n"
-                            f"原因: {self._chart_reason_text(reason)}\n"
-                            "证据: 图表状态=失败"
-                        ),
-                        buttons=self._snapshot_buttons(request_id=target_request_id, chart_state=chart_state),
-                    )
-            if news_digest.total_count <= 0:
-                await self._send_text(
-                    chat_id=chat_id,
-                    text=(
-                        f"新闻回显：{news_digest.window_label} 暂无新闻。\n"
-                        "可选：扩到30天窗口或重试。"
-                    ),
-                    buttons=self._snapshot_buttons(request_id=target_request_id, chart_state=chart_state),
-                )
+                    self._store.record_metric(metric_name="chart_render_fail_rate", metric_value=1.0, tags={"reason": "send_photo_error"})
+                    chart_note = f"没能生成价格图表（{self._chart_reason_text('send_photo_error')}）"
+            if target_request_id:
+                self._store.upsert_request_chart_state(request_id=target_request_id, chart_state=chart_state)
+
+        market_source = str(
+            metrics.get("market_data_source")
+            or metrics.get("data_source")
+            or metrics.get("quote_source")
+            or "aggregated_market_feed"
+        ).strip()
+        market_updated_at = str(
+            metrics.get("market_data_updated_at")
+            or metrics.get("data_updated_at")
+            or metrics.get("quote_updated_at")
+            or metrics.get("last_updated_at")
+            or datetime.now(timezone.utc).isoformat()
+        ).strip()
+        indicator_spec = "RSI14(1d)、MA20(1d)"
+        main_text, supplement_text = self._build_analysis_contract(
+            symbol=symbol,
+            period=period,
+            summary=summary,
+            latest_close=latest_close,
+            high=high,
+            low=low,
+            ret30=ret30,
+            max_drawdown=max_drawdown,
+            rsi=rsi,
+            ma=ma,
+            market_source=market_source,
+            market_updated_at=market_updated_at,
+            indicator_spec=indicator_spec,
+            chart_note=chart_note,
+            news_digest=news_digest,
+        )
+        evidence_visible = bool(main_text)
+        self._store.record_metric(metric_name="evidence_visible_total", metric_value=1.0 if evidence_visible else 0.0)
+        schema_version = self._final_schema_version_for_snapshot(
+            period=period,
+            news_window_days=news_window_days,
+            need_chart=need_chart,
+        )
+        if target_request_id and not self._store.claim_final_message_dispatch(
+            request_id=target_request_id,
+            final_schema_version=schema_version,
+        ):
+            self._store.record_metric(metric_name="dedupe_suppressed_count", metric_value=1.0)
+            return ActionResult(command="analyze_snapshot", request_id=request_id)
+
+        menu_buttons = self._snapshot_buttons(request_id=target_request_id, chart_state=chart_state)
+        payload = await self._send_text(chat_id=chat_id, text=main_text, buttons=menu_buttons)
+        if target_request_id:
+            self._store.mark_final_message_dispatched(
+                request_id=target_request_id,
+                final_schema_version=schema_version,
+                message_id=self._extract_message_id(payload),
+            )
+        if supplement_text:
+            await self._send_text(chat_id=chat_id, text=supplement_text)
+        self._store.record_metric(metric_name="analysis_response_total", metric_value=1.0)
+        self._store.record_metric(metric_name="analysis_explainable_total", metric_value=1.0)
 
         return ActionResult(command="analyze_snapshot", request_id=request_id)
 
@@ -1209,6 +1308,7 @@ class TelegramActions:
             high = self._metric_float(key_metrics, "window_high", "period_high")
             low = self._metric_float(key_metrics, "window_low", "period_low")
             ret30 = self._metric_float(key_metrics, "return_30d", "change_30d")
+            max_drawdown = self._metric_float(key_metrics, "max_drawdown_30d", "max_drawdown")
             news_digest = build_news_digest_from_result(result, window_days=7)
             report_metrics = self._clean_key_metrics(key_metrics)
             report_metrics.update(
@@ -1237,6 +1337,19 @@ class TelegramActions:
                     key_metrics=report_metrics,
                 )
             self._store.upsert_request_chart_state(request_id=request_id, chart_state="none")
+            market_source = str(
+                key_metrics.get("market_data_source")
+                or key_metrics.get("data_source")
+                or key_metrics.get("quote_source")
+                or "aggregated_market_feed"
+            ).strip()
+            market_updated_at = str(
+                key_metrics.get("market_data_updated_at")
+                or key_metrics.get("data_updated_at")
+                or key_metrics.get("quote_updated_at")
+                or key_metrics.get("last_updated_at")
+                or datetime.now(timezone.utc).isoformat()
+            ).strip()
             main_text, supplement_text = self._build_analysis_contract(
                 symbol=symbol,
                 period="1mo",
@@ -1245,17 +1358,38 @@ class TelegramActions:
                 high=high,
                 low=low,
                 ret30=ret30,
+                max_drawdown=max_drawdown,
                 rsi=rsi,
                 ma=ma,
+                market_source=market_source,
+                market_updated_at=market_updated_at,
+                indicator_spec="RSI14(1d)、MA20(1d)",
+                chart_note=None,
                 news_digest=news_digest,
             )
-            await self._send_text(
-                chat_id=chat_id,
-                text=main_text,
-                buttons=self._snapshot_buttons(request_id=request_id, chart_state="none"),
+            schema_version = self._final_schema_version_for_snapshot(
+                period="1mo",
+                news_window_days=7,
+                need_chart=False,
             )
-            if supplement_text:
-                await self._send_text(chat_id=chat_id, text=supplement_text)
+            if self._store.claim_final_message_dispatch(
+                request_id=request_id,
+                final_schema_version=schema_version,
+            ):
+                payload = await self._send_text(
+                    chat_id=chat_id,
+                    text=main_text,
+                    buttons=self._snapshot_buttons(request_id=request_id, chart_state="none"),
+                )
+                self._store.mark_final_message_dispatched(
+                    request_id=request_id,
+                    final_schema_version=schema_version,
+                    message_id=self._extract_message_id(payload),
+                )
+                if supplement_text:
+                    await self._send_text(chat_id=chat_id, text=supplement_text)
+            else:
+                self._store.record_metric(metric_name="dedupe_suppressed_count", metric_value=1.0)
         except TimeoutError:
             self._store.transition_analysis_request_status(
                 request_id=request_id,

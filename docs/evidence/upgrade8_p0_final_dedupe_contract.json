@@ -1,0 +1,23 @@
+{
+  "evidence_id": "upgrade8_p0_final_dedupe_contract",
+  "generated_at": "2026-02-28T10:00:45Z",
+  "contract": {
+    "idempotency_key": ["request_id", "final_schema_version"],
+    "behavior": "duplicate final dispatch is suppressed",
+    "metric_on_suppression": "dedupe_suppressed_count"
+  },
+  "persistence": {
+    "table": "final_message_dispatches",
+    "primary_key": ["request_id", "final_schema_version"],
+    "fields": ["message_id", "sent_at", "updated_at"]
+  },
+  "schema_variants": [
+    "telegram_snapshot_v3|period=1mo|news_window=7|need_chart=0",
+    "telegram_snapshot_v3|period=1mo|news_window=30|need_chart=0",
+    "telegram_snapshot_v3|period=1mo|news_window=7|need_chart=1"
+  ],
+  "validated_by_tests": [
+    "test_upgrade8_p0_final_card_is_idempotent_on_request_and_schema",
+    "test_phase_p1_news_window_toggle_30_days_via_callback"
+  ]
+}

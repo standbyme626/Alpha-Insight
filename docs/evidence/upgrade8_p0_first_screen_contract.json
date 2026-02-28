@@ -1,0 +1,28 @@
+{
+  "evidence_id": "upgrade8_p0_first_screen_contract",
+  "generated_at": "2026-02-28T10:00:45Z",
+  "scope": "telegram snapshot final card",
+  "schema_version": "telegram_snapshot_v3",
+  "required_sections": [
+    "Card A｜区间表现",
+    "Card B｜原因摘要",
+    "Card C｜证据三件套",
+    "Card D｜动作入口"
+  ],
+  "required_fields": [
+    "近30天涨跌幅",
+    "涨跌额",
+    "区间高低",
+    "振幅",
+    "最大回撤",
+    "现价区间位置",
+    "行情源+更新时间",
+    "新闻源覆盖+窗口",
+    "指标口径"
+  ],
+  "primary_buttons": ["📈K线", "📰新闻", "🔔提醒", "更多"],
+  "privacy_contract": {
+    "hidden_in_main_analysis": ["run_id", "request_id", "schema_version", "action_version", "internal_keys"],
+    "sanitizer": "TelegramChannelAdapter._apply_user_response_contract + TelegramActions._sanitize_user_copy"
+  }
+}
