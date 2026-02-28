@@ -52,6 +52,67 @@ def _mask_key(key: str) -> str:
     return key[:4] + "***" + key[-4:]
 
 
+def _env_quote(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _write_env_updates(env_path: Path, updates: dict[str, str]) -> list[str]:
+    managed = {str(key).strip(): str(value) for key, value in updates.items() if str(key).strip()}
+    if not managed:
+        return []
+
+    existing_lines: list[str] = []
+    if env_path.exists():
+        existing_lines = env_path.read_text(encoding="utf-8").splitlines()
+
+    written_keys: set[str] = set()
+    output_lines: list[str] = []
+    for raw in existing_lines:
+        line = raw.rstrip("\n")
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in line:
+            output_lines.append(line)
+            continue
+        key, _ = line.split("=", 1)
+        env_key = key.strip()
+        if env_key in managed:
+            output_lines.append(f"{env_key}={_env_quote(managed[env_key])}")
+            written_keys.add(env_key)
+        else:
+            output_lines.append(line)
+
+    for key in managed:
+        if key not in written_keys:
+            output_lines.append(f"{key}={_env_quote(managed[key])}")
+            written_keys.add(key)
+
+    payload = "\n".join(output_lines).rstrip() + "\n"
+    env_path.write_text(payload, encoding="utf-8")
+    return [key for key in managed if key in written_keys]
+
+
+def _runtime_env_updates(
+    *,
+    model: str,
+    api_base: str,
+    api_key_override: str,
+    temperature: float,
+    fallback_enabled: bool,
+) -> dict[str, str]:
+    updates: dict[str, str] = {
+        "TEMPERATURE": str(float(temperature)),
+        "ENABLE_LOCAL_FALLBACK": "true" if fallback_enabled else "false",
+    }
+    if model.strip():
+        updates["OPENAI_MODEL_NAME"] = model.strip()
+    if api_base.strip():
+        updates["OPENAI_API_BASE"] = api_base.strip().rstrip("/")
+    if api_key_override.strip():
+        updates["OPENAI_API_KEY"] = api_key_override.strip()
+    return updates
+
+
 def _run_planner(request: str) -> dict:
     result = asyncio.run(plan_tasks(request))
     return {
@@ -100,6 +161,37 @@ def _apply_runtime_config(
         os.environ["OPENAI_API_KEY"] = api_key_override.strip()
     os.environ["TEMPERATURE"] = str(float(temperature))
     os.environ["ENABLE_LOCAL_FALLBACK"] = "true" if fallback_enabled else "false"
+
+
+def _apply_and_maybe_persist_runtime_config(
+    *,
+    model: str,
+    api_base: str,
+    api_key_override: str,
+    temperature: float,
+    fallback_enabled: bool,
+    persist_to_env: bool,
+    env_path: Path | None = None,
+) -> list[str]:
+    _apply_runtime_config(
+        model=model,
+        api_base=api_base,
+        api_key_override=api_key_override,
+        temperature=temperature,
+        fallback_enabled=fallback_enabled,
+    )
+    if not persist_to_env:
+        return []
+
+    updates = _runtime_env_updates(
+        model=model,
+        api_base=api_base,
+        api_key_override=api_key_override,
+        temperature=temperature,
+        fallback_enabled=fallback_enabled,
+    )
+    target = env_path or (PROJECT_ROOT / ".env")
+    return _write_env_updates(target, updates)
 
 
 SEARCH_MARKET_OPTIONS: dict[str, str] = {
@@ -937,15 +1029,30 @@ def main() -> None:
             placeholder="留空则继续使用当前 OPENAI_API_KEY",
         )
 
+        persist_runtime_env = st.checkbox("Persist to .env / 写入 .env", value=False)
         if st.button("Apply Runtime Config / 应用运行配置"):
-            _apply_runtime_config(
-                model=runtime_model,
-                api_base=runtime_api_base,
-                api_key_override=runtime_key_override,
-                temperature=float(runtime_temp),
-                fallback_enabled=bool(runtime_fallback),
-            )
-            st.success("Runtime config applied / 已应用运行配置")
+            try:
+                saved_keys = _apply_and_maybe_persist_runtime_config(
+                    model=runtime_model,
+                    api_base=runtime_api_base,
+                    api_key_override=runtime_key_override,
+                    temperature=float(runtime_temp),
+                    fallback_enabled=bool(runtime_fallback),
+                    persist_to_env=bool(persist_runtime_env),
+                )
+            except Exception as exc:
+                st.error(f"Runtime config apply failed / 配置应用失败: {exc}")
+            else:
+                if persist_runtime_env:
+                    if saved_keys:
+                        st.success(
+                            "Runtime config applied and saved to .env / 配置已应用并写入 .env: "
+                            + ", ".join(saved_keys)
+                        )
+                    else:
+                        st.success("Runtime config applied / 已应用运行配置")
+                else:
+                    st.success("Runtime config applied / 已应用运行配置")
         st.text(f"Active Key / 当前密钥: {_mask_key(os.getenv('OPENAI_API_KEY', '')) if os.getenv('OPENAI_API_KEY') else '(missing/缺失)'}")
         st.markdown("---")
         st.markdown("**快速开始 / Quick Start**")
