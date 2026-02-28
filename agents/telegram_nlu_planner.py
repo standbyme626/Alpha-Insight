@@ -196,6 +196,9 @@ def detect_general_conversation_intent(text: str) -> str | None:
     if not lowered:
         return None
 
+    if normalized in {"新对话", "重新开始", "重开对话", "开始新对话", "new chat", "new session"}:
+        return "how_to_start"
+
     if any(
         keyword in lowered
         for keyword in (

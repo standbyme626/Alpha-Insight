@@ -452,7 +452,7 @@ class TelegramActions:
 
     @staticmethod
     def _capability_card_text(*, intent: str) -> str:
-        header = "你好，我是 Alpha-Insight 投研助手。"
+        header = "你好，我是 Alpha-Insight 投研助手（7x24 实时扫描）。"
         if intent == "capability":
             header = "我可以帮你做这些事情："
         elif intent == "how_to_start":
@@ -463,19 +463,22 @@ class TelegramActions:
             f"{header}\n"
             "能力卡\n"
             "1) 快速分析：输入“分析 TSLA 一个月走势”\n"
-            "2) 监控提醒：输入“帮我盯 TSLA 每小时”\n"
+            "2) 7x24 监控提醒：输入“帮我盯 TSLA 每小时”\n"
             "3) 查询任务：输入“看看我的监控列表”\n"
+            "4) 运行状态：输入“/status”查看告警与降级状态\n"
             "示例提问：\n"
             "- 分析 0700.HK 近30天并给我K线\n"
             "- 给我 TSLA 最近7天新闻\n"
-            "- 帮我设置 AAPL 每日波动提醒"
+            "- 帮我设置 AAPL 每日波动提醒\n"
+            "- 看看系统现在状态"
         )
 
     @staticmethod
     def _capability_buttons() -> list[list[tuple[str, str]]]:
         return [
             [("📈 快速分析", "guide|analyze"), ("🔔 创建监控", "guide|monitor")],
-            [("📋 查看命令", "guide|help"), ("🧭 怎么开始", "guide|start")],
+            [("📊 运行状态", "guide|status"), ("📋 查看命令", "guide|help")],
+            [("🧭 怎么开始", "guide|start"), ("🆕 新对话", "guide|new")],
         ]
 
     async def handle_general_conversation(self, *, chat_id: str, intent: str) -> ActionResult:
@@ -553,6 +556,9 @@ class TelegramActions:
             chat_id=chat_id,
             text=(
             "可用命令：\n"
+            "/start - 显示能力卡与快速入口\n"
+            "/new - 开启新对话并清空上下文\n"
+            "/status - 查看监控/告警/降级运行状态\n"
             "/analyze <symbol> - 运行统一研究\n"
             "/monitor <symbol> <interval> [volatility|price|rsi] - 创建监控任务（兼容旧格式）\n"
             "/monitor <symbol|sym1,sym2> <interval> [volatility|price|rsi] "
@@ -573,6 +579,29 @@ class TelegramActions:
             ),
         )
         return ActionResult(command="help")
+
+    async def handle_status(self, *, chat_id: str) -> ActionResult:
+        active_jobs = self._store.count_active_watch_jobs(chat_id=chat_id)
+        digest = self._store.build_daily_digest(chat_id=chat_id)
+        triggered = int(digest.get("alerts_triggered", 0))
+        delivered = int(digest.get("delivered_notifications", 0))
+        retry_depth = int(self._store.count_retry_queue_depth())
+        chart_degrade = "是" if self._store.is_degradation_active(state_key="chart_text_only") else "否"
+        nl_degrade = "是" if self._store.is_degradation_active(state_key="nl_command_hint_mode") else "否"
+        monitor_degrade = "是" if self._store.is_degradation_active(state_key="no_monitor_push") else "否"
+        text = (
+            "运行状态（7x24）\n"
+            f"- 活跃监控任务：{active_jobs}\n"
+            f"- 近24h触发告警：{triggered}\n"
+            f"- 近24h已投递通知：{delivered}\n"
+            f"- 重试队列深度：{retry_depth}\n"
+            f"- 图表降级中：{chart_degrade}\n"
+            f"- NL兜底模式：{nl_degrade}\n"
+            f"- 监控推送降级中：{monitor_degrade}\n"
+            "可用：/monitor 创建监控，/alerts 查看告警，/report 查看报告。"
+        )
+        await self._send_text(chat_id=chat_id, text=text)
+        return ActionResult(command="status")
 
     async def send_error_message(self, *, chat_id: str, text: str) -> None:
         await self._send_text(chat_id=chat_id, text=text)

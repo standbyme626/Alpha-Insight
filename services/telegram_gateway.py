@@ -71,6 +71,9 @@ class TelegramGateway:
         mode = (access_mode or "blacklist").strip().lower()
         self._access_mode = mode if mode in {"allowlist", "blacklist"} else "blacklist"
         self._allowed_commands = allowed_commands or {
+            "start",
+            "new",
+            "status",
             "help",
             "analyze",
             "monitor",
@@ -131,6 +134,16 @@ class TelegramGateway:
         if chat_kind in {"group", "supergroup"} and user_id:
             return f"group_user:{chat_id}:{user_id}"
         return f"chat:{chat_id}"
+
+    @staticmethod
+    def _is_new_session_phrase(text: str) -> bool:
+        normalized = sanitize_user_text(text)
+        return normalized in {"新对话", "重新开始", "重开对话", "开始新对话", "new chat", "new session"}
+
+    def _reset_conversation_state_for_chat(self, *, chat_id: str, chat_type: str, user_id: str | None) -> str:
+        scope_key = self._conversation_scope_key(chat_id=chat_id, chat_type=chat_type, user_id=user_id)
+        self._store.reset_conversation_runtime_state(chat_id=chat_id, scope_key=scope_key)
+        return scope_key
 
     @staticmethod
     def _extract_period_from_text(text: str) -> str | None:
@@ -953,11 +966,19 @@ class TelegramGateway:
         if len(parts) != 2:
             return None
         action = parts[1].strip().lower()
-        if action not in {"analyze", "monitor", "help", "start"}:
+        if action not in {"analyze", "monitor", "help", "start", "new", "status"}:
             return None
         return action
 
-    async def _handle_guide_action(self, *, chat_id: str, update_id: int, action: str) -> bool:
+    async def _handle_guide_action(
+        self,
+        *,
+        chat_id: str,
+        chat_type: str,
+        user_id: str | None,
+        update_id: int,
+        action: str,
+    ) -> bool:
         if action == "analyze":
             await self._actions.send_error_message(
                 chat_id=chat_id,
@@ -970,6 +991,12 @@ class TelegramGateway:
             )
         elif action == "help":
             await self._actions.handle_help(chat_id=chat_id)
+        elif action == "status":
+            await self._actions.handle_status(chat_id=chat_id)
+        elif action == "new":
+            self._reset_conversation_state_for_chat(chat_id=chat_id, chat_type=chat_type, user_id=user_id)
+            await self._actions.send_error_message(chat_id=chat_id, text="已开启新对话，上下文已清空。")
+            await self._actions.handle_general_conversation(chat_id=chat_id, intent="how_to_start")
         else:
             await self._actions.handle_general_conversation(chat_id=chat_id, intent="how_to_start")
         self._store.update_bot_update_status(
@@ -1328,7 +1355,13 @@ class TelegramGateway:
             if callback_data:
                 guide_action = self._parse_callback_guide(callback_data)
                 if guide_action is not None:
-                    return await self._handle_guide_action(chat_id=chat_id, update_id=update_id, action=guide_action)
+                    return await self._handle_guide_action(
+                        chat_id=chat_id,
+                        chat_type=chat_type,
+                        user_id=user_id,
+                        update_id=update_id,
+                        action=guide_action,
+                    )
                 candidate = self._parse_callback_candidate(callback_data)
                 if candidate is not None:
                     request_ref, chosen_symbol = candidate
@@ -1389,8 +1422,7 @@ class TelegramGateway:
 
             if text.startswith("/"):
                 if text.split()[0].lower() == "/reset":
-                    scope_key = self._conversation_scope_key(chat_id=chat_id, chat_type=chat_type, user_id=user_id)
-                    self._store.reset_conversation_runtime_state(chat_id=chat_id, scope_key=scope_key)
+                    self._reset_conversation_state_for_chat(chat_id=chat_id, chat_type=chat_type, user_id=user_id)
                     await self._actions.send_error_message(
                         chat_id=chat_id,
                         text="已清空上下文：last_symbol_context、last_period_context、pending_candidate_selection、pending_confirm。",
@@ -1438,6 +1470,14 @@ class TelegramGateway:
 
                 if parsed.name == "help":
                     result = await self._actions.handle_help(chat_id=chat_id)
+                elif parsed.name == "start":
+                    result = await self._actions.handle_general_conversation(chat_id=chat_id, intent="how_to_start")
+                elif parsed.name == "new":
+                    self._reset_conversation_state_for_chat(chat_id=chat_id, chat_type=chat_type, user_id=user_id)
+                    await self._actions.send_error_message(chat_id=chat_id, text="已开启新对话，上下文已清空。")
+                    result = await self._actions.handle_general_conversation(chat_id=chat_id, intent="how_to_start")
+                elif parsed.name == "status":
+                    result = await self._actions.handle_status(chat_id=chat_id)
                 elif parsed.name == "analyze":
                     result = await self._actions.handle_analyze(
                         update_id=update_id,
@@ -1618,6 +1658,18 @@ class TelegramGateway:
                 return True
 
             normalized = sanitize_user_text(text)
+            if self._is_new_session_phrase(normalized):
+                self._reset_conversation_state_for_chat(chat_id=chat_id, chat_type=chat_type, user_id=user_id)
+                await self._actions.send_error_message(chat_id=chat_id, text="已开启新对话，上下文已清空。")
+                await self._actions.handle_general_conversation(chat_id=chat_id, intent="how_to_start")
+                self._store.update_bot_update_status(
+                    update_id=update_id,
+                    status="processed",
+                    command="nl_new_session",
+                    request_id=None,
+                    error=None,
+                )
+                return True
             self._store.record_metric(metric_name="nl_intent_total", metric_value=1.0)
             if self._store.is_degradation_active(state_key="nl_command_hint_mode"):
                 await self._send_fallback_help(chat_id=chat_id, reason="llm_degraded")

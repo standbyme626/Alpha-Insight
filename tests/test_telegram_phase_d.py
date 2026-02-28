@@ -77,6 +77,9 @@ class SlowPhotoChatSender(FakeChatSender):
         ("/digest daily", "digest"),
         ("/monitor TSLA 1h rsi", "monitor"),
         ("/stop", "stop"),
+        ("/start", "start"),
+        ("/new", "new"),
+        ("/status", "status"),
     ],
 )
 def test_parse_phase_d_commands(raw: str, name: str) -> None:
@@ -144,6 +147,9 @@ async def test_phase_d_general_conversation_returns_capability_card(tmp_path, te
     assert sender.keyboards
     keyboard = sender.keyboards[-1][1]
     assert keyboard.get("inline_keyboard")
+    callbacks = [str(btn.get("callback_data", "")) for row in keyboard.get("inline_keyboard", []) for btn in row]
+    assert "guide|new" in callbacks
+    assert "guide|status" in callbacks
 
 
 @pytest.mark.asyncio
@@ -178,6 +184,22 @@ async def test_monitor_template_report_and_digest(tmp_path) -> None:  # noqa: AN
 
     assert await gateway.process_update(digest_update)
     assert "每日报告（近24小时）" in sender.messages[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_status_command_returns_runtime_summary(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": "run-status", **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 12020, "message": {"chat": {"id": "chat-status"}, "text": "/status"}})
+    assert "运行状态（7x24）" in sender.messages[-1][1]
+    assert "活跃监控任务" in sender.messages[-1][1]
 
 
 @pytest.mark.asyncio
@@ -1958,6 +1980,43 @@ async def test_phase_t_reset_clears_context_and_pending(tmp_path) -> None:  # no
     assert "已清空上下文" in sender.messages[-1][1]
     assert store.get_conversation_context(scope_key="chat:chat-t2") is None
 
+
+@pytest.mark.asyncio
+async def test_phase_t_new_command_clears_context_and_returns_capability(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": "run-t-new", "metrics": {"data_close": 10.0, "technical_rsi_14": 50.0}, **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 30213, "message": {"chat": {"id": "chat-t-new"}, "text": "分析 TSLA 一个月走势"}})
+    assert await gateway.process_update({"update_id": 30214, "message": {"chat": {"id": "chat-t-new"}, "text": "/new"}})
+    texts = [item[1] for item in sender.messages]
+    assert any("已开启新对话" in text for text in texts)
+    assert "能力卡" in sender.messages[-1][1]
+    assert store.get_conversation_context(scope_key="chat:chat-t-new") is None
+
+
+@pytest.mark.asyncio
+async def test_phase_t_new_phrase_clears_context_and_returns_capability(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {"run_id": "run-t-new-phrase", "metrics": {"data_close": 10.0, "technical_rsi_14": 50.0}, **kwargs}
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 30215, "message": {"chat": {"id": "chat-t-new2"}, "text": "分析 TSLA 一个月走势"}})
+    assert await gateway.process_update({"update_id": 30216, "message": {"chat": {"id": "chat-t-new2"}, "text": "新对话"}})
+    texts = [item[1] for item in sender.messages]
+    assert any("已开启新对话" in text for text in texts)
+    assert "能力卡" in sender.messages[-1][1]
+    assert store.get_conversation_context(scope_key="chat:chat-t-new2") is None
 
 @pytest.mark.asyncio
 async def test_phase_t_group_context_isolation_by_user(tmp_path) -> None:  # noqa: ANN001

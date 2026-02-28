@@ -75,6 +75,21 @@ def parse_telegram_command(text: str) -> CommandRoute | CommandError:
             return CommandError("`/help` 不接受参数 (`/help` does not take parameters).")
         return CommandRoute(name="help", args={})
 
+    if command == "/start":
+        if len(parts) > 1:
+            return CommandError("`/start` 不接受参数 (`/start` does not take parameters).")
+        return CommandRoute(name="start", args={})
+
+    if command == "/new":
+        if len(parts) > 1:
+            return CommandError("`/new` 不接受参数 (`/new` does not take parameters).")
+        return CommandRoute(name="new", args={})
+
+    if command == "/status":
+        if len(parts) > 1:
+            return CommandError("`/status` 不接受参数 (`/status` does not take parameters).")
+        return CommandRoute(name="status", args={})
+
     if command == "/analyze":
         if len(parts) != 2:
             return CommandError("用法 (Usage): /analyze <symbol>. 示例 (Example): /analyze AAPL")

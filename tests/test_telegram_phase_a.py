@@ -26,6 +26,24 @@ def test_parse_help_command() -> None:
     assert parsed.name == "help"
 
 
+def test_parse_start_command() -> None:
+    parsed = parse_telegram_command("/start")
+    assert not isinstance(parsed, CommandError)
+    assert parsed.name == "start"
+
+
+def test_parse_new_command() -> None:
+    parsed = parse_telegram_command("/new")
+    assert not isinstance(parsed, CommandError)
+    assert parsed.name == "new"
+
+
+def test_parse_status_command() -> None:
+    parsed = parse_telegram_command("/status")
+    assert not isinstance(parsed, CommandError)
+    assert parsed.name == "status"
+
+
 def test_parse_analyze_command() -> None:
     parsed = parse_telegram_command("/analyze aapl")
     assert not isinstance(parsed, CommandError)
