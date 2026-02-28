@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 import re
 import time
+from statistics import mean
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Protocol
@@ -227,6 +229,234 @@ class TelegramActions:
         return None
 
     @staticmethod
+    def _record_float(record: dict[str, Any], *keys: str) -> float | None:
+        for key in keys:
+            value = record.get(key)
+            if value is None:
+                continue
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(parsed):
+                return parsed
+        return None
+
+    @staticmethod
+    def _record_time(record: dict[str, Any]) -> datetime | None:
+        for key in ("Date", "date", "timestamp", "ts"):
+            raw = str(record.get(key, "")).strip()
+            if not raw:
+                continue
+            normalized = raw.replace("Z", "+00:00")
+            try:
+                return datetime.fromisoformat(normalized)
+            except ValueError:
+                continue
+        return None
+
+    @classmethod
+    def _extract_ohlc_records_from_result(cls, result: dict[str, Any]) -> list[dict[str, Any]]:
+        candidates: list[list[dict[str, Any]]] = []
+        bundle_payload = result.get("market_data_bundle")
+        if isinstance(bundle_payload, dict):
+            records = bundle_payload.get("records")
+            if isinstance(records, list):
+                candidates.append([item for item in records if isinstance(item, dict)])
+
+        tool_results = result.get("tool_results")
+        if isinstance(tool_results, dict):
+            for key in ("market_data", "market_analysis_market_data"):
+                tool_result = tool_results.get(key)
+                if not isinstance(tool_result, dict):
+                    continue
+                raw = tool_result.get("raw")
+                if isinstance(raw, dict):
+                    records = raw.get("records")
+                    if isinstance(records, list):
+                        candidates.append([item for item in records if isinstance(item, dict)])
+                elif isinstance(raw, list):
+                    candidates.append([item for item in raw if isinstance(item, dict)])
+
+        direct_records = result.get("records")
+        if isinstance(direct_records, list):
+            candidates.append([item for item in direct_records if isinstance(item, dict)])
+
+        for rows in candidates:
+            if rows:
+                return rows
+        return []
+
+    @classmethod
+    def _compute_window_metrics_from_records(cls, records: list[dict[str, Any]]) -> dict[str, Any]:
+        normalized: list[dict[str, Any]] = []
+        for row in records:
+            close = cls._record_float(row, "Close", "close", "close_price")
+            if close is None:
+                continue
+            high = cls._record_float(row, "High", "high")
+            low = cls._record_float(row, "Low", "low")
+            if high is None:
+                high = close
+            if low is None:
+                low = close
+            high = max(high, close, low)
+            low = min(low, close, high)
+            normalized.append({"close": close, "high": high, "low": low, "ts": cls._record_time(row)})
+
+        if not normalized:
+            return {
+                "card_a_ready": False,
+                "card_a_status": "missing_series",
+                "sample_size": 0,
+                "end_close": None,
+                "start_close": None,
+                "pct_change": None,
+                "abs_change": None,
+                "high": None,
+                "low": None,
+                "amplitude": None,
+                "max_drawdown": None,
+                "ratio": None,
+                "ma10": None,
+                "ma20": None,
+                "support": None,
+                "resistance": None,
+            }
+
+        if all(item["ts"] is not None for item in normalized):
+            normalized.sort(key=lambda item: item["ts"])  # type: ignore[arg-type]
+        window = normalized[-30:]
+        closes = [float(item["close"]) for item in window]
+        highs = [float(item["high"]) for item in window]
+        lows = [float(item["low"]) for item in window]
+        sample_size = len(window)
+        end_close = closes[-1]
+        if sample_size < 2:
+            return {
+                "card_a_ready": False,
+                "card_a_status": "insufficient_series",
+                "sample_size": sample_size,
+                "end_close": end_close,
+                "start_close": closes[0],
+                "pct_change": None,
+                "abs_change": None,
+                "high": max(highs),
+                "low": min(lows),
+                "amplitude": None,
+                "max_drawdown": None,
+                "ratio": None,
+                "ma10": None,
+                "ma20": None,
+                "support": min(lows),
+                "resistance": max(highs),
+            }
+
+        start_close = closes[0]
+        pct_change = None if start_close == 0 else (end_close - start_close) / start_close
+        abs_change = end_close - start_close
+        high_30d = max(highs)
+        low_30d = min(lows)
+        amplitude = None if low_30d <= 0 else (high_30d - low_30d) / low_30d
+        ratio = None
+        if high_30d > low_30d:
+            ratio = max(0.0, min(1.0, (end_close - low_30d) / (high_30d - low_30d)))
+
+        peak = closes[0]
+        max_drawdown = 0.0
+        for close in closes:
+            peak = max(peak, close)
+            if peak <= 0:
+                continue
+            drawdown = (close - peak) / peak
+            max_drawdown = min(max_drawdown, drawdown)
+
+        ma10 = mean(closes[-10:]) if sample_size >= 10 else None
+        ma20 = mean(closes[-20:]) if sample_size >= 20 else None
+        support = low_30d
+        resistance = ma10 if ma10 is not None else high_30d
+        return {
+            "card_a_ready": True,
+            "card_a_status": "ok",
+            "sample_size": sample_size,
+            "end_close": end_close,
+            "start_close": start_close,
+            "pct_change": pct_change,
+            "abs_change": abs_change,
+            "high": high_30d,
+            "low": low_30d,
+            "amplitude": amplitude,
+            "max_drawdown": max_drawdown,
+            "ratio": ratio,
+            "ma10": ma10,
+            "ma20": ma20,
+            "support": support,
+            "resistance": resistance,
+        }
+
+    @classmethod
+    def _resolve_market_contract_metrics(
+        cls,
+        *,
+        result: dict[str, Any],
+        metrics: dict[str, Any],
+    ) -> dict[str, Any]:
+        records = cls._extract_ohlc_records_from_result(result)
+        derived = cls._compute_window_metrics_from_records(records)
+        latest_close = cls._metric_float(metrics, "latest_close", "data_close")
+        if latest_close is None:
+            latest_close = derived.get("end_close")
+        high = cls._metric_float(metrics, "window_high", "period_high")
+        if high is None:
+            high = derived.get("high")
+        low = cls._metric_float(metrics, "window_low", "period_low")
+        if low is None:
+            low = derived.get("low")
+        ret30 = cls._metric_float(metrics, "return_30d", "change_30d")
+        if ret30 is None:
+            ret30 = derived.get("pct_change")
+        abs_change = derived.get("abs_change")
+        if abs_change is None and latest_close is not None and ret30 is not None and abs(1.0 + ret30) > 1e-9:
+            base_price = latest_close / (1.0 + ret30)
+            abs_change = latest_close - base_price
+        max_drawdown = cls._metric_float(metrics, "max_drawdown_30d", "max_drawdown")
+        if max_drawdown is None:
+            max_drawdown = derived.get("max_drawdown")
+        ma10 = cls._metric_float(metrics, "technical_ma_10", "ma10")
+        if ma10 is None:
+            ma10 = derived.get("ma10")
+        ma20 = cls._metric_float(metrics, "technical_ma_20", "ma20")
+        if ma20 is None:
+            ma20 = derived.get("ma20")
+        support = cls._metric_float(metrics, "support", "support_level")
+        if support is None:
+            support = derived.get("support")
+        resistance = cls._metric_float(metrics, "resistance", "resistance_level")
+        if resistance is None:
+            resistance = derived.get("resistance")
+        ratio = derived.get("ratio")
+
+        # Card A requires a valid recent OHLC sequence; metrics-only payloads must degrade.
+        card_a_ready = bool(derived.get("card_a_ready"))
+        card_a_status = "ok" if card_a_ready else str(derived.get("card_a_status", "missing_series"))
+        return {
+            "card_a_ready": card_a_ready,
+            "card_a_status": card_a_status,
+            "sample_size": int(derived.get("sample_size", 0) or 0),
+            "latest_close": latest_close,
+            "high": high,
+            "low": low,
+            "ret30": ret30,
+            "abs_change": abs_change,
+            "max_drawdown": max_drawdown,
+            "ratio": ratio,
+            "ma10": ma10,
+            "ma20": ma20,
+            "support": support,
+            "resistance": resistance,
+        }
+
+    @staticmethod
     def _period_window(period: str) -> str:
         now = datetime.now(timezone.utc).date()
         days = {"5d": 5, "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365}.get(str(period).lower(), 30)
@@ -298,15 +528,60 @@ class TelegramActions:
 
     @staticmethod
     def _technical_sentence(*, latest_close: float | None, ma: float | None, rsi: float | None) -> str:
-        if rsi is not None and rsi >= 65:
-            return "短线偏强，若放量站稳前高可延续上行；若量能不足则回撤风险上升。"
-        if rsi is not None and rsi <= 35:
-            return "短线偏弱，若收复10日均线并放量可转中性；若失守近期低点则下行风险上升。"
-        if ma is not None and latest_close is not None:
-            if latest_close >= ma:
-                return "短线中性偏强，若继续站稳20日均线可确认转强；若跌回均线下方则回落风险增加。"
-            return "短线中性偏弱，若重回20日均线上方可改善；若持续受压则震荡下行风险偏高。"
-        return "短线中性，若放量突破区间上沿可转强；若跌破区间下沿则转弱风险抬升。"
+        return TelegramActions._technical_sentence_with_levels(
+            latest_close=latest_close,
+            ma10=None,
+            ma20=ma,
+            support=None,
+            resistance=None,
+            rsi=rsi,
+            sample_size=None,
+        )
+
+    @staticmethod
+    def _technical_sentence_with_levels(
+        *,
+        latest_close: float | None,
+        ma10: float | None,
+        ma20: float | None,
+        support: float | None,
+        resistance: float | None,
+        rsi: float | None,
+        sample_size: int | None,
+    ) -> str:
+        direction = "短线中性"
+        if latest_close is not None and ma20 is not None:
+            if latest_close >= ma20:
+                direction = f"短线偏强（现价 {latest_close:.2f} >= MA20={ma20:.2f}）"
+            else:
+                direction = f"短线偏弱（现价 {latest_close:.2f} < MA20={ma20:.2f}）"
+        elif rsi is not None:
+            if rsi >= 65:
+                direction = f"短线偏强（RSI14={rsi:.1f}）"
+            elif rsi <= 35:
+                direction = f"短线偏弱（RSI14={rsi:.1f}）"
+            else:
+                direction = f"短线中性（RSI14={rsi:.1f}）"
+
+        if ma10 is not None:
+            trigger = f"若站回 MA10={ma10:.2f} 且放量，可转中性。"
+        elif resistance is not None:
+            trigger = f"若突破压力 {resistance:.2f} 且放量，可转强。"
+        else:
+            trigger = "若放量突破关键压力位，可转强。"
+
+        support_text = f"支撑 L={support:.2f}" if support is not None else "支撑位待确认"
+        resistance_text = f"压力 R={resistance:.2f}" if resistance is not None else "压力位待确认"
+        risk_text = f"下方关注{support_text}；上方关注{resistance_text}。"
+        if support is not None:
+            risk_text += f" 若跌破 {support:.2f}，下行风险上升。"
+        else:
+            risk_text += " 若失守关键支撑，下行风险上升。"
+
+        confidence_note = ""
+        if sample_size is not None and sample_size < 20:
+            confidence_note = f" 样本不足（N={sample_size}），指标置信度下降。"
+        return f"{direction}，{trigger} {risk_text}{confidence_note}".strip()
 
     @staticmethod
     def _news_theme_lines(news_digest: NewsDigest) -> list[str]:
@@ -314,12 +589,20 @@ class TelegramActions:
             return [f"主题覆盖不足（{news_digest.window_label}），可能遗漏重大事件。"]
         if not news_digest.top_themes:
             return [f"主题覆盖不足（{news_digest.window_label}），可能遗漏重大事件。"]
-        lines = [f"主题Top3：{news_digest.window_label} 共 {news_digest.total_count} 条，整体情绪{news_digest.sentiment_direction}。"]
+        lines = [f"主题Top3：{news_digest.window_label} 共 {news_digest.total_count} 条。"]
+        if news_digest.sentiment_sample_size >= 5:
+            lines.append(
+                "情绪："
+                f"{news_digest.sentiment_direction}（区间 {news_digest.sentiment_range}，"
+                f"N={news_digest.sentiment_sample_size}，method={news_digest.sentiment_method}）"
+            )
+        else:
+            lines.append(f"情绪：样本不足（N={news_digest.sentiment_sample_size}<5），不计算情绪分。")
         for index, item in enumerate(news_digest.top_themes[:3], start=1):
             lines.append(f"{index}) {item.category}：{item.impact}")
-            lines.append(
-                f"   代表新闻：{item.representative_title}（{item.representative_time}｜来源：{item.representative_source}）"
-            )
+            lines.append(f"   代表新闻：{item.representative_title}")
+            lines.append(f"   媒体：{item.representative_publisher}｜时间：{item.representative_time}")
+            lines.append(f"   链接：{item.representative_url or 'N/A'}")
         return lines
 
     @classmethod
@@ -346,9 +629,16 @@ class TelegramActions:
         high: float | None,
         low: float | None,
         ret30: float | None,
+        abs_change: float | None,
         max_drawdown: float | None,
         rsi: float | None,
-        ma: float | None,
+        ma10: float | None,
+        ma20: float | None,
+        support: float | None,
+        resistance: float | None,
+        sample_size: int,
+        card_a_ready: bool,
+        card_a_status: str,
         market_source: str,
         market_updated_at: str,
         indicator_spec: str,
@@ -356,11 +646,6 @@ class TelegramActions:
         news_digest: NewsDigest,
     ) -> tuple[str, str | None]:
         conclusion = cls._summary_sentence(summary)
-        rise_fall_amount: float | None = None
-        if latest_close is not None and ret30 is not None and abs(1.0 + ret30) > 1e-9:
-            base_price = latest_close / (1.0 + ret30)
-            rise_fall_amount = latest_close - base_price
-
         amplitude: float | None = None
         ratio: float | None = None
         if latest_close is not None and high is not None and low is not None and high > low:
@@ -372,21 +657,35 @@ class TelegramActions:
             max_drawdown = (low - high) / high
 
         source_line = "、".join(news_digest.source_coverage[:3]) if news_digest.source_coverage else "无"
+        card_a_lines: list[str]
+        if card_a_ready and latest_close is not None and high is not None and low is not None and ret30 is not None:
+            card_a_lines = [
+                f"近30天：{cls._format_signed_pct(ret30)}（涨跌额 {cls._format_signed_price(abs_change)}）",
+                (
+                    f"区间：低 {round(low, 4)} / 高 {round(high, 4)}（振幅 "
+                    f"{((amplitude or 0.0) * 100):.2f}%）｜最大回撤 {cls._format_signed_pct(max_drawdown)}"
+                ),
+                f"现价区间位置：{cls._position_label(ratio)}",
+            ]
+        else:
+            card_a_lines = [
+                f"行情数据不足（缺少近30日序列，status={card_a_status}），已展示最新价/将自动重试。",
+                (
+                    f"最新价：{round(latest_close, 4)}｜样本N={sample_size}"
+                    if latest_close is not None
+                    else f"样本N={sample_size}"
+                ),
+                "现价区间位置：数据不足",
+            ]
+
         main_lines = [
             f"{symbol}｜近30天（{cls._period_window(period)})",
             "",
             "Card A｜区间表现",
-            f"近30天：{cls._format_signed_pct(ret30)}（涨跌额 {cls._format_signed_price(rise_fall_amount)}）",
-            (
-                f"区间：低 {round(low, 4)} / 高 {round(high, 4)}（振幅 "
-                f"{(amplitude * 100):.2f}%）｜最大回撤 {cls._format_signed_pct(max_drawdown)}"
-                if low is not None and high is not None and amplitude is not None
-                else f"区间：低 {round(low, 4) if low is not None else 'N/A'} / 高 {round(high, 4) if high is not None else 'N/A'}"
-            ),
-            f"现价区间位置：{cls._position_label(ratio)}",
+            *card_a_lines,
             "",
             "Card B｜原因摘要",
-            f"技术：{cls._technical_sentence(latest_close=latest_close, ma=ma, rsi=rsi)}",
+            f"技术：{cls._technical_sentence_with_levels(latest_close=latest_close, ma10=ma10, ma20=ma20, support=support, resistance=resistance, rsi=rsi, sample_size=sample_size)}",
             "新闻：",
             *cls._news_theme_lines(news_digest),
             "",
@@ -477,6 +776,8 @@ class TelegramActions:
                 sentiment_score=50,
                 sentiment_direction="中性",
                 sentiment_range="45-55",
+                sentiment_method="lexicon",
+                sentiment_sample_size=0,
                 top_themes=[],
                 top_news=[],
             )
@@ -497,6 +798,8 @@ class TelegramActions:
                     representative_title=str(item.get("representative_title", "")).strip(),
                     representative_time=str(item.get("representative_time", "")).strip(),
                     representative_source=str(item.get("representative_source", "")).strip(),
+                    representative_publisher=str(item.get("representative_publisher", item.get("representative_source", ""))).strip(),
+                    representative_url=str(item.get("representative_url", "")).strip(),
                 )
             )
         top_news: list[TopNewsItem] = []
@@ -508,6 +811,8 @@ class TelegramActions:
                     title=str(item.get("title", "")).strip(),
                     published_at=str(item.get("published_at", "")).strip(),
                     source=str(item.get("source", "")).strip(),
+                    publisher=str(item.get("publisher", item.get("source", ""))).strip(),
+                    url=str(item.get("url", item.get("link", ""))).strip(),
                     impact=str(item.get("impact", "")).strip(),
                     category=str(item.get("category", "")).strip(),
                     sentiment=str(item.get("sentiment", "")).strip(),
@@ -528,6 +833,8 @@ class TelegramActions:
             sentiment_score=max(0, min(100, int(raw.get("sentiment_score", 50)))),
             sentiment_direction=str(raw.get("sentiment_direction", "中性")).strip() or "中性",
             sentiment_range=str(raw.get("sentiment_range", "45-55")).strip() or "45-55",
+            sentiment_method=str(raw.get("sentiment_method", "lexicon")).strip() or "lexicon",
+            sentiment_sample_size=max(0, int(raw.get("sentiment_sample_size", raw.get("total_count", 0)))),
             top_themes=top_themes[:3],
             top_news=top_news[:5],
         )
@@ -841,17 +1148,35 @@ class TelegramActions:
         run_id = str(result.get("run_id", "")).strip()
         summary = str(((result.get("fused_insights") or {}).get("summary") or "")).strip() or "暂无摘要。"
         metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
-        latest_close = self._metric_float(metrics, "latest_close", "data_close")
+        resolved = self._resolve_market_contract_metrics(result=result, metrics=metrics)
+        latest_close = resolved["latest_close"]
         rsi = self._metric_float(metrics, "technical_rsi_14", "rsi14")
-        ma = self._metric_float(metrics, "technical_ma_20", "ma20")
-        high = self._metric_float(metrics, "window_high", "period_high")
-        low = self._metric_float(metrics, "window_low", "period_low")
-        ret30 = self._metric_float(metrics, "return_30d", "change_30d")
-        max_drawdown = self._metric_float(metrics, "max_drawdown_30d", "max_drawdown")
+        ma10 = resolved["ma10"]
+        ma20 = resolved["ma20"]
+        high = resolved["high"]
+        low = resolved["low"]
+        ret30 = resolved["ret30"]
+        abs_change = resolved["abs_change"]
+        max_drawdown = resolved["max_drawdown"]
+        support = resolved["support"]
+        resistance = resolved["resistance"]
+        sample_size = int(resolved["sample_size"])
+        card_a_ready = bool(resolved["card_a_ready"])
+        card_a_status = str(resolved["card_a_status"])
         news_digest = build_news_digest_from_result(result, window_days=news_window_days)
         report_metrics = self._clean_key_metrics(metrics)
         report_metrics.update(
             {
+                "window_high": high,
+                "window_low": low,
+                "return_30d": ret30,
+                "max_drawdown_30d": max_drawdown,
+                "technical_ma_10": ma10,
+                "technical_ma_20": ma20,
+                "support_level": support,
+                "resistance_level": resistance,
+                "card_a_data_status": card_a_status,
+                "card_a_sample_size": sample_size,
                 "news_digest": news_digest.to_dict(),
                 "news_total_count": news_digest.total_count,
                 "news_window_label": news_digest.window_label,
@@ -949,7 +1274,7 @@ class TelegramActions:
             or metrics.get("last_updated_at")
             or datetime.now(timezone.utc).isoformat()
         ).strip()
-        indicator_spec = "RSI14(1d)、MA20(1d)"
+        indicator_spec = "RSI14(1d)、MA10(1d)、MA20(1d)"
         main_text, supplement_text = self._build_analysis_contract(
             symbol=symbol,
             period=period,
@@ -958,9 +1283,16 @@ class TelegramActions:
             high=high,
             low=low,
             ret30=ret30,
+            abs_change=abs_change,
             max_drawdown=max_drawdown,
             rsi=rsi,
-            ma=ma,
+            ma10=ma10,
+            ma20=ma20,
+            support=support,
+            resistance=resistance,
+            sample_size=sample_size,
+            card_a_ready=card_a_ready,
+            card_a_status=card_a_status,
             market_source=market_source,
             market_updated_at=market_updated_at,
             indicator_spec=indicator_spec,
@@ -1375,17 +1707,35 @@ class TelegramActions:
             run_id = str(result.get("run_id", ""))
             summary = str(((result.get("fused_insights") or {}).get("summary") or "")).strip()
             key_metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
-            latest_close = self._metric_float(key_metrics, "latest_close", "data_close")
+            resolved = self._resolve_market_contract_metrics(result=result, metrics=key_metrics)
+            latest_close = resolved["latest_close"]
             rsi = self._metric_float(key_metrics, "technical_rsi_14", "rsi14")
-            ma = self._metric_float(key_metrics, "technical_ma_20", "ma20")
-            high = self._metric_float(key_metrics, "window_high", "period_high")
-            low = self._metric_float(key_metrics, "window_low", "period_low")
-            ret30 = self._metric_float(key_metrics, "return_30d", "change_30d")
-            max_drawdown = self._metric_float(key_metrics, "max_drawdown_30d", "max_drawdown")
+            ma10 = resolved["ma10"]
+            ma20 = resolved["ma20"]
+            high = resolved["high"]
+            low = resolved["low"]
+            ret30 = resolved["ret30"]
+            abs_change = resolved["abs_change"]
+            max_drawdown = resolved["max_drawdown"]
+            support = resolved["support"]
+            resistance = resolved["resistance"]
+            sample_size = int(resolved["sample_size"])
+            card_a_ready = bool(resolved["card_a_ready"])
+            card_a_status = str(resolved["card_a_status"])
             news_digest = build_news_digest_from_result(result, window_days=7)
             report_metrics = self._clean_key_metrics(key_metrics)
             report_metrics.update(
                 {
+                    "window_high": high,
+                    "window_low": low,
+                    "return_30d": ret30,
+                    "max_drawdown_30d": max_drawdown,
+                    "technical_ma_10": ma10,
+                    "technical_ma_20": ma20,
+                    "support_level": support,
+                    "resistance_level": resistance,
+                    "card_a_data_status": card_a_status,
+                    "card_a_sample_size": sample_size,
                     "news_digest": news_digest.to_dict(),
                     "news_total_count": news_digest.total_count,
                     "news_window_label": news_digest.window_label,
@@ -1431,12 +1781,19 @@ class TelegramActions:
                 high=high,
                 low=low,
                 ret30=ret30,
+                abs_change=abs_change,
                 max_drawdown=max_drawdown,
                 rsi=rsi,
-                ma=ma,
+                ma10=ma10,
+                ma20=ma20,
+                support=support,
+                resistance=resistance,
+                sample_size=sample_size,
+                card_a_ready=card_a_ready,
+                card_a_status=card_a_status,
                 market_source=market_source,
                 market_updated_at=market_updated_at,
-                indicator_spec="RSI14(1d)、MA20(1d)",
+                indicator_spec="RSI14(1d)、MA10(1d)、MA20(1d)",
                 chart_note=None,
                 news_digest=news_digest,
             )

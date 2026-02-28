@@ -1,4 +1,4 @@
-"""Async sandbox manager with E2B-first execution and structured traceback."""
+"""Async sandbox manager with unified policy and execution result contract."""
 
 from __future__ import annotations
 
@@ -6,12 +6,14 @@ import asyncio
 import re
 import sys
 import tempfile
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from core.guardrails import validate_sandbox_code
+from core.fault_injection import FaultInjectionEvent, FaultInjector, fault_semantic
 from core.sandbox import LocalDockerSandbox
+from core.sandbox_policy import SandboxPolicy
 
 try:  # pragma: no cover - optional dependency
     from e2b_code_interpreter import CodeInterpreter
@@ -28,25 +30,48 @@ class StructuredTraceback:
 
 
 @dataclass
-class SandboxResult:
+class ExecutionResult:
     stdout: str
     stderr: str
     exit_code: int
-    images: list[str]
-    output_files: list[str]
     traceback: StructuredTraceback | None
-    execution_backend: str = "unknown"
+    backend: str
+    duration_ms: float
+    resource_usage: dict[str, Any] | None = None
+    images: list[str] = field(default_factory=list)
+    output_files: list[str] = field(default_factory=list)
+
+    @property
+    def execution_backend(self) -> str:
+        """Backward-compatible alias for legacy call sites."""
+        return self.backend
+
+
+# Backward-compatible alias.
+SandboxResult = ExecutionResult
 
 
 class SandboxManager:
     """Manage isolated Python execution with E2B SDK first, Docker fallback second."""
 
-    def __init__(self, api_key: str | None = None, use_local_fallback: bool = True) -> None:
+    def __init__(
+        self,
+        api_key: str | None = None,
+        use_local_fallback: bool = True,
+        *,
+        policy: SandboxPolicy | None = None,
+        local_runtime: LocalDockerSandbox | None = None,
+        e2b_timeout_seconds: int = 30,
+        fault_injector: FaultInjector | None = None,
+    ) -> None:
         print("[DEBUG] QuantNode SandboxManager.__init__ Start")
         self.api_key = api_key
         self.use_local_fallback = use_local_fallback
         self._session: Any | None = None
-        self._local = LocalDockerSandbox()
+        self._local = local_runtime if local_runtime is not None else LocalDockerSandbox()
+        self._policy = policy if policy is not None else SandboxPolicy()
+        self._e2b_timeout_seconds = e2b_timeout_seconds
+        self._fault_injector = fault_injector if fault_injector is not None else FaultInjector.disabled()
 
     async def create_session(self) -> str:
         print("[DEBUG] QuantNode SandboxManager.create_session Start")
@@ -61,45 +86,58 @@ class SandboxManager:
         self._session = "local-docker"
         return "local-session"
 
-    async def execute(self, code: str) -> SandboxResult:
+    async def execute(self, code: str) -> ExecutionResult:
         print("[DEBUG] QuantNode SandboxManager.execute Start")
-        validate_sandbox_code(code)
         if not self._session:
             await self.create_session()
 
         if self._session == "local-docker":
+            self._policy.enforce(
+                code,
+                backend="local-docker",
+                timeout_seconds=self._local.timeout_seconds,
+                tool_permissions=("python_exec",),
+            )
+            injected = self._fault_injector.maybe_inject(
+                node="runtime.sandbox_execute",
+                allowed_faults=("timeout", "sandbox_failure"),
+            )
+            if injected is not None:
+                payload = self._build_fault_injected_payload(injected, backend="local-docker")
+                return self._to_execution_result(payload, default_backend="local-docker", default_exit_code=1)
             try:
                 payload = await self._local.execute_code(code)
             except Exception as exc:
                 if not self._should_fallback_to_local_process(exc):
                     raise
+                self._policy.enforce(
+                    code,
+                    backend="local-process-fallback",
+                    timeout_seconds=self._local.timeout_seconds,
+                    tool_permissions=("python_exec",),
+                )
                 payload = await self._execute_local_process(
                     code,
                     reason=str(exc),
                     timeout_seconds=self._local.timeout_seconds,
                 )
-            tb = self._parse_traceback(payload.get("stderr", ""))
-            return SandboxResult(
-                stdout=payload.get("stdout", ""),
-                stderr=payload.get("stderr", ""),
-                exit_code=payload.get("exit_code", 1),
-                images=payload.get("images", []),
-                output_files=payload.get("output_files", payload.get("images", [])),
-                traceback=tb,
-                execution_backend=str(payload.get("execution_backend", "local-docker")),
-            )
+            return self._to_execution_result(payload, default_backend="local-docker", default_exit_code=1)
 
-        payload = await asyncio.to_thread(self._execute_e2b_code, code)
-        tb = self._parse_traceback(payload.get("stderr", ""))
-        return SandboxResult(
-            stdout=payload.get("stdout", ""),
-            stderr=payload.get("stderr", ""),
-            exit_code=payload.get("exit_code", 0),
-            images=payload.get("images", []),
-            output_files=payload.get("output_files", payload.get("images", [])),
-            traceback=tb,
-            execution_backend=str(payload.get("execution_backend", "e2b")),
+        self._policy.enforce(
+            code,
+            backend="e2b",
+            timeout_seconds=self._e2b_timeout_seconds,
+            tool_permissions=("python_exec",),
         )
+        injected = self._fault_injector.maybe_inject(
+            node="runtime.sandbox_execute",
+            allowed_faults=("timeout", "sandbox_failure"),
+        )
+        if injected is not None:
+            payload = self._build_fault_injected_payload(injected, backend="e2b")
+            return self._to_execution_result(payload, default_backend="e2b", default_exit_code=1)
+        payload = await asyncio.to_thread(self._execute_e2b_code, code)
+        return self._to_execution_result(payload, default_backend="e2b", default_exit_code=0)
 
     async def destroy_session(self) -> None:
         print("[DEBUG] QuantNode SandboxManager.destroy_session Start")
@@ -108,6 +146,7 @@ class SandboxManager:
         self._session = None
 
     def _execute_e2b_code(self, code: str) -> dict[str, Any]:
+        started_at = time.perf_counter()
         session = self._session
         if session is None:
             raise RuntimeError("No E2B session available.")
@@ -138,8 +177,38 @@ class SandboxManager:
             "exit_code": int(exit_code),
             "images": [],
             "output_files": [],
+            "backend": "e2b",
             "execution_backend": "e2b",
+            "duration_ms": (time.perf_counter() - started_at) * 1000,
+            "resource_usage": None,
         }
+
+    @staticmethod
+    def _to_execution_result(
+        payload: dict[str, Any],
+        *,
+        default_backend: str,
+        default_exit_code: int,
+    ) -> ExecutionResult:
+        stderr = str(payload.get("stderr", ""))
+        tb = SandboxManager._parse_traceback(stderr)
+        backend = str(payload.get("backend") or payload.get("execution_backend") or default_backend)
+        images = [str(item) for item in payload.get("images", []) if str(item).strip()]
+        output_files = [str(item) for item in payload.get("output_files", images) if str(item).strip()]
+        duration_ms = float(payload.get("duration_ms", 0.0))
+        raw_resource_usage = payload.get("resource_usage")
+        resource_usage = raw_resource_usage if isinstance(raw_resource_usage, dict) else None
+        return ExecutionResult(
+            stdout=str(payload.get("stdout", "")),
+            stderr=stderr,
+            exit_code=int(payload.get("exit_code", default_exit_code)),
+            traceback=tb,
+            backend=backend,
+            duration_ms=duration_ms,
+            resource_usage=resource_usage,
+            images=images,
+            output_files=output_files,
+        )
 
     def _safe_close_e2b_session(self) -> None:
         session = self._session
@@ -189,8 +258,35 @@ class SandboxManager:
         )
 
     @staticmethod
+    def _build_fault_injected_payload(event: FaultInjectionEvent, *, backend: str) -> dict[str, Any]:
+        semantic = fault_semantic(event.fault, node="runtime.sandbox_execute")
+        exit_code = 124 if event.fault == "timeout" else 1
+        stderr = (
+            "Traceback (most recent call last):\n"
+            '  File "runtime_fault_injection.py", line 1, in <module>\n'
+            f"{semantic.error_type}: {semantic.message}"
+        )
+        return {
+            "stdout": "",
+            "stderr": stderr,
+            "exit_code": exit_code,
+            "images": [],
+            "output_files": [],
+            "backend": f"{backend}:fault-injected",
+            "execution_backend": f"{backend}:fault-injected",
+            "duration_ms": 0.0,
+            "resource_usage": {"fault_injection": event.to_dict()},
+        }
+
+    @staticmethod
     def _should_fallback_to_local_process(exc: Exception) -> bool:
         text = str(exc).lower()
+        missing_docker_binary = (
+            ("no such file or directory" in text or "errno 2" in text)
+            and "docker" in text
+        )
+        if missing_docker_binary:
+            return True
         markers = (
             "docker.sock",
             "permission denied",
@@ -208,6 +304,7 @@ class SandboxManager:
         reason: str,
         timeout_seconds: int,
     ) -> dict[str, Any]:
+        started_at = time.perf_counter()
         with tempfile.TemporaryDirectory(prefix="quant-local-fallback-") as temp_dir:
             script_path = Path(temp_dir) / "user_code.py"
             script_path.write_text(code, encoding="utf-8")
@@ -228,7 +325,10 @@ class SandboxManager:
                     "exit_code": 124,
                     "images": [],
                     "output_files": [],
+                    "backend": "local-process-fallback",
                     "execution_backend": "local-process-fallback",
+                    "duration_ms": (time.perf_counter() - started_at) * 1000,
+                    "resource_usage": None,
                 }
 
             fallback_note = (
@@ -242,5 +342,8 @@ class SandboxManager:
                 "exit_code": proc.returncode or 0,
                 "images": [],
                 "output_files": [],
+                "backend": "local-process-fallback",
                 "execution_backend": "local-process-fallback",
+                "duration_ms": (time.perf_counter() - started_at) * 1000,
+                "resource_usage": None,
             }

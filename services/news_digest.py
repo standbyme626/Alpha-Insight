@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlparse
 
 
 FORBIDDEN_VISIBLE_KEYS = {
@@ -103,6 +104,8 @@ class TopNewsItem:
     title: str
     published_at: str
     source: str
+    publisher: str
+    url: str
     impact: str
     category: str
     sentiment: str
@@ -119,6 +122,8 @@ class ThemeDigestItem:
     representative_title: str
     representative_time: str
     representative_source: str
+    representative_publisher: str
+    representative_url: str
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -134,6 +139,8 @@ class NewsDigest:
     sentiment_score: int
     sentiment_direction: str
     sentiment_range: str
+    sentiment_method: str
+    sentiment_sample_size: int
     top_themes: list[ThemeDigestItem]
     top_news: list[TopNewsItem]
 
@@ -203,7 +210,9 @@ def build_news_digest(news_items: list[dict[str, Any]], *, window_days: int = 7)
     for row in items:
         title = str(row.get("title", "")).strip() or "（无标题）"
         summary = str(row.get("summary", "")).strip()
-        source = str(row.get("source", "")).strip() or "未知来源"
+        url = _resolve_news_url(row)
+        publisher = _resolve_news_publisher(row, url=url)
+        source = publisher
         category = classify_event_category(f"{title} {summary}")
         event_distribution[category] = event_distribution.get(category, 0) + 1
         sentiment = classify_sentiment(f"{title} {summary}")
@@ -213,6 +222,8 @@ def build_news_digest(news_items: list[dict[str, Any]], *, window_days: int = 7)
                 "title": _clip(title, 56),
                 "published_at": _format_news_time(str(row.get("published_at", "")).strip()),
                 "source": _clip(source, 22),
+                "publisher": _clip(publisher, 48),
+                "url": url,
                 "sentiment": sentiment,
             }
         else:
@@ -229,6 +240,8 @@ def build_news_digest(news_items: list[dict[str, Any]], *, window_days: int = 7)
                     title=_clip(title, 56),
                     published_at=_format_news_time(str(row.get("published_at", "")).strip()),
                     source=_clip(source, 22),
+                    publisher=_clip(publisher, 48),
+                    url=url,
                     impact=build_news_impact(category=category, sentiment=sentiment),
                     category=category,
                     sentiment=sentiment,
@@ -251,6 +264,8 @@ def build_news_digest(news_items: list[dict[str, Any]], *, window_days: int = 7)
                 representative_title=str(representative.get("title", "（无标题）")).strip() or "（无标题）",
                 representative_time=str(representative.get("published_at", "未知时间")).strip() or "未知时间",
                 representative_source=str(representative.get("source", "未知来源")).strip() or "未知来源",
+                representative_publisher=str(representative.get("publisher", "未知来源")).strip() or "未知来源",
+                representative_url=str(representative.get("url", "")).strip(),
             )
         )
 
@@ -271,6 +286,8 @@ def build_news_digest(news_items: list[dict[str, Any]], *, window_days: int = 7)
         sentiment_score=score,
         sentiment_direction=direction,
         sentiment_range=f"{score_low}-{score_high}",
+        sentiment_method="lexicon",
+        sentiment_sample_size=total,
         top_themes=top_theme_rows,
         top_news=top_rows,
     )
@@ -287,7 +304,8 @@ def format_top_news_lines(digest: NewsDigest) -> list[str]:
     for index, item in enumerate(digest.top_news, start=1):
         lines.append(
             f"{index}. {item.title}\n"
-            f"   时间：{item.published_at}｜来源：{item.source}\n"
+            f"   时间：{item.published_at}｜媒体：{item.publisher}\n"
+            f"   链接：{item.url or 'N/A'}\n"
             f"   影响：{item.impact}"
         )
     return lines
@@ -373,7 +391,31 @@ def _format_news_time(raw: str) -> str:
 def _source_coverage(items: list[dict[str, Any]]) -> list[str]:
     seen: list[str] = []
     for item in items:
-        source = str(item.get("source", "")).strip()
+        url = _resolve_news_url(item)
+        source = _resolve_news_publisher(item, url=url)
         if source and source not in seen:
             seen.append(source)
     return seen[:6]
+
+
+def _resolve_news_url(item: dict[str, Any]) -> str:
+    for key in ("url", "link", "canonical_url"):
+        value = str(item.get(key, "")).strip()
+        if value:
+            return value
+    return ""
+
+
+def _resolve_news_publisher(item: dict[str, Any], *, url: str) -> str:
+    for key in ("publisher", "source", "media"):
+        value = str(item.get(key, "")).strip()
+        if value:
+            return value
+    if url:
+        parsed = urlparse(url)
+        host = parsed.netloc.strip().lower()
+        if host.startswith("www."):
+            host = host[4:]
+        if host:
+            return host
+    return "未知来源"

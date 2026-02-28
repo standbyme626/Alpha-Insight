@@ -2395,6 +2395,17 @@ async def test_upgrade8_p0_snapshot_card_contains_first_screen_required_fields(t
     sender = FakeChatSender()
 
     async def fake_runner(**kwargs):  # noqa: ANN003
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        records = [
+            {
+                "Date": (start + timedelta(days=i)).isoformat(),
+                "Open": 170.0 + i,
+                "High": 171.0 + i,
+                "Low": 169.0 + i,
+                "Close": 170.0 + i,
+            }
+            for i in range(30)
+        ]
         return {
             "run_id": "run-p2-order",
             "fused_insights": {"summary": "fixed order"},
@@ -2409,6 +2420,7 @@ async def test_upgrade8_p0_snapshot_card_contains_first_screen_required_fields(t
                 "market_data_updated_at": "2026-02-28T09:30:00+00:00",
                 "data_window": "2026-01-28 ~ 2026-02-27",
             },
+            "records": records,
             "news": [
                 {"title": "earnings beat", "source": "WireA", "published_at": "2026-02-27T08:00:00+00:00"},
                 {"title": "regulator probe", "source": "WireB", "published_at": "2026-02-27T07:00:00+00:00"},
@@ -2434,6 +2446,8 @@ async def test_upgrade8_p0_snapshot_card_contains_first_screen_required_fields(t
     assert "行情源=" in msg
     assert "新闻源覆盖=" in msg
     assert "指标口径=" in msg
+    assert "MA10(1d)" in msg
+    assert "MA20(1d)" in msg
 
 
 @pytest.mark.asyncio
@@ -2442,6 +2456,17 @@ async def test_upgrade8_p1_snapshot_card_news_section_contains_thematic_top3_wit
     sender = FakeChatSender()
 
     async def fake_runner(**kwargs):  # noqa: ANN003
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        records = [
+            {
+                "Date": (start + timedelta(days=i)).isoformat(),
+                "Open": 170.0 + i,
+                "High": 171.0 + i,
+                "Low": 169.0 + i,
+                "Close": 170.0 + i,
+            }
+            for i in range(30)
+        ]
         return {
             "run_id": "run-p1-theme",
             "fused_insights": {"summary": "theme output"},
@@ -2455,11 +2480,38 @@ async def test_upgrade8_p1_snapshot_card_news_section_contains_thematic_top3_wit
                 "market_data_source": "AlphaFeed",
                 "market_data_updated_at": "2026-02-28T09:30:00+00:00",
             },
+            "records": records,
             "news": [
-                {"title": "Q4 earnings beat estimates", "source": "WireA", "published_at": "2026-02-27T08:00:00+00:00"},
-                {"title": "Regulator opens probe into filings", "source": "WireB", "published_at": "2026-02-27T07:00:00+00:00"},
-                {"title": "New product launch gains traction", "source": "WireC", "published_at": "2026-02-26T09:00:00+00:00"},
-                {"title": "Fed signals lower rate path", "source": "WireD", "published_at": "2026-02-26T06:00:00+00:00"},
+                {
+                    "title": "Q4 earnings beat estimates",
+                    "publisher": "WireA",
+                    "url": "https://wirea.example/earnings",
+                    "published_at": "2026-02-27T08:00:00+00:00",
+                },
+                {
+                    "title": "Regulator opens probe into filings",
+                    "publisher": "WireB",
+                    "url": "https://wireb.example/regulator",
+                    "published_at": "2026-02-27T07:00:00+00:00",
+                },
+                {
+                    "title": "New product launch gains traction",
+                    "publisher": "WireC",
+                    "url": "https://wirec.example/product",
+                    "published_at": "2026-02-26T09:00:00+00:00",
+                },
+                {
+                    "title": "Fed signals lower rate path",
+                    "publisher": "WireD",
+                    "url": "https://wired.example/macro",
+                    "published_at": "2026-02-26T06:00:00+00:00",
+                },
+                {
+                    "title": "Earnings guidance maintained",
+                    "publisher": "WireE",
+                    "url": "https://wiree.example/guidance",
+                    "published_at": "2026-02-25T06:00:00+00:00",
+                },
             ],
             **kwargs,
         }
@@ -2474,14 +2526,103 @@ async def test_upgrade8_p1_snapshot_card_news_section_contains_thematic_top3_wit
     assert "2) 监管：" in msg
     assert "3) 产品：" in msg
     assert "代表新闻：" in msg
-    assert "来源：" in msg
+    assert "媒体：" in msg
+    assert "链接：" in msg
+    assert "method=lexicon" in msg
 
 
 def test_upgrade8_p1_technical_sentence_contains_direction_trigger_and_risk() -> None:
     sentence = TelegramActions._technical_sentence(latest_close=120.0, ma=100.0, rsi=70.0)  # noqa: SLF001
     assert "偏强" in sentence
+    assert "MA20=100.00" in sentence
     assert "若" in sentence
     assert "风险" in sentence
+
+
+def test_upgrade9_technical_sentence_contains_key_levels_and_trigger() -> None:
+    sentence = TelegramActions._technical_sentence_with_levels(  # noqa: SLF001
+        latest_close=95.0,
+        ma10=100.0,
+        ma20=110.0,
+        support=90.0,
+        resistance=100.0,
+        rsi=40.0,
+        sample_size=30,
+    )
+    assert "MA10=100.00" in sentence
+    assert "MA20=110.00" in sentence
+    assert "支撑 L=90.00" in sentence
+    assert "压力 R=100.00" in sentence
+    assert "风险" in sentence
+
+
+@pytest.mark.asyncio
+async def test_upgrade9_card_a_degrades_when_missing_recent_ohlc_series(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        return {
+            "run_id": "run-u9-carda-degrade",
+            "fused_insights": {"summary": "degrade test"},
+            "metrics": {
+                "data_close": 200.0,
+                "window_low": 180.0,
+                "window_high": 220.0,
+                "return_30d": 0.1,
+                "technical_rsi_14": 56.0,
+            },
+            "news": [{"title": "news item", "source": "wire"}],
+            **kwargs,
+        }
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 3031201, "message": {"chat": {"id": "chat-u9a"}, "text": "分析 TSLA 一个月走势"}})
+    msg = next(text for _, text in reversed(sender.messages) if "Card A｜区间表现" in text)
+    assert "行情数据不足（缺少近30日序列" in msg
+    assert "现价区间位置：数据不足" in msg
+    assert "涨跌额 N/A" not in msg
+
+
+@pytest.mark.asyncio
+async def test_upgrade9_news_sentiment_is_skipped_when_sample_below_threshold(tmp_path) -> None:  # noqa: ANN001
+    store = TelegramTaskStore(tmp_path / "telegram.db")
+    sender = FakeChatSender()
+
+    async def fake_runner(**kwargs):  # noqa: ANN003
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        records = [
+            {
+                "Date": (start + timedelta(days=i)).isoformat(),
+                "Open": 170.0 + i,
+                "High": 171.0 + i,
+                "Low": 169.0 + i,
+                "Close": 170.0 + i,
+            }
+            for i in range(30)
+        ]
+        return {
+            "run_id": "run-u9-news-threshold",
+            "fused_insights": {"summary": "news threshold"},
+            "metrics": {"data_close": 200.0, "technical_rsi_14": 56.0},
+            "records": records,
+            "news": [
+                {"title": "Q4 earnings beat estimates", "source": "WireA", "url": "https://wirea.example/1", "published_at": "2026-02-27T08:00:00+00:00"},
+                {"title": "Regulator opens probe", "source": "WireB", "url": "https://wireb.example/2", "published_at": "2026-02-27T07:00:00+00:00"},
+                {"title": "New product launch", "source": "WireC", "url": "https://wirec.example/3", "published_at": "2026-02-26T09:00:00+00:00"},
+                {"title": "Fed signals lower rate path", "source": "WireD", "url": "https://wired.example/4", "published_at": "2026-02-26T06:00:00+00:00"},
+            ],
+            **kwargs,
+        }
+
+    actions = TelegramActions(store=store, notifier=sender, research_runner=fake_runner, analysis_timeout_seconds=5)
+    gateway = TelegramGateway(store=store, actions=actions)
+
+    assert await gateway.process_update({"update_id": 3031202, "message": {"chat": {"id": "chat-u9b"}, "text": "分析 TSLA 一个月走势"}})
+    msg = next(text for _, text in reversed(sender.messages) if "Card A｜区间表现" in text)
+    assert "情绪：样本不足（N=4<5），不计算情绪分。" in msg
 
 
 @pytest.mark.asyncio
