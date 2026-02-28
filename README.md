@@ -1,14 +1,26 @@
 # Alpha-Insight
 
 ## 项目简介（What / Why）
-Alpha-Insight 是一个“研究 + 监控 + 推送”的量化投研系统：
-- 对外能力：支持 Telegram 命令/NL 输入进行快速分析、监控任务创建、告警中心、日报与状态查询。
-- 核心目标：把“行情抓取 -> 新闻聚合 -> 指标计算 -> 解释输出 -> 告警分发 -> 降级治理”串成可追踪、可回归、可验收的闭环。
+Alpha-Insight 是一个面向“投研分析 + 监控告警 + 多通道触达”的自动化系统，重点解决三类实际问题：
+- 信息分散：行情、新闻、技术指标分散在不同平台，人工拼接慢且容易漏关键证据。
+- 响应滞后：盘中或盘后异动需要秒级到分钟级提醒，手工盯盘不可持续。
+- 输出不一致：同一请求在不同入口（命令、自然语言、前端）容易产生口径不一致的结果。
 
-代码依据：
-- 统一研究主链路：[agents/workflow_engine.py](agents/workflow_engine.py)
-- Telegram 网关与动作层：[services/telegram_gateway.py](services/telegram_gateway.py), [services/telegram_actions.py](services/telegram_actions.py)
-- 调度与可靠性治理：[services/scheduler.py](services/scheduler.py), [services/reliability_governor.py](services/reliability_governor.py)
+系统的设计目标是把“请求理解 -> 数据抓取 -> 指标计算 -> 解释生成 -> 监控调度 -> 告警分发 -> 降级治理”收敛到同一条工程化链路中，确保可追踪、可回归、可验收。
+
+面向用户的核心能力：
+- 研究分析：支持 Telegram 命令与自然语言输入，输出结构化 Snapshot（Card A/B/C/D），包含区间表现、关键价位、新闻主题与证据口径。
+- 监控告警：支持单标的与分组监控、模板化策略（volatility/price/rsi）、策略分层（research-only/alert-only/execution-ready）与批量操作。
+- 运行可视化：支持 `/status`、`/alerts`、`/report`、`/digest`，并在 Streamlit/Next.js 控制台查看运行、告警、证据与治理状态。
+- 可靠性保障：内置重试、去重、队列、降级与恢复逻辑，保证在外部依赖波动时仍可提供可解释输出。
+
+从工程角度，它不是“单次问答机器人”，而是“持续运行的投研执行面（Research Ops Control Plane）”：一端接收 Telegram 与前端请求，一端持续执行调度和通知，并把全过程沉淀到可审计存储与证据文件中。
+
+代码锚点（核心链路）：
+- 统一研究编排：[agents/workflow_engine.py](agents/workflow_engine.py)
+- Telegram 接入与动作执行：[services/telegram_gateway.py](services/telegram_gateway.py), [services/telegram_actions.py](services/telegram_actions.py)
+- 调度、告警与治理：[services/scheduler.py](services/scheduler.py), [services/watch_executor.py](services/watch_executor.py), [services/reliability_governor.py](services/reliability_governor.py)
+- 数据与通知适配：[tools/market_data.py](tools/market_data.py), [tools/news_data.py](tools/news_data.py), [services/notification_channels.py](services/notification_channels.py)
 
 ---
 
