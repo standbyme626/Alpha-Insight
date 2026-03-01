@@ -8,8 +8,9 @@ from typing import Any
 import pandas as pd
 
 from core.models import DataBundle
-from tools.market_data import fetch_market_data, get_company_name, normalize_market_symbol
-from tools.news_data import fetch_symbol_news
+from core.tool_result import build_tool_result
+from tools.market_data import fetch_market_data, get_company_name, market_data_result_to_tool_result, normalize_market_symbol
+from tools.news_data import fetch_symbol_news, fetch_symbol_news_tool_result
 
 
 POSITIVE_KEYWORDS = (
@@ -47,6 +48,7 @@ NEGATIVE_KEYWORDS = (
     "风险",
     "调查",
 )
+_DEFAULT_FETCH_SYMBOL_NEWS = fetch_symbol_news
 
 
 @dataclass
@@ -86,6 +88,8 @@ class MarketNewsAnalysisResult:
     final_assessment: str
     analysis_steps: list[str]
     news_items: list[dict[str, Any]]
+    market_tool_result: dict[str, Any]
+    news_tool_result: dict[str, Any]
     market_data_source: str
     market_data_rows: int
     market_data_asof: str
@@ -342,6 +346,17 @@ async def run_market_news_analysis(
         records = list(bundle_payload.get("records", []))
         market_data_source = str(bundle_payload.get("data_source", "bundle")).strip() or "bundle"
         market_data_asof = str(bundle_payload.get("asof", "")).strip()
+        market_tool_result = build_tool_result(
+            source=f"market_data:{market_data_source}",
+            confidence=0.95,
+            raw=bundle_payload,
+            meta={
+                "symbol": normalized_symbol,
+                "period": period,
+                "interval": interval,
+                "record_count": len(records),
+            },
+        ).to_dict()
         fetch_step = (
             "复用共享行情包 / Reuse shared market bundle"
             f" [symbol={normalized_symbol}, rows={len(records)}, period={period}, interval={interval}]"
@@ -353,6 +368,11 @@ async def run_market_news_analysis(
         records = list(result.records)
         market_data_source = str((result.bundle.data_source if result.bundle else "api")).strip() or "api"
         market_data_asof = str((result.bundle.asof.isoformat() if result.bundle else "")).strip()
+        market_tool_result = market_data_result_to_tool_result(
+            result,
+            period=period,
+            interval=interval,
+        ).to_dict()
         fetch_step = (
             "拉取行情数据 / Fetch OHLCV from market API (yfinance)"
             f" [symbol={normalized_symbol}, rows={len(records)}, period={period}, interval={interval}]"
@@ -388,7 +408,26 @@ async def run_market_news_analysis(
         base = float(close.iloc[-6])
         short_change_pct = 0.0 if base == 0 else ((latest_close - base) / base) * 100.0
 
-    news_items = await fetch_symbol_news(normalized_symbol, limit=news_limit)
+    if fetch_symbol_news is not _DEFAULT_FETCH_SYMBOL_NEWS:
+        # Legacy adapter path for tests/overrides that still patch fetch_symbol_news.
+        news_items = await fetch_symbol_news(
+            normalized_symbol,
+            limit=news_limit,
+            company_name=company_name,
+        )
+        news_result = build_tool_result(
+            source="news:legacy_adapter",
+            confidence=0.8 if news_items else 0.0,
+            raw=news_items,
+            meta={"symbol": normalized_symbol, "limit": int(news_limit)},
+        )
+    else:
+        news_result = await fetch_symbol_news_tool_result(
+            normalized_symbol,
+            limit=news_limit,
+            company_name=company_name,
+        )
+        news_items = news_result.raw if isinstance(news_result.raw, list) else []
     sentiment_score, sentiment_label, pos_hits_total, neg_hits_total = _score_sentiment(news_items)
     trend_signal = _resolve_trend(latest_close, ma5, ma20, rsi14)
     trend_signal_zh = _trend_label_zh(trend_signal)
@@ -488,6 +527,8 @@ async def run_market_news_analysis(
         final_assessment=final_assessment,
         analysis_steps=analysis_steps,
         news_items=news_items,
+        market_tool_result=market_tool_result,
+        news_tool_result=news_result.to_dict(),
         market_data_source=market_data_source,
         market_data_rows=int(len(df)),
         market_data_asof=market_data_asof,

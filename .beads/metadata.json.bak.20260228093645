@@ -1,0 +1,5 @@
+{
+  "database": "sqlite",
+  "jsonl_export": "issues.jsonl",
+  "backend": "sqlite"
+}

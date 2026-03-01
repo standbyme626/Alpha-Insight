@@ -1,0 +1,106 @@
+{
+  "generated_at": "2026-02-28T04:41:42.480658+00:00",
+  "merge_priority": [
+    "base",
+    "env_override",
+    "runtime_flags"
+  ],
+  "final_config": {
+    "strategy_plugins": {
+      "signals": {
+        "signal_sanity": {
+          "enabled": true,
+          "module": "signals.signal_sanity",
+          "class_name": "SignalSanityPlugin",
+          "timeout_ms": 1200,
+          "params": {}
+        }
+      },
+      "alerts": {
+        "alert_priority": {
+          "enabled": true,
+          "module": "alerts.alert_priority",
+          "class_name": "AlertPriorityPlugin",
+          "timeout_ms": 800,
+          "params": {}
+        }
+      },
+      "policies": {
+        "research_guard": {
+          "enabled": true,
+          "module": "policies.research_guard",
+          "class_name": "ResearchGuardPolicyPlugin",
+          "timeout_ms": 800,
+          "params": {
+            "max_critical_per_cycle": 1000
+          }
+        }
+      }
+    },
+    "connectors": {
+      "news_rss": {
+        "enabled": true,
+        "timeout_seconds": 6.0,
+        "throttle_rate_per_sec": 4.0,
+        "retry": {
+          "max_attempts": 3,
+          "base_backoff_seconds": 0.2,
+          "max_backoff_seconds": 1.0,
+          "jitter_seconds": 0.0
+        }
+      }
+    }
+  },
+  "diff_summary": [
+    {
+      "path": "connectors.news_rss.retry.max_attempts",
+      "base_value": 2,
+      "final_value": 3,
+      "source": "runtime_flags"
+    },
+    {
+      "path": "connectors.news_rss.timeout_seconds",
+      "base_value": 8.0,
+      "final_value": 6.0,
+      "source": "runtime_flags"
+    },
+    {
+      "path": "strategy_plugins.signals.signal_sanity.timeout_ms",
+      "base_value": 800,
+      "final_value": 1200,
+      "source": "runtime_flags"
+    }
+  ],
+  "source_trace": {
+    "strategy_plugins.signals.signal_sanity.enabled": "base",
+    "strategy_plugins.signals.signal_sanity.module": "base",
+    "strategy_plugins.signals.signal_sanity.class_name": "base",
+    "strategy_plugins.signals.signal_sanity.timeout_ms": "runtime_flags",
+    "strategy_plugins.alerts.alert_priority.enabled": "base",
+    "strategy_plugins.alerts.alert_priority.module": "base",
+    "strategy_plugins.alerts.alert_priority.class_name": "base",
+    "strategy_plugins.alerts.alert_priority.timeout_ms": "base",
+    "strategy_plugins.policies.research_guard.enabled": "base",
+    "strategy_plugins.policies.research_guard.module": "base",
+    "strategy_plugins.policies.research_guard.class_name": "base",
+    "strategy_plugins.policies.research_guard.timeout_ms": "base",
+    "strategy_plugins.policies.research_guard.params.max_critical_per_cycle": "base",
+    "connectors.news_rss.enabled": "base",
+    "connectors.news_rss.timeout_seconds": "runtime_flags",
+    "connectors.news_rss.throttle_rate_per_sec": "base",
+    "connectors.news_rss.retry.max_attempts": "runtime_flags",
+    "connectors.news_rss.retry.base_backoff_seconds": "base",
+    "connectors.news_rss.retry.max_backoff_seconds": "base",
+    "connectors.news_rss.retry.jitter_seconds": "base"
+  },
+  "validation_probe": {
+    "ok": false,
+    "issues": [
+      {
+        "path": "connectors.news_rss.retry.max_attempts",
+        "message": "Input should be a valid integer, unable to parse string as an integer",
+        "suggestion": "Set `connectors.news_rss.retry.max_attempts` to an integer."
+      }
+    ]
+  }
+}

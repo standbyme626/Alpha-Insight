@@ -1,0 +1,74 @@
+{
+  "generated_at": "2026-02-28T04:41:42.479962+00:00",
+  "runtime_flags_applied": true,
+  "loaded_plugins": [
+    {
+      "kind": "alerts",
+      "plugin_id": "alert_priority",
+      "plugin_name": "alert_priority",
+      "timeout_ms": 800,
+      "params": {}
+    },
+    {
+      "kind": "policies",
+      "plugin_id": "error_probe",
+      "plugin_name": "error_probe",
+      "timeout_ms": 120,
+      "params": {
+        "message": "probe boom"
+      }
+    },
+    {
+      "kind": "policies",
+      "plugin_id": "timeout_probe",
+      "plugin_name": "timeout_probe",
+      "timeout_ms": 60,
+      "params": {
+        "sleep_ms": 120
+      }
+    },
+    {
+      "kind": "signals",
+      "plugin_id": "signal_sanity",
+      "plugin_name": "signal_sanity",
+      "timeout_ms": 800,
+      "params": {}
+    }
+  ],
+  "policy_output": {
+    "allow_triggered_research": true,
+    "selected_alerts": []
+  },
+  "audit": [
+    {
+      "plugin_id": "timeout_probe",
+      "plugin_name": "timeout_probe",
+      "kind": "policies",
+      "status": "timeout",
+      "duration_ms": 60.242,
+      "degraded": true,
+      "error": "plugin timeout after 60ms",
+      "output_keys": [],
+      "observability_tags": {
+        "plugin_id": "timeout_probe",
+        "plugin_kind": "policies",
+        "plugin_status": "timeout"
+      }
+    },
+    {
+      "plugin_id": "error_probe",
+      "plugin_name": "error_probe",
+      "kind": "policies",
+      "status": "error",
+      "duration_ms": 0.037,
+      "degraded": true,
+      "error": "probe boom",
+      "output_keys": [],
+      "observability_tags": {
+        "plugin_id": "error_probe",
+        "plugin_kind": "policies",
+        "plugin_status": "error"
+      }
+    }
+  ]
+}

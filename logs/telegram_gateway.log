@@ -1,0 +1,180 @@
+[gateway] handling update=850118755 chat=75***25
+[DEBUG] QuantNode send_text Start
+[gateway] handling update=850118756 chat=75***25
+[DEBUG] QuantNode week2.build_week2_graph Start
+[DEBUG] QuantNode week2.planner_node Start
+[DEBUG] QuantNode week2.market_data_node Start
+[DEBUG] QuantNode fetch_market_data Start
+[DEBUG] QuantNode week2.coder_node Start
+[DEBUG] QuantNode week2.executor_node Start
+[DEBUG] QuantNode SandboxManager.__init__ Start
+[DEBUG] QuantNode LocalDockerSandbox.__init__ Start
+[DEBUG] QuantNode SandboxManager.create_session Start
+[DEBUG] QuantNode SandboxManager.execute Start
+[DEBUG] QuantNode LocalDockerSandbox.execute_code Start
+[DEBUG] QuantNode LocalDockerSandbox._ensure_image_exists Start
+[DEBUG] QuantNode LocalDockerSandbox._run_cmd Start
+[DEBUG] QuantNode LocalDockerSandbox._run_cmd Start
+[DEBUG] QuantNode LocalDockerSandbox._run_cmd Start
+[DEBUG] QuantNode LocalDockerSandbox._run_cmd Start
+[DEBUG] QuantNode LocalDockerSandbox._inspect_container_state Start
+[DEBUG] QuantNode LocalDockerSandbox._run_cmd Start
+[DEBUG] QuantNode LocalDockerSandbox._read_file_from_container Start
+[DEBUG] QuantNode LocalDockerSandbox._run_cmd Start
+[DEBUG] QuantNode LocalDockerSandbox._read_file_from_container Start
+[DEBUG] QuantNode LocalDockerSandbox._run_cmd Start
+[DEBUG] QuantNode LocalDockerSandbox._extract_output_files Start
+[DEBUG] QuantNode LocalDockerSandbox._run_cmd Start
+[DEBUG] QuantNode LocalDockerSandbox._cleanup_container Start
+[DEBUG] QuantNode LocalDockerSandbox._run_cmd Start
+[DEBUG] QuantNode SandboxManager.destroy_session Start
+Traceback (most recent call last):
+  File "/home/kkk/Project/Alpha-Insight/scripts/telegram_long_polling_gateway.py", line 81, in <module>
+    
+  File "/usr/lib/python3.12/asyncio/runners.py", line 194, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/base_events.py", line 687, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/home/kkk/Project/Alpha-Insight/scripts/telegram_long_polling_gateway.py", line 72, in _main
+    ),
+^^^^^^
+  File "/home/kkk/Project/Alpha-Insight/services/telegram_gateway.py", line 1785, in run_long_polling
+    last_error=None,
+        ^^^^^^^^^^^^^
+  File "/home/kkk/Project/Alpha-Insight/services/telegram_gateway.py", line 1751, in process_updates
+    last_error=plan.explain,
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kkk/Project/Alpha-Insight/services/telegram_gateway.py", line 263, in process_update
+    return False
+       ^^^^^^^^^^
+  File "/home/kkk/Project/Alpha-Insight/services/telegram_gateway.py", line 1076, in process_enqueued_update
+    async def process_enqueued_update(self, *, update_id: int) -> bool:
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kkk/Project/Alpha-Insight/services/telegram_gateway.py", line 983, in _handle_request_action
+    )
+^^^^^
+  File "/home/kkk/Project/Alpha-Insight/services/telegram_actions.py", line 345, in handle_analyze_snapshot
+    await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kkk/Project/Alpha-Insight/services/telegram_store.py", line 1495, in upsert_analysis_report
+    conn.execute(
+sqlite3.IntegrityError: UNIQUE constraint failed: analysis_reports.request_id
+[gateway] handling update=850118757 chat=75***25
+[DEBUG] QuantNode send_text Start
+[gateway] handling update=850118758 chat=75***25
+[DEBUG] QuantNode send_text Start
+[gateway] handling update=850118759 chat=75***25
+[DEBUG] QuantNode send_text Start
+[gateway] handling update=850118760 chat=75***25
+[DEBUG] QuantNode send_text Start
+[gateway] handling update=850118761 chat=75***25
+[DEBUG] QuantNode send_text Start
+[gateway] handling update=850118762 chat=75***25
+[DEBUG] QuantNode send_text Start
+[gateway] handling update=850118763 chat=75***25
+[DEBUG] QuantNode send_text Start
+[gateway] handling update=850118764 chat=75***25
+[DEBUG] QuantNode send_text Start
+[DEBUG] QuantNode send_text Start
+[DEBUG] QuantNode send_text Start
+[DEBUG] QuantNode send_text Start
+[DEBUG] QuantNode send_text Start
+[DEBUG] QuantNode send_text Start
+[DEBUG] QuantNode week2.build_week2_graph Start
+[DEBUG] QuantNode week2.planner_node Start
+[DEBUG] QuantNode week2.market_data_node Start
+[DEBUG] QuantNode fetch_market_data Start
+[DEBUG] QuantNode week2.coder_node Start
+[DEBUG] QuantNode week2.executor_node Start
+[DEBUG] QuantNode SandboxManager.__init__ Start
+[DEBUG] QuantNode LocalDockerSandbox.__init__ Start
+[DEBUG] QuantNode SandboxManager.create_session Start
+[DEBUG] QuantNode SandboxManager.execute Start
+[DEBUG] QuantNode LocalDockerSandbox.execute_code Start
+[DEBUG] QuantNode LocalDockerSandbox._ensure_image_exists Start
+[DEBUG] QuantNode LocalDockerSandbox._run_cmd Start
+[DEBUG] QuantNode LocalDockerSandbox._run_cmd Start
+[DEBUG] QuantNode LocalDockerSandbox._run_cmd Start
+[DEBUG] QuantNode LocalDockerSandbox._run_cmd Start
+[DEBUG] QuantNode LocalDockerSandbox._inspect_container_state Start
+[DEBUG] QuantNode LocalDockerSandbox._run_cmd Start
+[DEBUG] QuantNode LocalDockerSandbox._read_file_from_container Start
+[DEBUG] QuantNode LocalDockerSandbox._run_cmd Start
+[DEBUG] QuantNode LocalDockerSandbox._read_file_from_container Start
+[DEBUG] QuantNode LocalDockerSandbox._run_cmd Start
+[DEBUG] QuantNode LocalDockerSandbox._extract_output_files Start
+[DEBUG] QuantNode LocalDockerSandbox._run_cmd Start
+[DEBUG] QuantNode LocalDockerSandbox._cleanup_container Start
+[DEBUG] QuantNode LocalDockerSandbox._run_cmd Start
+[DEBUG] QuantNode SandboxManager.destroy_session Start
+[DEBUG] QuantNode send_text Start
+[gateway] handling update=850118765 chat=75***25
+[DEBUG] QuantNode week2.build_week2_graph Start
+[DEBUG] QuantNode week2.planner_node Start
+[DEBUG] QuantNode week2.market_data_node Start
+[DEBUG] QuantNode fetch_market_data Start
+[DEBUG] QuantNode week2.coder_node Start
+[DEBUG] QuantNode week2.executor_node Start
+[DEBUG] QuantNode SandboxManager.__init__ Start
+[DEBUG] QuantNode LocalDockerSandbox.__init__ Start
+[DEBUG] QuantNode SandboxManager.create_session Start
+[DEBUG] QuantNode SandboxManager.execute Start
+[DEBUG] QuantNode LocalDockerSandbox.execute_code Start
+[DEBUG] QuantNode LocalDockerSandbox._ensure_image_exists Start
+[DEBUG] QuantNode LocalDockerSandbox._run_cmd Start
+[DEBUG] QuantNode LocalDockerSandbox._run_cmd Start
+[DEBUG] QuantNode LocalDockerSandbox._run_cmd Start
+[DEBUG] QuantNode LocalDockerSandbox._run_cmd Start
+[DEBUG] QuantNode LocalDockerSandbox._inspect_container_state Start
+[DEBUG] QuantNode LocalDockerSandbox._run_cmd Start
+[DEBUG] QuantNode LocalDockerSandbox._read_file_from_container Start
+[DEBUG] QuantNode LocalDockerSandbox._run_cmd Start
+[DEBUG] QuantNode LocalDockerSandbox._read_file_from_container Start
+[DEBUG] QuantNode LocalDockerSandbox._run_cmd Start
+[DEBUG] QuantNode LocalDockerSandbox._extract_output_files Start
+[DEBUG] QuantNode LocalDockerSandbox._run_cmd Start
+[DEBUG] QuantNode LocalDockerSandbox._cleanup_container Start
+[DEBUG] QuantNode LocalDockerSandbox._run_cmd Start
+[DEBUG] QuantNode SandboxManager.destroy_session Start
+Traceback (most recent call last):
+  File "/home/kkk/Project/Alpha-Insight/scripts/telegram_long_polling_gateway.py", line 98, in <module>
+    raise SystemExit(asyncio.run(_main()))
+                     ^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/runners.py", line 194, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/base_events.py", line 687, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/home/kkk/Project/Alpha-Insight/scripts/telegram_long_polling_gateway.py", line 89, in _main
+    await gateway.run_long_polling(
+  File "/home/kkk/Project/Alpha-Insight/services/telegram_gateway.py", line 2054, in run_long_polling
+    await self.process_updates([item for item in updates if isinstance(item, dict)])
+  File "/home/kkk/Project/Alpha-Insight/services/telegram_gateway.py", line 2020, in process_updates
+    if await self.process_update(update):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kkk/Project/Alpha-Insight/services/telegram_gateway.py", line 265, in process_update
+    return await self.process_enqueued_update(update_id=update_id)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kkk/Project/Alpha-Insight/services/telegram_gateway.py", line 1313, in process_enqueued_update
+    return await self._handle_request_action(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kkk/Project/Alpha-Insight/services/telegram_gateway.py", line 1217, in _handle_request_action
+    await self._actions.handle_analyze_snapshot(
+  File "/home/kkk/Project/Alpha-Insight/services/telegram_actions.py", line 478, in handle_analyze_snapshot
+    self._store.upsert_analysis_report(
+  File "/home/kkk/Project/Alpha-Insight/services/telegram_store.py", line 1712, in upsert_analysis_report
+    conn.execute(
+sqlite3.IntegrityError: UNIQUE constraint failed: analysis_reports.request_id
+Traceback (most recent call last):
+  File "/home/kkk/Project/Alpha-Insight/scripts/telegram_long_polling_gateway.py", line 8, in <module>
+    from services.runtime_controls import GlobalConcurrencyGate, RuntimeLimits
+ModuleNotFoundError: No module named 'services'

@@ -1,0 +1,17 @@
+{
+  "generated_at": "2026-02-28T02:15:36Z",
+  "scope": "Upgrade7 P0-A Policy/Runtime consistency",
+  "checks": {
+    "docker_path_uses_shared_policy_enforce": true,
+    "local_process_fallback_uses_shared_policy_enforce": true,
+    "unsafe_code_blocked_before_runtime_execution": true
+  },
+  "validated_by": [
+    "tests/test_upgrade7_p0a_contracts.py::test_policy_runtime_consistency_for_docker_and_local_fallback",
+    "tests/test_upgrade7_p0a_contracts.py::test_policy_blocks_unsafe_code_before_runtime"
+  ],
+  "notes": [
+    "SandboxManager now calls one Policy.enforce() contract on both local-docker and local-process-fallback backends.",
+    "Dangerous imports/network calls are rejected before any runtime execution path starts."
+  ]
+}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
+import time
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -47,6 +48,9 @@ class SandboxExecutionResult:
     exit_code: int
     images: list[str]
     output_files: list[str]
+    backend: str
+    duration_ms: float
+    resource_usage: dict[str, Any] | None
     execution_backend: str
 
 
@@ -73,6 +77,7 @@ class LocalDockerSandbox:
         if not code.strip():
             raise SandboxInfrastructureError("Received empty Python code.")
 
+        started_at = time.perf_counter()
         await self._ensure_image_exists()
 
         run_id = uuid.uuid4().hex[:8]
@@ -144,6 +149,13 @@ class LocalDockerSandbox:
                         exit_code=exit_code,
                         images=images,
                         output_files=output_files,
+                        backend=f"docker:{self.image}",
+                        duration_ms=(time.perf_counter() - started_at) * 1000,
+                        resource_usage={
+                            "memory_limit": self.memory_limit,
+                            "output_file_count": len(output_files),
+                            "image_count": len(images),
+                        },
                         execution_backend=f"docker:{self.image}",
                     )
                 )

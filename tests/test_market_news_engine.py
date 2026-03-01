@@ -34,7 +34,13 @@ async def test_market_news_analysis_reuses_shared_bundle(monkeypatch: pytest.Mon
     async def fail_if_called(*_args, **_kwargs):  # noqa: ANN002, ANN003
         raise AssertionError("fetch_market_data should not be called when bundle is provided")
 
-    async def fake_news(_symbol: str, *, limit: int = 10, timeout_seconds: int = 20):  # noqa: ANN001
+    async def fake_news(  # noqa: ANN001
+        _symbol: str,
+        *,
+        limit: int = 10,
+        timeout_seconds: int = 20,
+        company_name: str = "",
+    ):
         return []
 
     monkeypatch.setattr("agents.market_news_engine.fetch_market_data", fail_if_called)

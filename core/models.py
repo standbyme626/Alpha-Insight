@@ -68,6 +68,8 @@ class SandboxArtifacts(BaseModel):
     stdout: str
     stderr: str
     backend: str
+    duration_ms: float = 0.0
+    resource_usage: dict[str, Any] | None = None
     retry_count: int
     success: bool
     traceback: dict[str, Any] | None

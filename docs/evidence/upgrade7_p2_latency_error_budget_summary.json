@@ -1,0 +1,241 @@
+{
+  "generated_at": "2026-02-28T04:41:57.663370+00:00",
+  "thresholds": {
+    "p50_latency_warn_ms": 1200.0,
+    "p50_latency_fail_ms": 4000.0,
+    "p95_latency_warn_ms": 2500.0,
+    "p95_latency_fail_ms": 6000.0,
+    "error_rate_warn": 0.05,
+    "error_rate_fail": 0.2,
+    "fallback_rate_warn": 0.2,
+    "fallback_rate_fail": 0.5,
+    "retry_pressure_warn": 0.1,
+    "retry_pressure_fail": 0.4
+  },
+  "scenarios": [
+    {
+      "scenario": "scanner_fault_injection",
+      "runtime_budget_verdict": "fail",
+      "runtime_latency_p95_ms": 0.597700010985136,
+      "runtime_error_rate": 1.0,
+      "runtime_fallback_rate": 0.0,
+      "runtime_retry_pressure": 1.0,
+      "runtime_budget_reasons": [
+        {
+          "metric": "error_rate",
+          "status": "fail",
+          "value": 1.0,
+          "warn_threshold": 0.05,
+          "fail_threshold": 0.2,
+          "message": "error_rate=1.000000 >= fail(0.200000)"
+        },
+        {
+          "metric": "retry_pressure",
+          "status": "fail",
+          "value": 1.0,
+          "warn_threshold": 0.1,
+          "fail_threshold": 0.4,
+          "message": "retry_pressure=1.000000 >= fail(0.400000)"
+        }
+      ]
+    },
+    {
+      "scenario": "workflow_fault_injection",
+      "runtime_budget_verdict": "fail",
+      "runtime_latency_p95_ms": 1.278,
+      "runtime_error_rate": 0.5,
+      "runtime_fallback_rate": 0.0,
+      "runtime_retry_pressure": 0.5,
+      "runtime_budget_reasons": [
+        {
+          "metric": "error_rate",
+          "status": "fail",
+          "value": 0.5,
+          "warn_threshold": 0.05,
+          "fail_threshold": 0.2,
+          "message": "error_rate=0.500000 >= fail(0.200000)"
+        },
+        {
+          "metric": "retry_pressure",
+          "status": "fail",
+          "value": 0.5,
+          "warn_threshold": 0.1,
+          "fail_threshold": 0.4,
+          "message": "retry_pressure=0.500000 >= fail(0.400000)"
+        }
+      ]
+    },
+    {
+      "scenario": "scanner:scanner.fetch:timeout",
+      "runtime_budget_verdict": "fail",
+      "runtime_latency_p95_ms": 0.20599999697878957,
+      "runtime_error_rate": 1.0,
+      "runtime_fallback_rate": 0.0,
+      "runtime_retry_pressure": 1.0,
+      "runtime_budget_reasons": [
+        {
+          "metric": "error_rate",
+          "status": "fail",
+          "value": 1.0,
+          "warn_threshold": 0.05,
+          "fail_threshold": 0.2,
+          "message": "error_rate=1.000000 >= fail(0.200000)"
+        },
+        {
+          "metric": "retry_pressure",
+          "status": "fail",
+          "value": 1.0,
+          "warn_threshold": 0.1,
+          "fail_threshold": 0.4,
+          "message": "retry_pressure=1.000000 >= fail(0.400000)"
+        }
+      ]
+    },
+    {
+      "scenario": "scanner:scanner.fetch:upstream_5xx",
+      "runtime_budget_verdict": "fail",
+      "runtime_latency_p95_ms": 0.1732000382617116,
+      "runtime_error_rate": 1.0,
+      "runtime_fallback_rate": 0.0,
+      "runtime_retry_pressure": 1.0,
+      "runtime_budget_reasons": [
+        {
+          "metric": "error_rate",
+          "status": "fail",
+          "value": 1.0,
+          "warn_threshold": 0.05,
+          "fail_threshold": 0.2,
+          "message": "error_rate=1.000000 >= fail(0.200000)"
+        },
+        {
+          "metric": "retry_pressure",
+          "status": "fail",
+          "value": 1.0,
+          "warn_threshold": 0.1,
+          "fail_threshold": 0.4,
+          "message": "retry_pressure=1.000000 >= fail(0.400000)"
+        }
+      ]
+    },
+    {
+      "scenario": "scanner:scanner.fetch:rate_limit",
+      "runtime_budget_verdict": "fail",
+      "runtime_latency_p95_ms": 0.14710001414641738,
+      "runtime_error_rate": 1.0,
+      "runtime_fallback_rate": 0.0,
+      "runtime_retry_pressure": 1.0,
+      "runtime_budget_reasons": [
+        {
+          "metric": "error_rate",
+          "status": "fail",
+          "value": 1.0,
+          "warn_threshold": 0.05,
+          "fail_threshold": 0.2,
+          "message": "error_rate=1.000000 >= fail(0.200000)"
+        },
+        {
+          "metric": "retry_pressure",
+          "status": "fail",
+          "value": 1.0,
+          "warn_threshold": 0.1,
+          "fail_threshold": 0.4,
+          "message": "retry_pressure=1.000000 >= fail(0.400000)"
+        }
+      ]
+    },
+    {
+      "scenario": "scanner:scanner.parse:parse",
+      "runtime_budget_verdict": "fail",
+      "runtime_latency_p95_ms": 0.7513000164180994,
+      "runtime_error_rate": 1.0,
+      "runtime_fallback_rate": 0.0,
+      "runtime_retry_pressure": 0.0,
+      "runtime_budget_reasons": [
+        {
+          "metric": "error_rate",
+          "status": "fail",
+          "value": 1.0,
+          "warn_threshold": 0.05,
+          "fail_threshold": 0.2,
+          "message": "error_rate=1.000000 >= fail(0.200000)"
+        }
+      ]
+    },
+    {
+      "scenario": "workflow/runtime:workflow.market_data:upstream_5xx",
+      "runtime_budget_verdict": "fail",
+      "runtime_latency_p95_ms": 0.05,
+      "runtime_error_rate": 0.5,
+      "runtime_fallback_rate": 0.0,
+      "runtime_retry_pressure": 0.0,
+      "runtime_budget_reasons": [
+        {
+          "metric": "error_rate",
+          "status": "fail",
+          "value": 0.5,
+          "warn_threshold": 0.05,
+          "fail_threshold": 0.2,
+          "message": "error_rate=0.500000 >= fail(0.200000)"
+        }
+      ]
+    },
+    {
+      "scenario": "workflow/runtime:workflow.executor:sandbox_failure",
+      "runtime_budget_verdict": "fail",
+      "runtime_latency_p95_ms": 0.662,
+      "runtime_error_rate": 0.5,
+      "runtime_fallback_rate": 0.0,
+      "runtime_retry_pressure": 0.5,
+      "runtime_budget_reasons": [
+        {
+          "metric": "error_rate",
+          "status": "fail",
+          "value": 0.5,
+          "warn_threshold": 0.05,
+          "fail_threshold": 0.2,
+          "message": "error_rate=0.500000 >= fail(0.200000)"
+        },
+        {
+          "metric": "retry_pressure",
+          "status": "fail",
+          "value": 0.5,
+          "warn_threshold": 0.1,
+          "fail_threshold": 0.4,
+          "message": "retry_pressure=0.500000 >= fail(0.400000)"
+        }
+      ]
+    },
+    {
+      "scenario": "workflow/runtime:runtime.sandbox_execute:timeout",
+      "runtime_budget_verdict": "fail",
+      "runtime_latency_p95_ms": 0.63,
+      "runtime_error_rate": 0.5,
+      "runtime_fallback_rate": 0.0,
+      "runtime_retry_pressure": 0.5,
+      "runtime_budget_reasons": [
+        {
+          "metric": "error_rate",
+          "status": "fail",
+          "value": 0.5,
+          "warn_threshold": 0.05,
+          "fail_threshold": 0.2,
+          "message": "error_rate=0.500000 >= fail(0.200000)"
+        },
+        {
+          "metric": "retry_pressure",
+          "status": "fail",
+          "value": 0.5,
+          "warn_threshold": 0.1,
+          "fail_threshold": 0.4,
+          "message": "retry_pressure=0.500000 >= fail(0.400000)"
+        }
+      ]
+    }
+  ],
+  "verdict_counts": {
+    "pass": 0,
+    "warn": 0,
+    "fail": 9
+  },
+  "overall_verdict": "fail"
+}

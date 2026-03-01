@@ -1,0 +1,21 @@
+{
+  "generated_at": "2026-02-28T02:21:02Z",
+  "scope": "Upgrade7 P0-B2 ToolResult unification (market/news/scanner)",
+  "checks": {
+    "market_tool_result_contract": ["source", "ts", "confidence", "raw", "error"],
+    "news_tool_result_contract": ["source", "ts", "confidence", "raw", "error"],
+    "scanner_chain_consumes_market_tool_result": true,
+    "legacy_adapters_preserve_existing_interfaces": true
+  },
+  "validated_by": [
+    "tests/test_upgrade7_toolresult_unification.py::test_market_tool_result_contract_and_legacy_adapter",
+    "tests/test_upgrade7_toolresult_unification.py::test_news_tool_result_contract_and_legacy_list_adapter",
+    "tests/test_upgrade7_toolresult_unification.py::test_scanner_chain_emits_market_tool_result_on_failure",
+    "tests/test_week2_workflow.py::test_run_unified_research_outputs_single_report_object"
+  ],
+  "notes": [
+    "MarketDataResult now carries ToolResult while keeping legacy fields (ok/symbol/message/records/bundle).",
+    "News tool exposes fetch_symbol_news_tool_result() and keeps fetch_symbol_news() as list adapter.",
+    "Unified research payload exports tool_results map for market and news sources."
+  ]
+}

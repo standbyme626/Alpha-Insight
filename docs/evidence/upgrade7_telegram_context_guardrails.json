@@ -1,0 +1,17 @@
+{
+  "generated_at": "2026-02-28T01:52:43Z",
+  "scope": "Upgrade7 P0 Telegram context inheritance guardrails",
+  "checks": {
+    "carry_symbol_prompt_explicit": true,
+    "carry_prompt_contains_switch_guidance": true,
+    "ambiguous_alias_requires_candidate_selection": true
+  },
+  "validated_by": [
+    "tests/test_telegram_phase_d.py::test_upgrade7_context_carry_prompt_is_explicit_and_switchable",
+    "tests/test_telegram_phase_d.py::test_phase_p1_candidate_selection_uses_inline_keyboard_buttons"
+  ],
+  "notes": [
+    "Carry-over prompt now includes inherited symbol/period and explicit switch instruction.",
+    "Ambiguous alias still routes to candidate selection instead of implicit execution."
+  ]
+}

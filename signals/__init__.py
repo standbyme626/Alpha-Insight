@@ -1,0 +1,2 @@
+"""Signal strategy plugins."""
+

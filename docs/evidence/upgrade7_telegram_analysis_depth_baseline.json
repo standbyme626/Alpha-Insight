@@ -1,0 +1,19 @@
+{
+  "generated_at": "2026-02-28T01:52:43Z",
+  "scope": "Upgrade7 P0 Telegram analysis depth baseline",
+  "checks": {
+    "six_element_baseline": true,
+    "critical_monitor_push_has_three_line_research_summary": true,
+    "high_normal_monitor_push_stays_compact": true,
+    "news_window_30d_toggle_retained": true
+  },
+  "validated_by": [
+    "tests/test_telegram_phase_d.py::test_phase_p2_snapshot_output_order_and_evidence_visible",
+    "tests/test_telegram_phase_d.py::test_phase_p1_news_window_toggle_30_days_via_callback",
+    "tests/test_telegram_phase_c.py::test_upgrade7_monitor_push_layers_critical_and_high_messages"
+  ],
+  "notes": [
+    "analyze_snapshot main message now includes conclusion, price position, technical evidence, news replay, risk prompt, and next action.",
+    "monitor push uses priority layering: critical enriched, high/normal lightweight."
+  ]
+}

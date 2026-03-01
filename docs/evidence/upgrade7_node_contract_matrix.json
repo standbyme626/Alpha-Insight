@@ -1,0 +1,41 @@
+{
+  "generated_at": "2026-02-28T02:29:53Z",
+  "scope": "Upgrade7 P0-B1 Node I/O contract matrix",
+  "nodes": {
+    "planner": {
+      "input_contract": "PlannerNodeInput",
+      "output_contract": "PlannerNodeOutput"
+    },
+    "coder": {
+      "input_contract": "CoderNodeInput",
+      "output_contract": "CoderNodeOutput"
+    },
+    "executor": {
+      "input_contract": "ExecutorNodeInput",
+      "output_contract": "ExecutorNodeOutput"
+    },
+    "debugger": {
+      "input_contract": "DebuggerNodeInput",
+      "output_contract": "DebuggerNodeOutput"
+    }
+  },
+  "checks": {
+    "required_optional_fields_validated": true,
+    "error_code_mapping": ["data", "sandbox", "network", "logic", "timeout", "rate_limit", "unknown"],
+    "retry_semantics_contract": ["success", "retry", "stop"],
+    "executor_traceback_contains_error_code": true
+  },
+  "validated_by": [
+    "tests/test_upgrade7_node_contracts.py::test_planner_contract_requires_request_field",
+    "tests/test_upgrade7_node_contracts.py::test_coder_contract_required_and_optional_paths",
+    "tests/test_upgrade7_node_contracts.py::test_executor_contract_required_fields_and_optional_resource_usage",
+    "tests/test_upgrade7_node_contracts.py::test_error_code_classification_matrix",
+    "tests/test_upgrade7_node_contracts.py::test_retry_semantics_contract",
+    "tests/test_upgrade7_node_contracts.py::test_executor_node_appends_error_code",
+    "tests/test_week2_workflow.py::test_week2_self_correction_loop"
+  ],
+  "notes": [
+    "Week2 planner/coder/executor/debugger now run schema-backed I/O validation.",
+    "Executor traceback payloads include contract-level error_code for deterministic retry and audit semantics."
+  ]
+}

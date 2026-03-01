@@ -1,0 +1,13 @@
+{
+  "generated_at": "2026-02-28T04:41:42.484450+00:00",
+  "base_connector_retry": {
+    "result": "ok",
+    "attempts": 3,
+    "error_semantic": "RATE_LIMIT"
+  },
+  "rss_connector_retry": {
+    "result": "<rss></rss>",
+    "attempts": 2,
+    "error_semantic": "UPSTREAM_5XX"
+  }
+}

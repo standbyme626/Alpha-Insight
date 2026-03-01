@@ -1,0 +1,152 @@
+{
+  "generated_at": "2026-02-28T04:42:00.030898+00:00",
+  "scope": "Upgrade7 P2-B channel adapter route strategy matrix",
+  "strategy_matrix": [
+    {
+      "strategy": "telegram_only",
+      "job_id": "job-5e63a691",
+      "pushed_count": 1,
+      "dedupe_suppressed_count": 0,
+      "dispatch_counts": {
+        "telegram": 1,
+        "email": 0,
+        "wecom": 0,
+        "webhook": 0
+      },
+      "targets": {
+        "telegram": [
+          "chat-p2b"
+        ],
+        "email": [],
+        "wecom": [],
+        "webhook": []
+      },
+      "webhook_id_reference": "wh-e619d691"
+    },
+    {
+      "strategy": "email_only",
+      "job_id": "job-fed2cf3c",
+      "pushed_count": 1,
+      "dedupe_suppressed_count": 0,
+      "dispatch_counts": {
+        "telegram": 0,
+        "email": 1,
+        "wecom": 0,
+        "webhook": 0
+      },
+      "targets": {
+        "telegram": [],
+        "email": [
+          "ops@example.com"
+        ],
+        "wecom": [],
+        "webhook": []
+      },
+      "webhook_id_reference": "wh-f434f3c0"
+    },
+    {
+      "strategy": "wecom_only",
+      "job_id": "job-a97e5c55",
+      "pushed_count": 1,
+      "dedupe_suppressed_count": 0,
+      "dispatch_counts": {
+        "telegram": 0,
+        "email": 0,
+        "wecom": 1,
+        "webhook": 0
+      },
+      "targets": {
+        "telegram": [],
+        "email": [],
+        "wecom": [
+          "wecom-bot-1"
+        ],
+        "webhook": []
+      },
+      "webhook_id_reference": "wh-126b8c69"
+    },
+    {
+      "strategy": "webhook_only",
+      "job_id": "job-e44223db",
+      "pushed_count": 1,
+      "dedupe_suppressed_count": 0,
+      "dispatch_counts": {
+        "telegram": 0,
+        "email": 0,
+        "wecom": 0,
+        "webhook": 1
+      },
+      "targets": {
+        "telegram": [],
+        "email": [],
+        "wecom": [],
+        "webhook": [
+          "wh-14c1185f"
+        ]
+      },
+      "webhook_id_reference": "wh-14c1185f"
+    },
+    {
+      "strategy": "dual_channel",
+      "job_id": "job-dd741d0a",
+      "pushed_count": 1,
+      "dedupe_suppressed_count": 0,
+      "dispatch_counts": {
+        "telegram": 1,
+        "email": 1,
+        "wecom": 1,
+        "webhook": 1
+      },
+      "targets": {
+        "telegram": [
+          "chat-p2b"
+        ],
+        "email": [
+          "ops@example.com"
+        ],
+        "wecom": [
+          "wecom-bot-1"
+        ],
+        "webhook": [
+          "wh-582f36e2"
+        ]
+      },
+      "webhook_id_reference": "wh-582f36e2"
+    },
+    {
+      "strategy": "multi_channel",
+      "job_id": "job-488faf5c",
+      "pushed_count": 1,
+      "dedupe_suppressed_count": 0,
+      "dispatch_counts": {
+        "telegram": 1,
+        "email": 1,
+        "wecom": 1,
+        "webhook": 1
+      },
+      "targets": {
+        "telegram": [
+          "chat-p2b"
+        ],
+        "email": [
+          "ops@example.com"
+        ],
+        "wecom": [
+          "wecom-bot-1"
+        ],
+        "webhook": [
+          "wh-6b93ced6"
+        ]
+      },
+      "webhook_id_reference": "wh-6b93ced6"
+    }
+  ],
+  "strategies_covered": [
+    "dual_channel",
+    "email_only",
+    "multi_channel",
+    "telegram_only",
+    "webhook_only",
+    "wecom_only"
+  ]
+}

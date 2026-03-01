@@ -1,0 +1,419 @@
+{
+  "generated_at": "2026-02-28T04:41:57.663352+00:00",
+  "scope": "Upgrade7 P2-A fault injection + latency/error budget minimal loop",
+  "scenarios": {
+    "scanner_fault_injection": {
+      "baseline_budget_verdict": "pass",
+      "injected_budget_verdict": "fail",
+      "injected_fault_events": [
+        {
+          "node": "scanner.fetch",
+          "fault": "rate_limit",
+          "rate": 1.0,
+          "sample": 0.4523795535098186,
+          "reason": "injected rate_limit at node=scanner.fetch",
+          "ts": "2026-02-28T04:41:57.617601+00:00"
+        },
+        {
+          "node": "scanner.fetch",
+          "fault": "rate_limit",
+          "rate": 1.0,
+          "sample": 0.559772386080496,
+          "reason": "injected rate_limit at node=scanner.fetch",
+          "ts": "2026-02-28T04:41:57.617953+00:00"
+        }
+      ],
+      "injected_alarm_rules": [
+        "failure_spike"
+      ],
+      "injected_failure_clusters": {
+        "unknown": 2
+      },
+      "injected_runtime_metrics": {
+        "runtime_budget_verdict": "fail",
+        "runtime_budget_reasons": [
+          {
+            "metric": "error_rate",
+            "status": "fail",
+            "value": 1.0,
+            "warn_threshold": 0.05,
+            "fail_threshold": 0.2,
+            "message": "error_rate=1.000000 >= fail(0.200000)"
+          },
+          {
+            "metric": "retry_pressure",
+            "status": "fail",
+            "value": 1.0,
+            "warn_threshold": 0.1,
+            "fail_threshold": 0.4,
+            "message": "retry_pressure=1.000000 >= fail(0.400000)"
+          }
+        ],
+        "runtime_latency_p95_ms": 0.597700010985136,
+        "runtime_error_rate": 1.0,
+        "runtime_fallback_rate": 0.0,
+        "runtime_retry_pressure": 1.0,
+        "fault_injection_event_count": 2
+      }
+    },
+    "workflow_fault_injection": {
+      "node": "workflow.executor",
+      "fault": "sandbox_failure",
+      "run_id": "run-a02221f42ab7",
+      "runtime_budget_verdict": "fail",
+      "runtime_budget_reasons": [
+        {
+          "metric": "error_rate",
+          "status": "fail",
+          "value": 0.5,
+          "warn_threshold": 0.05,
+          "fail_threshold": 0.2,
+          "message": "error_rate=0.500000 >= fail(0.200000)"
+        },
+        {
+          "metric": "retry_pressure",
+          "status": "fail",
+          "value": 0.5,
+          "warn_threshold": 0.1,
+          "fail_threshold": 0.4,
+          "message": "retry_pressure=0.500000 >= fail(0.400000)"
+        }
+      ],
+      "runtime_fault_injection_count": 1,
+      "runtime_fault_injection_events": [
+        {
+          "node": "workflow.executor",
+          "fault": "sandbox_failure",
+          "rate": 1.0,
+          "sample": 0.6771258268002703,
+          "reason": "injected sandbox_failure at node=workflow.executor",
+          "ts": "2026-02-28T04:41:57.634799+00:00"
+        }
+      ],
+      "runtime_latency_p95_ms": 1.278,
+      "runtime_error_rate": 0.5,
+      "runtime_fallback_rate": 0.0,
+      "runtime_retry_pressure": 0.5,
+      "fault_injection_event_count": 1,
+      "sandbox_success": false
+    }
+  },
+  "fault_matrix": [
+    {
+      "node": "scanner.fetch",
+      "fault": "timeout",
+      "runtime_budget_verdict": "fail",
+      "runtime_budget_reasons": [
+        {
+          "metric": "error_rate",
+          "status": "fail",
+          "value": 1.0,
+          "warn_threshold": 0.05,
+          "fail_threshold": 0.2,
+          "message": "error_rate=1.000000 >= fail(0.200000)"
+        },
+        {
+          "metric": "retry_pressure",
+          "status": "fail",
+          "value": 1.0,
+          "warn_threshold": 0.1,
+          "fail_threshold": 0.4,
+          "message": "retry_pressure=1.000000 >= fail(0.400000)"
+        }
+      ],
+      "runtime_latency_p95_ms": 0.20599999697878957,
+      "runtime_error_rate": 1.0,
+      "runtime_fallback_rate": 0.0,
+      "runtime_retry_pressure": 1.0,
+      "fault_injection_event_count": 1,
+      "fault_injection_events": [
+        {
+          "node": "scanner.fetch",
+          "fault": "timeout",
+          "rate": 1.0,
+          "sample": 0.5811521325045647,
+          "reason": "injected timeout at node=scanner.fetch",
+          "ts": "2026-02-28T04:41:57.635822+00:00"
+        }
+      ],
+      "failure_clusters": {
+        "timeout": 1
+      },
+      "alarms": [
+        {
+          "rule": "failure_spike",
+          "severity": "critical",
+          "value": 1.0,
+          "threshold": 1.0,
+          "message": "failure spike: count=1 >= 1"
+        }
+      ],
+      "scope": "scanner"
+    },
+    {
+      "node": "scanner.fetch",
+      "fault": "upstream_5xx",
+      "runtime_budget_verdict": "fail",
+      "runtime_budget_reasons": [
+        {
+          "metric": "error_rate",
+          "status": "fail",
+          "value": 1.0,
+          "warn_threshold": 0.05,
+          "fail_threshold": 0.2,
+          "message": "error_rate=1.000000 >= fail(0.200000)"
+        },
+        {
+          "metric": "retry_pressure",
+          "status": "fail",
+          "value": 1.0,
+          "warn_threshold": 0.1,
+          "fail_threshold": 0.4,
+          "message": "retry_pressure=1.000000 >= fail(0.400000)"
+        }
+      ],
+      "runtime_latency_p95_ms": 0.1732000382617116,
+      "runtime_error_rate": 1.0,
+      "runtime_fallback_rate": 0.0,
+      "runtime_retry_pressure": 1.0,
+      "fault_injection_event_count": 1,
+      "fault_injection_events": [
+        {
+          "node": "scanner.fetch",
+          "fault": "upstream_5xx",
+          "rate": 1.0,
+          "sample": 0.1481712063870836,
+          "reason": "injected upstream_5xx at node=scanner.fetch",
+          "ts": "2026-02-28T04:41:57.636051+00:00"
+        }
+      ],
+      "failure_clusters": {
+        "unknown": 1
+      },
+      "alarms": [
+        {
+          "rule": "failure_spike",
+          "severity": "critical",
+          "value": 1.0,
+          "threshold": 1.0,
+          "message": "failure spike: count=1 >= 1"
+        }
+      ],
+      "scope": "scanner"
+    },
+    {
+      "node": "scanner.fetch",
+      "fault": "rate_limit",
+      "runtime_budget_verdict": "fail",
+      "runtime_budget_reasons": [
+        {
+          "metric": "error_rate",
+          "status": "fail",
+          "value": 1.0,
+          "warn_threshold": 0.05,
+          "fail_threshold": 0.2,
+          "message": "error_rate=1.000000 >= fail(0.200000)"
+        },
+        {
+          "metric": "retry_pressure",
+          "status": "fail",
+          "value": 1.0,
+          "warn_threshold": 0.1,
+          "fail_threshold": 0.4,
+          "message": "retry_pressure=1.000000 >= fail(0.400000)"
+        }
+      ],
+      "runtime_latency_p95_ms": 0.14710001414641738,
+      "runtime_error_rate": 1.0,
+      "runtime_fallback_rate": 0.0,
+      "runtime_retry_pressure": 1.0,
+      "fault_injection_event_count": 1,
+      "fault_injection_events": [
+        {
+          "node": "scanner.fetch",
+          "fault": "rate_limit",
+          "rate": 1.0,
+          "sample": 0.9790501200727744,
+          "reason": "injected rate_limit at node=scanner.fetch",
+          "ts": "2026-02-28T04:41:57.636263+00:00"
+        }
+      ],
+      "failure_clusters": {
+        "unknown": 1
+      },
+      "alarms": [
+        {
+          "rule": "failure_spike",
+          "severity": "critical",
+          "value": 1.0,
+          "threshold": 1.0,
+          "message": "failure spike: count=1 >= 1"
+        }
+      ],
+      "scope": "scanner"
+    },
+    {
+      "node": "scanner.parse",
+      "fault": "parse",
+      "runtime_budget_verdict": "fail",
+      "runtime_budget_reasons": [
+        {
+          "metric": "error_rate",
+          "status": "fail",
+          "value": 1.0,
+          "warn_threshold": 0.05,
+          "fail_threshold": 0.2,
+          "message": "error_rate=1.000000 >= fail(0.200000)"
+        }
+      ],
+      "runtime_latency_p95_ms": 0.7513000164180994,
+      "runtime_error_rate": 1.0,
+      "runtime_fallback_rate": 0.0,
+      "runtime_retry_pressure": 0.0,
+      "fault_injection_event_count": 1,
+      "fault_injection_events": [
+        {
+          "node": "scanner.parse",
+          "fault": "parse",
+          "rate": 1.0,
+          "sample": 0.9599609301949554,
+          "reason": "injected parse at node=scanner.parse",
+          "ts": "2026-02-28T04:41:57.636991+00:00"
+        }
+      ],
+      "failure_clusters": {
+        "unknown": 1
+      },
+      "alarms": [
+        {
+          "rule": "failure_spike",
+          "severity": "critical",
+          "value": 1.0,
+          "threshold": 1.0,
+          "message": "failure spike: count=1 >= 1"
+        }
+      ],
+      "scope": "scanner"
+    },
+    {
+      "node": "workflow.market_data",
+      "fault": "upstream_5xx",
+      "run_id": "run-d812113f6238",
+      "runtime_budget_verdict": "fail",
+      "runtime_budget_reasons": [
+        {
+          "metric": "error_rate",
+          "status": "fail",
+          "value": 0.5,
+          "warn_threshold": 0.05,
+          "fail_threshold": 0.2,
+          "message": "error_rate=0.500000 >= fail(0.200000)"
+        }
+      ],
+      "runtime_fault_injection_count": 1,
+      "runtime_fault_injection_events": [
+        {
+          "node": "workflow.market_data",
+          "fault": "upstream_5xx",
+          "rate": 1.0,
+          "sample": 0.06710225875940379,
+          "reason": "injected upstream_5xx at node=workflow.market_data",
+          "ts": "2026-02-28T04:41:57.643527+00:00"
+        }
+      ],
+      "runtime_latency_p95_ms": 0.05,
+      "runtime_error_rate": 0.5,
+      "runtime_fallback_rate": 0.0,
+      "runtime_retry_pressure": 0.0,
+      "fault_injection_event_count": 1,
+      "sandbox_success": false,
+      "scope": "workflow/runtime"
+    },
+    {
+      "node": "workflow.executor",
+      "fault": "sandbox_failure",
+      "run_id": "run-7f55168cecf4",
+      "runtime_budget_verdict": "fail",
+      "runtime_budget_reasons": [
+        {
+          "metric": "error_rate",
+          "status": "fail",
+          "value": 0.5,
+          "warn_threshold": 0.05,
+          "fail_threshold": 0.2,
+          "message": "error_rate=0.500000 >= fail(0.200000)"
+        },
+        {
+          "metric": "retry_pressure",
+          "status": "fail",
+          "value": 0.5,
+          "warn_threshold": 0.1,
+          "fail_threshold": 0.4,
+          "message": "retry_pressure=0.500000 >= fail(0.400000)"
+        }
+      ],
+      "runtime_fault_injection_count": 1,
+      "runtime_fault_injection_events": [
+        {
+          "node": "workflow.executor",
+          "fault": "sandbox_failure",
+          "rate": 1.0,
+          "sample": 0.7638815744633954,
+          "reason": "injected sandbox_failure at node=workflow.executor",
+          "ts": "2026-02-28T04:41:57.652927+00:00"
+        }
+      ],
+      "runtime_latency_p95_ms": 0.662,
+      "runtime_error_rate": 0.5,
+      "runtime_fallback_rate": 0.0,
+      "runtime_retry_pressure": 0.5,
+      "fault_injection_event_count": 1,
+      "sandbox_success": false,
+      "scope": "workflow/runtime"
+    },
+    {
+      "node": "runtime.sandbox_execute",
+      "fault": "timeout",
+      "run_id": "run-6ed4be07e983",
+      "runtime_budget_verdict": "fail",
+      "runtime_budget_reasons": [
+        {
+          "metric": "error_rate",
+          "status": "fail",
+          "value": 0.5,
+          "warn_threshold": 0.05,
+          "fail_threshold": 0.2,
+          "message": "error_rate=0.500000 >= fail(0.200000)"
+        },
+        {
+          "metric": "retry_pressure",
+          "status": "fail",
+          "value": 0.5,
+          "warn_threshold": 0.1,
+          "fail_threshold": 0.4,
+          "message": "retry_pressure=0.500000 >= fail(0.400000)"
+        }
+      ],
+      "runtime_fault_injection_count": 1,
+      "runtime_fault_injection_events": [
+        {
+          "node": "runtime.sandbox_execute",
+          "fault": "timeout",
+          "rate": 1.0,
+          "sample": 0.09075818242392208,
+          "reason": "injected timeout at node=runtime.sandbox_execute",
+          "ts": "2026-02-28T04:41:57.662440+00:00"
+        }
+      ],
+      "runtime_latency_p95_ms": 0.63,
+      "runtime_error_rate": 0.5,
+      "runtime_fallback_rate": 0.0,
+      "runtime_retry_pressure": 0.5,
+      "fault_injection_event_count": 1,
+      "sandbox_success": false,
+      "scope": "workflow/runtime"
+    }
+  ],
+  "fault_matrix_case_count": 7,
+  "fault_injection_events_total": 10
+}

@@ -1,0 +1,19 @@
+{
+  "generated_at": "2026-02-28T01:52:43Z",
+  "scope": "Upgrade7 P0 Telegram UserResponseContract",
+  "checks": {
+    "user_visible_internal_field_block": true,
+    "message_density_main_plus_supplement_max2": true,
+    "message_length_cap_enforced": true,
+    "analyze_and_analyze_snapshot_contract_aligned": true
+  },
+  "validated_by": [
+    "tests/test_telegram_phase_d.py::test_upgrade7_user_response_contract_baseline_and_density",
+    "tests/test_telegram_phase_d.py::test_upgrade7_analyze_command_and_snapshot_have_same_contract_shape",
+    "tests/test_telegram_phase_d.py::test_phase_s_report_full_contains_evidence_block"
+  ],
+  "notes": [
+    "Telegram user copy strips schema_version/action_version/traceback/raw_error tokens.",
+    "Analyze output now follows six-element contract with bounded message size."
+  ]
+}

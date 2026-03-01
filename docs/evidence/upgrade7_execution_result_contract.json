@@ -1,0 +1,28 @@
+{
+  "generated_at": "2026-02-28T02:15:45Z",
+  "scope": "Upgrade7 P0-A ExecutionResult contract",
+  "checks": {
+    "required_fields_present": [
+      "stdout",
+      "stderr",
+      "exit_code",
+      "traceback",
+      "backend",
+      "duration_ms"
+    ],
+    "optional_fields_supported": [
+      "resource_usage",
+      "images",
+      "output_files"
+    ],
+    "workflow_executor_consumes_standard_backend_and_duration": true
+  },
+  "validated_by": [
+    "tests/test_upgrade7_p0a_contracts.py::test_execution_result_contract_normalized_fields",
+    "tests/test_week2_workflow.py::test_run_unified_research_outputs_single_report_object"
+  ],
+  "notes": [
+    "SandboxManager normalizes Docker/E2B/local fallback payloads into one ExecutionResult shape.",
+    "Week2 executor and report chain read standardized backend/duration/resource_usage fields."
+  ]
+}

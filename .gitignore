@@ -13,3 +13,7 @@ venv/
 
 # Local environment overrides
 .env.local
+
+# Web console artifacts
+web_console/node_modules/
+web_console/.next/

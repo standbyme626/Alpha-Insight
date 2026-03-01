@@ -18,6 +18,7 @@ except Exception:  # pragma: no cover - optional runtime dependency
     yf = None  # type: ignore[assignment]
 
 from core.models import DataBundle
+from core.tool_result import ToolResult, build_tool_result
 
 
 @dataclass
@@ -27,6 +28,34 @@ class MarketDataResult:
     message: str
     records: list[dict[str, Any]]
     bundle: DataBundle | None = None
+    tool_result: ToolResult | None = None
+
+
+def market_data_result_to_tool_result(
+    result: MarketDataResult,
+    *,
+    period: str = "",
+    interval: str = "",
+) -> ToolResult:
+    if result.tool_result is not None:
+        return result.tool_result
+    raw_bundle = result.bundle.to_serializable_dict() if result.bundle is not None else None
+    raw_payload = raw_bundle if raw_bundle is not None else {
+        "symbol": result.symbol,
+        "records": result.records,
+    }
+    return build_tool_result(
+        source="market_data:yfinance",
+        confidence=0.95 if result.ok else 0.0,
+        raw=raw_payload,
+        error="" if result.ok else result.message,
+        meta={
+            "symbol": result.symbol,
+            "period": period,
+            "interval": interval,
+            "record_count": len(result.records),
+        },
+    )
 
 
 _CN_COMPANY_SYMBOL_MAP: dict[str, str] = {
@@ -667,43 +696,55 @@ async def fetch_market_data(symbol: str, period: str = "1mo", interval: str = "1
     print("[DEBUG] QuantNode fetch_market_data Start")
     normalized_symbol = normalize_market_symbol(symbol)
     if not normalized_symbol:
-        return MarketDataResult(
+        message = "数据未找到: symbol 为空。"
+        result = MarketDataResult(
             ok=False,
             symbol=normalized_symbol,
-            message="数据未找到: symbol 为空。",
+            message=message,
             records=[],
             bundle=None,
         )
+        result.tool_result = market_data_result_to_tool_result(result, period=period, interval=interval)
+        return result
 
     if yf is None:
-        return MarketDataResult(
+        message = "数据未找到: yfinance 未安装。"
+        result = MarketDataResult(
             ok=False,
             symbol=normalized_symbol,
-            message="数据未找到: yfinance 未安装。",
+            message=message,
             records=[],
             bundle=None,
         )
+        result.tool_result = market_data_result_to_tool_result(result, period=period, interval=interval)
+        return result
 
     try:
         ticker = yf.Ticker(normalized_symbol)
         df = await asyncio.to_thread(ticker.history, period=period, interval=interval)
     except Exception as exc:  # pragma: no cover - network/runtime variability
-        return MarketDataResult(
+        message = f"数据未找到: yfinance 请求失败 ({exc})"
+        result = MarketDataResult(
             ok=False,
             symbol=normalized_symbol,
-            message=f"数据未找到: yfinance 请求失败 ({exc})",
+            message=message,
             records=[],
             bundle=None,
         )
+        result.tool_result = market_data_result_to_tool_result(result, period=period, interval=interval)
+        return result
 
     if df.empty:
-        return MarketDataResult(
+        message = "数据未找到"
+        result = MarketDataResult(
             ok=False,
             symbol=normalized_symbol,
-            message="数据未找到",
+            message=message,
             records=[],
             bundle=None,
         )
+        result.tool_result = market_data_result_to_tool_result(result, period=period, interval=interval)
+        return result
 
     normalized = _normalize_dataframe(df)
     records = normalized.to_dict(orient="records")
@@ -714,10 +755,12 @@ async def fetch_market_data(symbol: str, period: str = "1mo", interval: str = "1
         records=records,
         data_source="yfinance",
     )
-    return MarketDataResult(
+    result = MarketDataResult(
         ok=True,
         symbol=normalized_symbol,
         message="ok",
         records=bundle.records,
         bundle=bundle,
     )
+    result.tool_result = market_data_result_to_tool_result(result, period=period, interval=interval)
+    return result
