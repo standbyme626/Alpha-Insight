@@ -1,3 +1,5 @@
+export const RESOURCE_API_SCHEMA_VERSION = "upgrade10.resource_api.v1";
+
 export type RunResource = {
   run_id: string;
   request_id: string;
@@ -43,6 +45,15 @@ export type DegradationStateResource = {
   updated_at: string;
 };
 
+export type EventTimelineResource = {
+  event_id: string;
+  event_type: string;
+  ts: string;
+  title: string;
+  summary: string;
+  details: Record<string, unknown>;
+};
+
 export type FrontendResourceSnapshot = {
   generated_at: string;
   db_path: string;
@@ -50,4 +61,10 @@ export type FrontendResourceSnapshot = {
   alerts: AlertResource[];
   evidence: EvidenceResource[];
   degradation_states: DegradationStateResource[];
+};
+
+export type ApiEnvelope<T> = {
+  schema_version: string;
+  generated_at: string;
+  data: T;
 };

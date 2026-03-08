@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
+from services.resource_api import ResourceAPIService
+from services.telegram_store import TelegramTaskStore
 from ui.typed_resource_client import FrontendResourceClient
 
 
@@ -206,3 +209,66 @@ def test_frontend_evidence_summary_includes_p2b_channel_matrix_keys(tmp_path) ->
 
     assert evidence
     assert evidence[0].summary["strategies_covered"] == ["telegram_only", "email_only"]
+
+
+def _seed_realtime_store(db_path: Path, evidence_dir: Path) -> TelegramTaskStore:
+    store = TelegramTaskStore(db_path)
+    store.upsert_telegram_chat(chat_id="chat-rt", user_id="u-rt", username="rt")
+    store.upsert_analysis_report(
+        run_id="run-rt",
+        request_id="req-rt",
+        chat_id="chat-rt",
+        symbol="AAPL",
+        summary="realtime",
+        key_metrics={"runtime_success": True, "runtime_budget_verdict": "pass"},
+    )
+    job = store.create_watch_job(
+        chat_id="chat-rt",
+        symbol="AAPL",
+        interval_sec=300,
+        strategy_tier="research-only",
+    )
+    event_id, _ = store.record_watch_event_if_new(
+        job_id=job.job_id,
+        symbol="AAPL",
+        trigger_ts=datetime.now(timezone.utc),
+        price=100.0,
+        pct_change=0.03,
+        reason="smoke",
+        rule="price_or_rsi",
+        priority="high",
+        strategy_tier="research-only",
+        run_id="run-rt",
+    )
+    store.upsert_notification_state(event_id=event_id, channel="telegram", state="delivered")
+    store.set_degradation_state(state_key="no_monitor_push", status="recovered", reason="recovered")
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    (evidence_dir / "upgrade7_runtime_compat.json").write_text(
+        json.dumps({"generated_at": "2026-03-08T00:00:00+00:00", "runtime_flags_applied": True}),
+        encoding="utf-8",
+    )
+    return store
+
+
+def test_frontend_typed_client_compat_with_realtime_resource_api(tmp_path) -> None:  # noqa: ANN001
+    db_path = tmp_path / "store.db"
+    evidence_dir = tmp_path / "evidence"
+    store = _seed_realtime_store(db_path, evidence_dir)
+
+    realtime = ResourceAPIService(store=store, evidence_dir=evidence_dir)
+    typed = FrontendResourceClient(db_path=db_path, evidence_dir=evidence_dir)
+
+    realtime_runs = realtime.list_runs(limit=10)
+    typed_runs = typed.list_runs(limit=10)
+    assert [item["run_id"] for item in realtime_runs] == [item.run_id for item in typed_runs]
+    assert realtime_runs[0]["key_metrics"]["runtime_budget_verdict"] == typed_runs[0].key_metrics["runtime_budget_verdict"]
+
+    realtime_alerts = realtime.list_alerts(limit=10)
+    typed_alerts = typed.list_alerts(limit=10)
+    assert [item["event_id"] for item in realtime_alerts] == [item.event_id for item in typed_alerts]
+    assert realtime_alerts[0]["strategy_tier"] == typed_alerts[0].strategy_tier
+    assert realtime_alerts[0]["status"] == typed_alerts[0].status
+
+    realtime_evidence = realtime.list_evidence(limit=10)
+    typed_evidence = typed.list_evidence(limit=10)
+    assert [item["name"] for item in realtime_evidence] == [item.name for item in typed_evidence]

@@ -1,0 +1,21 @@
+[Unit]
+Description=Alpha-Insight Telegram Webhook Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/kkk/Project/Alpha-Insight
+EnvironmentFile=/etc/alpha-insight/alpha-insight.env
+Environment=PYTHONPATH=/home/kkk/Project/Alpha-Insight
+ExecStart=/home/kkk/Project/Alpha-Insight/.venv/bin/python scripts/telegram_webhook_gateway.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/home/kkk/Project/Alpha-Insight/storage
+
+[Install]
+WantedBy=multi-user.target

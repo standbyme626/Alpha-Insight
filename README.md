@@ -144,7 +144,7 @@ bash scripts/telegram_stack.sh status
 | 脉冲发布（订阅 + 去重分发） | `services/market_pulse.py::MarketPulsePublisher.publish_due` |
 | 新闻主题化/情绪门槛 | `services/news_digest.py::build_news_digest/format_top_news_lines/format_cluster_lines` |
 | 多通道路由（telegram/email/wecom/webhook） | `services/notification_channels.py::MultiChannelNotifier`, `scripts/telegram_watch_scheduler.py::WebhookTextSender` |
-| Typed 资源读取（前端） | `ui/typed_resource_client.py::FrontendResourceClient`, `web_console/lib/contracts.ts` |
+| Typed 资源读取（前端） | `services/run_store.py::RunStore`, `services/artifact_store.py::ArtifactStore`, `ui/typed_resource_client.py::FrontendResourceClient(兼容层)`, `web_console/lib/contracts.ts` |
 
 ---
 
@@ -174,8 +174,9 @@ graph TD
     MP --> NC
 
     TS --> FE1[Streamlit 控制台 Streamlit UI<br/>ui/upgrade7_console.py]
+    TS --> API[资源 API<br/>services/resource_api.py]
+    API --> FE2[Next.js 控制台 Next.js Console<br/>web_console]
     TS --> EXP[scripts/upgrade7_frontend_resources_export.py]
-    EXP --> FE2[Next.js 控制台 Next.js Console<br/>web_console]
 ```
 
 ---
@@ -230,7 +231,7 @@ sequenceDiagram
 ### 4) 证据文件（可复核）
 - 目录：`docs/evidence/`
 - 已有示例：`upgrade8_p1_*.json`, `upgrade8_p2_*.json`, `upgrade8_p2_regression_gate.json`。
-- Next 前端资源快照：`docs/evidence/upgrade7_frontend_resources.json`（由 `scripts/upgrade7_frontend_resources_export.py` 生成）。
+- Next 前端资源快照：`docs/evidence/upgrade7_frontend_resources.json`（兼容/证据用途，由 `scripts/upgrade7_frontend_resources_export.py` 生成）。
 
 ---
 
@@ -254,6 +255,7 @@ cp .env.example .env
 - Telegram：`TELEGRAM_BOT_TOKEN`, `TELEGRAM_ACCESS_MODE`, `TELEGRAM_ALLOWED_CHAT_IDS`, `TELEGRAM_BLOCKED_CHAT_IDS`
 - 网关/调度：`TELEGRAM_GATEWAY_DB`, `TELEGRAM_*_TIMEOUT_SECONDS`, `TELEGRAM_*_CONCURRENCY`
 - 灰度：`TELEGRAM_GRAY_RELEASE_ENABLED`
+- 全量键与默认值：`docs/configuration_manual.md`
 
 ### 3) 启动 Telegram 全链路（推荐）
 ```bash
@@ -279,7 +281,7 @@ streamlit run ui/upgrade7_console.py --server.port 8502
 ```
 - Next.js 控制台：
 ```bash
-python scripts/upgrade7_frontend_resources_export.py
+PYTHONPATH=. python services/resource_api.py --port 8765
 cd web_console
 npm install
 npm run dev
@@ -326,7 +328,7 @@ bash scripts/telegram_stack.sh restart
 bash scripts/telegram_stack.sh status
 ```
 
-### 资源导出（Next 控制台数据源）
+### 资源导出（兼容/证据）
 ```bash
 python scripts/upgrade7_frontend_resources_export.py
 ```
@@ -392,8 +394,8 @@ Alpha-Insight/
 - 相关治理：`services/reliability_governor.py`。
 
 ### 4) Next.js 页面有壳无数据
-- 当前 Next 控制台读取 `docs/evidence/upgrade7_frontend_resources.json`，不是直连 SQLite。
-- 先运行：`python scripts/upgrade7_frontend_resources_export.py`。
+- 当前 Next 控制台主链路读取 `/api/resources/*`（通过 `services/resource_api.py`）。
+- 若 API 不可用，可临时导出兼容快照：`python scripts/upgrade7_frontend_resources_export.py`。
 
 ---
 
@@ -403,9 +405,14 @@ Alpha-Insight/
 - 展示脱敏：`services/news_digest.py::redact_user_visible_payload`；`telegram_actions` 对内部关键字做用户文案替换。
 - 内容边界：Telegram 帮助文案已明确“仅用于研究与提醒，不支持自动交易”（`services/telegram_actions.py::handle_help`）。
 
-⚠️ Unknown/Needs verify：
-- 爬虫/RSS 的 robots 与站点条款合规策略未在仓库看到统一策略文件。
-- 建议核查：是否存在独立合规说明（例如 `docs/compliance*.md`）或运维侧白名单策略。
+已补齐文档入口：
+- 配置手册：`docs/configuration_manual.md`
+- Webhook 协议：`docs/webhook_contract.md`
+- 合规边界：`docs/compliance.md`
+- 进程托管（systemd）：`deploy/systemd/README.md`
+
+待核查（收敛后）：
+- 生产环境最终白名单策略（Telegram 来源 IP 与外发 webhook 目标）是否与运维防火墙规则一致。
 
 ---
 
@@ -421,8 +428,9 @@ Alpha-Insight/
 ## ⚠️ Unknown / Needs verify
 1. `docker-compose.telegram.yml` 启动了 `telegram-db(Postgres)`，但当前 Python 存储实现是 SQLite（`services/telegram_store.py`）。
    - 需要确认：是否存在未纳入当前分支的 Postgres store 适配层。
-2. Email/WeCom 通过 webhook 发送时的对端协议只在 `scripts/telegram_watch_scheduler.py::WebhookTextSender` 中有最小约定（`{"target","text"}`），缺正式接口文档。
-3. 生产进程托管策略（systemd/supervisor/k8s）未在仓库给出。
+2. 文档已补齐：
+   - `docs/webhook_contract.md`（入站 Telegram webhook + 出站告警 webhook + scheduler adapter payload）
+   - `deploy/systemd/`（unit files + install/verify guide）
 
 ---
 

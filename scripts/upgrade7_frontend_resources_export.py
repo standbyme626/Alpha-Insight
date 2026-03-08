@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export typed frontend resources for the Next.js Upgrade7 console."""
+"""Export a compatibility snapshot for frontend evidence/backfill use."""
 
 from __future__ import annotations
 
@@ -22,7 +22,9 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Export Upgrade7 frontend resources")
+    parser = argparse.ArgumentParser(
+        description="Export compatibility snapshot (not the primary runtime datasource)"
+    )
     parser.add_argument("--output", default="docs/evidence/upgrade7_frontend_resources.json")
     parser.add_argument("--run-limit", type=int, default=100)
     parser.add_argument("--alert-limit", type=int, default=200)
@@ -45,6 +47,8 @@ def main() -> None:
     payload = {
         "generated_at": _utc_now(),
         "db_path": snapshot.db_path,
+        "snapshot_role": "compatibility_evidence",
+        "primary_data_source": "services/resource_api.py (/api/*)",
         "runs": [item.model_dump(mode="python") for item in snapshot.runs],
         "alerts": [item.model_dump(mode="python") for item in snapshot.alerts],
         "evidence": [item.model_dump(mode="python") for item in snapshot.evidence],
@@ -54,7 +58,7 @@ def main() -> None:
     }
     output = Path(args.output)
     _write_json(output, payload)
-    print(f"[OK] {output}")
+    print(f"[OK] {output} (compatibility snapshot)")
 
 
 if __name__ == "__main__":

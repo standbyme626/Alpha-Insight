@@ -1,7 +1,8 @@
-import { parseAlerts, parseEvidence, parseGovernance, parseRuns } from "@/lib/contracts";
+import { parseAlerts, parseEvents, parseEvidence, parseGovernance, parseRuns } from "@/lib/contracts";
 import type {
   AlertResource,
   DegradationStateResource,
+  EventTimelineResource,
   EvidenceResource,
   RunResource
 } from "@/lib/types";
@@ -30,5 +31,12 @@ export const frontendClient = {
   listEvidence: async (limit = 100): Promise<EvidenceResource[]> =>
     parseEvidence(await getJson<unknown>(`/api/resources/evidence?limit=${limit}`)),
   listGovernance: async (): Promise<DegradationStateResource[]> =>
-    parseGovernance(await getJson<unknown>("/api/resources/governance"))
+    parseGovernance(await getJson<unknown>("/api/resources/governance")),
+  listEvents: async (limit = 200, since?: string): Promise<EventTimelineResource[]> => {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (since) {
+      query.set("since", since);
+    }
+    return parseEvents(await getJson<unknown>(`/api/resources/events?${query.toString()}`));
+  }
 };

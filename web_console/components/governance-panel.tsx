@@ -4,10 +4,14 @@ import { useMemo, useState } from "react";
 
 import { SectionTitle, StatCard } from "@/components/cards";
 import { GovernanceTable } from "@/components/tables";
-import type { DegradationStateResource } from "@/lib/types";
+import type { DegradationStateResource, EventTimelineResource } from "@/lib/types";
 
 function byLatest(a: DegradationStateResource, b: DegradationStateResource): number {
   return (Date.parse(b.updated_at || "") || 0) - (Date.parse(a.updated_at || "") || 0);
+}
+
+function eventByLatest(a: EventTimelineResource, b: EventTimelineResource): number {
+  return (Date.parse(b.ts || "") || 0) - (Date.parse(a.ts || "") || 0);
 }
 
 type TimelineEvent = {
@@ -18,7 +22,7 @@ type TimelineEvent = {
   reason: string;
 };
 
-export function GovernancePanel({ rows }: { rows: DegradationStateResource[] }) {
+export function GovernancePanel({ rows, events }: { rows: DegradationStateResource[]; events: EventTimelineResource[] }) {
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
 
@@ -45,10 +49,26 @@ export function GovernancePanel({ rows }: { rows: DegradationStateResource[] }) 
   const recovered = filtered.filter((row) => row.status === "recovered").length;
 
   const timeline = useMemo(() => {
-    const events: TimelineEvent[] = [];
+    const fromEvents = events
+      .filter((row) => row.event_type === "degrade_started" || row.event_type === "recover_finished")
+      .sort(eventByLatest)
+      .slice(0, 20)
+      .map<TimelineEvent>((row) => ({
+        id: `event:${row.event_id}`,
+        ts: row.ts,
+        type: row.event_type === "degrade_started" ? "degrade" : "recover",
+        state_key: row.title,
+        reason: row.summary
+      }));
+
+    if (fromEvents.length > 0) {
+      return fromEvents;
+    }
+
+    const fallback: TimelineEvent[] = [];
     for (const row of filtered) {
       if (row.triggered_at) {
-        events.push({
+        fallback.push({
           id: `${row.state_key}:triggered:${row.triggered_at}`,
           ts: row.triggered_at,
           type: "degrade",
@@ -57,7 +77,7 @@ export function GovernancePanel({ rows }: { rows: DegradationStateResource[] }) 
         });
       }
       if (row.recovered_at) {
-        events.push({
+        fallback.push({
           id: `${row.state_key}:recovered:${row.recovered_at}`,
           ts: row.recovered_at,
           type: "recover",
@@ -66,10 +86,11 @@ export function GovernancePanel({ rows }: { rows: DegradationStateResource[] }) 
         });
       }
     }
-    return events
+
+    return fallback
       .sort((a, b) => (Date.parse(b.ts || "") || 0) - (Date.parse(a.ts || "") || 0))
       .slice(0, 20);
-  }, [filtered]);
+  }, [events, filtered]);
 
   return (
     <section className="panel">

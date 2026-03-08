@@ -4,18 +4,36 @@ import { useMemo, useState } from "react";
 
 import { SectionTitle, StatCard } from "@/components/cards";
 import { AlertsTable } from "@/components/tables";
-import type { AlertResource } from "@/lib/types";
+import type { AlertResource, EventTimelineResource } from "@/lib/types";
 
 function byLatest(a: AlertResource, b: AlertResource): number {
   return (Date.parse(b.updated_at || "") || 0) - (Date.parse(a.updated_at || "") || 0);
 }
 
+function eventByLatest(a: EventTimelineResource, b: EventTimelineResource): number {
+  return (Date.parse(b.ts || "") || 0) - (Date.parse(a.ts || "") || 0);
+}
+
+type TimelineRow = {
+  id: string;
+  ts: string;
+  main: string;
+  sub: string;
+};
+
+function readStringDetail(event: EventTimelineResource, key: string): string {
+  const value = event.details[key];
+  return typeof value === "string" ? value : "";
+}
+
 export function AlertsPanel({
   rows,
-  activeDegradeStates
+  activeDegradeStates,
+  events
 }: {
   rows: AlertResource[];
   activeDegradeStates: number;
+  events: EventTimelineResource[];
 }) {
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -60,16 +78,42 @@ export function AlertsPanel({
   const guarded = filtered.filter((row) => row.tier_guarded).length;
   const failed = filtered.filter((row) => row.status === "failed" || row.status === "dlq").length;
 
-  const timeline = filtered
-    .filter(
-      (row) =>
-        row.tier_guarded ||
-        Boolean(row.last_error) ||
-        row.status === "failed" ||
-        row.status === "dlq" ||
-        row.status.startsWith("retry")
-    )
-    .slice(0, 16);
+  const timeline = useMemo<TimelineRow[]>(() => {
+    const byEvents = events
+      .filter((row) => row.event_type === "guard_triggered" || row.event_type === "delivery_failed")
+      .sort(eventByLatest)
+      .slice(0, 16)
+      .map((row) => {
+        const strategyTier = readStringDetail(row, "strategy_tier");
+        return {
+          id: `event:${row.event_id}`,
+          ts: row.ts,
+          main: `${row.event_type} · ${row.title}`,
+          sub: `${strategyTier ? `tier=${strategyTier} · ` : ""}${row.summary}`
+        };
+      });
+
+    if (byEvents.length > 0) {
+      return byEvents;
+    }
+
+    return filtered
+      .filter(
+        (row) =>
+          row.tier_guarded ||
+          Boolean(row.last_error) ||
+          row.status === "failed" ||
+          row.status === "dlq" ||
+          row.status.startsWith("retry")
+      )
+      .slice(0, 16)
+      .map((row) => ({
+        id: `alert:${row.event_id}:${row.channel}:${row.updated_at}`,
+        ts: row.updated_at || row.trigger_ts,
+        main: `${row.event_id} · ${row.symbol} · ${row.channel} · ${row.status}`,
+        sub: `tier=${row.strategy_tier} guarded=${row.tier_guarded ? "yes" : "no"} ${row.last_error || row.suppressed_reason || ""}`
+      }));
+  }, [events, filtered]);
 
   return (
     <section className="panel">
@@ -123,15 +167,10 @@ export function AlertsPanel({
         ) : (
           <ul className="timeline-list">
             {timeline.map((row) => (
-              <li key={`${row.event_id}:${row.channel}:${row.updated_at}`}>
-                <span className="timeline-time">{row.updated_at || row.trigger_ts}</span>
-                <span className="timeline-main">
-                  {row.event_id} · {row.symbol} · {row.channel} · {row.status}
-                </span>
-                <span className="timeline-sub">
-                  tier={row.strategy_tier} guarded={row.tier_guarded ? "yes" : "no"}{" "}
-                  {row.last_error || row.suppressed_reason || ""}
-                </span>
+              <li key={row.id}>
+                <span className="timeline-time">{row.ts}</span>
+                <span className="timeline-main">{row.main}</span>
+                <span className="timeline-sub">{row.sub}</span>
               </li>
             ))}
           </ul>

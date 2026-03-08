@@ -7,6 +7,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+NODE_CONTRACT_SCHEMA_VERSION = "upgrade10.node_contract.v1"
+
 
 class NodeErrorCode(str, Enum):
     DATA = "data"

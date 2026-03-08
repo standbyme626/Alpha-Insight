@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+TOOL_RESULT_SCHEMA_VERSION = "upgrade10.tool_result.v1"
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -16,6 +18,7 @@ class ToolResult:
     source: str
     ts: str
     confidence: float
+    schema_version: str = TOOL_RESULT_SCHEMA_VERSION
     raw: Any = None
     error: str = ""
     meta: dict[str, Any] = field(default_factory=dict)

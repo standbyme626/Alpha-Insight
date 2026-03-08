@@ -1,6 +1,9 @@
+import { RESOURCE_API_SCHEMA_VERSION } from "@/lib/types";
 import type {
   AlertResource,
+  ApiEnvelope,
   DegradationStateResource,
+  EventTimelineResource,
   EvidenceResource,
   FrontendResourceSnapshot,
   RunResource
@@ -30,6 +33,20 @@ function asObject(value: unknown): Record<string, unknown> {
 
 function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
+}
+
+function unwrapEnvelope<T>(payload: unknown): T | unknown {
+  if (!isRecord(payload)) {
+    return payload;
+  }
+  if (!("data" in payload)) {
+    return payload;
+  }
+  return payload.data as T;
+}
+
+function asSchemaVersion(value: unknown): string {
+  return asString(value, RESOURCE_API_SCHEMA_VERSION);
 }
 
 function toRunResource(value: unknown): RunResource | null {
@@ -98,6 +115,20 @@ function toDegradationStateResource(value: unknown): DegradationStateResource | 
   };
 }
 
+function toEventTimelineResource(value: unknown): EventTimelineResource | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  return {
+    event_id: asString(value.event_id),
+    event_type: asString(value.event_type),
+    ts: asString(value.ts),
+    title: asString(value.title),
+    summary: asString(value.summary),
+    details: asObject(value.details)
+  };
+}
+
 function normalizeList<T>(items: unknown[], mapper: (value: unknown) => T | null): T[] {
   return items
     .map((item) => mapper(item))
@@ -105,19 +136,59 @@ function normalizeList<T>(items: unknown[], mapper: (value: unknown) => T | null
 }
 
 export function parseRuns(payload: unknown): RunResource[] {
-  return normalizeList(asArray(payload), toRunResource);
+  return normalizeList(asArray(unwrapEnvelope<unknown[]>(payload)), toRunResource);
 }
 
 export function parseAlerts(payload: unknown): AlertResource[] {
-  return normalizeList(asArray(payload), toAlertResource);
+  return normalizeList(asArray(unwrapEnvelope<unknown[]>(payload)), toAlertResource);
 }
 
 export function parseEvidence(payload: unknown): EvidenceResource[] {
-  return normalizeList(asArray(payload), toEvidenceResource);
+  return normalizeList(asArray(unwrapEnvelope<unknown[]>(payload)), toEvidenceResource);
 }
 
 export function parseGovernance(payload: unknown): DegradationStateResource[] {
-  return normalizeList(asArray(payload), toDegradationStateResource);
+  const unwrapped = unwrapEnvelope<unknown>(payload);
+  if (Array.isArray(unwrapped)) {
+    return normalizeList(unwrapped, toDegradationStateResource);
+  }
+  if (isRecord(unwrapped)) {
+    return normalizeList(asArray(unwrapped.states), toDegradationStateResource);
+  }
+  return [];
+}
+
+export function parseEvents(payload: unknown): EventTimelineResource[] {
+  const unwrapped = unwrapEnvelope<unknown>(payload);
+  if (Array.isArray(unwrapped)) {
+    return normalizeList(unwrapped, toEventTimelineResource);
+  }
+  if (isRecord(unwrapped)) {
+    return normalizeList(asArray(unwrapped.events), toEventTimelineResource);
+  }
+  return [];
+}
+
+export function parseEnvelope<T>(payload: unknown, parser: (value: unknown) => T): ApiEnvelope<T> {
+  if (!isRecord(payload)) {
+    return {
+      schema_version: RESOURCE_API_SCHEMA_VERSION,
+      generated_at: new Date(0).toISOString(),
+      data: parser(payload)
+    };
+  }
+  if (!("data" in payload)) {
+    return {
+      schema_version: RESOURCE_API_SCHEMA_VERSION,
+      generated_at: new Date(0).toISOString(),
+      data: parser(payload)
+    };
+  }
+  return {
+    schema_version: asSchemaVersion(payload.schema_version),
+    generated_at: asString(payload.generated_at, new Date(0).toISOString()),
+    data: parser(payload.data)
+  };
 }
 
 export function parseSnapshot(payload: unknown): FrontendResourceSnapshot {
