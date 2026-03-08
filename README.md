@@ -31,6 +31,13 @@ Alpha-Insight 是一个 Research Ops Control Plane，核心链路是：
 - 调度、告警与治理：[services/scheduler.py](services/scheduler.py), [services/watch_executor.py](services/watch_executor.py), [services/reliability_governor.py](services/reliability_governor.py)
 - 数据与通知适配：[tools/market_data.py](tools/market_data.py), [tools/news_data.py](tools/news_data.py), [services/notification_channels.py](services/notification_channels.py)
 
+### 当前状态（Upgrade10 已落地）
+- Next 控制台主数据源：`services/resource_api.py` 提供 `/api/runs|alerts|governance|events|evidence`，`web_console/app/api/resources/*` 走实时资源链路。
+- Typed contract：`web_console/lib/contracts.ts` + `web_console/lib/types.ts` 负责资源 envelope 与字段解析，保持前后端契约一致。
+- 准实时刷新：`web_console/lib/polling.ts` + `web_console/lib/realtime.ts` 已实现前台高频、失焦降频、隐藏暂停与手动刷新。
+- 快照导出定位：`scripts/upgrade7_frontend_resources_export.py` 仅用于证据/回归兜底，不是控制台主链路依赖。
+- 回归门禁：已补齐 smoke 用例 `tests/smoke/test_webhook_smoke.py`、`tests/smoke/test_scheduler_smoke.py`、`tests/smoke/test_market_pulse_smoke.py`。
+
 ---
 
 ## Repo Discovery（目录结构 / 入口 / 依赖）
@@ -144,7 +151,10 @@ bash scripts/telegram_stack.sh status
 | 脉冲发布（订阅 + 去重分发） | `services/market_pulse.py::MarketPulsePublisher.publish_due` |
 | 新闻主题化/情绪门槛 | `services/news_digest.py::build_news_digest/format_top_news_lines/format_cluster_lines` |
 | 多通道路由（telegram/email/wecom/webhook） | `services/notification_channels.py::MultiChannelNotifier`, `scripts/telegram_watch_scheduler.py::WebhookTextSender` |
-| Typed 资源读取（前端） | `services/run_store.py::RunStore`, `services/artifact_store.py::ArtifactStore`, `ui/typed_resource_client.py::FrontendResourceClient(兼容层)`, `web_console/lib/contracts.ts` |
+| Resource API（Next 主链路） | `services/resource_api.py`, `web_console/app/api/resources/*`, `web_console/lib/resources.ts` |
+| Typed 合约解析（前端） | `web_console/lib/contracts.ts`, `web_console/lib/types.ts`, `ui/typed_resource_client.py::FrontendResourceClient(兼容层)` |
+| 前端轮询与准实时刷新 | `web_console/lib/polling.ts`, `web_console/lib/realtime.ts`, `web_console/app/(dashboard)/*` |
+| Smoke 门禁（webhook/scheduler/pulse） | `tests/smoke/test_webhook_smoke.py`, `tests/smoke/test_scheduler_smoke.py`, `tests/smoke/test_market_pulse_smoke.py` |
 
 ---
 
@@ -176,7 +186,7 @@ graph TD
     TS --> FE1[Streamlit 控制台 Streamlit UI<br/>ui/upgrade7_console.py]
     TS --> API[资源 API<br/>services/resource_api.py]
     API --> FE2[Next.js 控制台 Next.js Console<br/>web_console]
-    TS --> EXP[scripts/upgrade7_frontend_resources_export.py]
+    TS --> EXP[scripts/upgrade7_frontend_resources_export.py<br/>证据/回归兜底]
 ```
 
 ---
@@ -231,7 +241,8 @@ sequenceDiagram
 ### 4) 证据文件（可复核）
 - 目录：`docs/evidence/`
 - 已有示例：`upgrade8_p1_*.json`, `upgrade8_p2_*.json`, `upgrade8_p2_regression_gate.json`。
-- Next 前端资源快照：`docs/evidence/upgrade7_frontend_resources.json`（兼容/证据用途，由 `scripts/upgrade7_frontend_resources_export.py` 生成）。
+- Next 前端资源快照：`docs/evidence/upgrade7_frontend_resources.json`（仅兼容/证据/回归兜底，由 `scripts/upgrade7_frontend_resources_export.py` 生成）。
+- Next 主链路数据应以 Resource API 为准：`services/resource_api.py` -> `web_console/app/api/resources/*`。
 
 ---
 
@@ -287,6 +298,7 @@ npm install
 npm run dev
 ```
 默认地址：`http://localhost:8600`（自动跳转 `/runs`）。
+说明：Next 页面默认读 Resource API；导出快照不是前置步骤。
 
 ---
 
@@ -318,7 +330,8 @@ npm run dev
 ### 测试
 ```bash
 pytest -q
-pytest -q tests/test_telegram_phase_b.py tests/test_telegram_phase_d.py tests/test_market_pulse.py
+pytest -q tests/test_upgrade10_resource_api.py tests/test_upgrade7_frontend_client.py
+pytest -q tests/smoke/test_webhook_smoke.py tests/smoke/test_scheduler_smoke.py tests/smoke/test_market_pulse_smoke.py
 ```
 
 ### Telegram 栈
@@ -394,8 +407,9 @@ Alpha-Insight/
 - 相关治理：`services/reliability_governor.py`。
 
 ### 4) Next.js 页面有壳无数据
-- 当前 Next 控制台主链路读取 `/api/resources/*`（通过 `services/resource_api.py`）。
-- 若 API 不可用，可临时导出兼容快照：`python scripts/upgrade7_frontend_resources_export.py`。
+- 当前 Next 控制台主链路读取 `/api/resources/*`，由 `web_console/app/api/resources/*` 转发到 `services/resource_api.py`。
+- 若上游 Resource API 不可用，`web_console/lib/resources.ts` 会回退到 `docs/evidence/upgrade7_frontend_resources.json`。
+- 手动生成兜底快照（仅证据/回归）：`python scripts/upgrade7_frontend_resources_export.py`。
 
 ---
 
@@ -417,11 +431,10 @@ Alpha-Insight/
 ---
 
 ## Roadmap / TODO（基于代码现状推断）
-1. Next 控制台数据链路升级：从“离线 JSON 导出”升级到“实时 typed API / OpenAPI contract”。
-2. 统一配置文档化：把 Telegram 与 runtime config 键形成单一配置手册（当前分散在脚本与代码）。
-3. 增强观测面板：把 `metric_events`/`degradation_events` 直接可视化，减少人工查库。
-4. 完整合规文档：补爬虫源条款、采样频率、失败重试上限与缓存策略说明。
-5. 端到端回归套件：补 webhook + scheduler + pulse 的可重复 smoke（非破坏性）。
+1. 补齐 Postgres 存储适配落地路径（与 `docker-compose.telegram.yml` 的 `telegram-db` 一致）。
+2. 增强治理面板：把 `metric_events` 与 `degradation_events` 做更细粒度时间线筛选和聚合。
+3. 推进 Resource API 契约自动化（schema 校验/文档生成）以减少前后端手工同步成本。
+4. 完整化爬虫/RSS 合规执行细则（采样频率、缓存 TTL、失败重试上限）并接入巡检流程。
 
 ---
 
