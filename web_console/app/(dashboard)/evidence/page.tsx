@@ -9,11 +9,11 @@ export default async function EvidencePage() {
 
   return (
     <section className="panel">
-      <SectionTitle title="Evidence" subtitle="Acceptance artifacts and reproducibility traces" />
+      <SectionTitle title="验收证据 Evidence" subtitle="验收产物与可复现追踪记录" />
       <div className="stats-grid">
-        <StatCard label="Files" value={rows.length} />
-        <StatCard label="Upgrade7 Files" value={p1Files} />
-        <StatCard label="Total Size" value={`${(totalBytes / 1024).toFixed(1)} KB`} />
+        <StatCard label="文件数 Files" value={rows.length} />
+        <StatCard label="Upgrade7 证据文件" value={p1Files} />
+        <StatCard label="总大小 Total Size" value={`${(totalBytes / 1024).toFixed(1)} KB`} />
       </div>
       <EvidenceTable rows={rows} />
     </section>

@@ -8,7 +8,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from services.events_read_model import EventsReadModel
-from services.resource_api import RESOURCE_API_SCHEMA_VERSION, ResourceAPIService, create_resource_api_app
+from services.resource_api import RESOURCE_API_SCHEMA_VERSION, RESOURCE_VERSIONS, ResourceAPIService, create_resource_api_app
 from services.telegram_store import TelegramTaskStore
 
 
@@ -143,6 +143,8 @@ async def test_resource_api_http_routes(tmp_path: Path) -> None:
             runs_payload = await runs_resp.json()
             assert runs_resp.status == 200
             assert runs_payload["schema_version"] == RESOURCE_API_SCHEMA_VERSION
+            assert runs_payload["resource"] == "runs"
+            assert runs_payload["resource_version"] == RESOURCE_VERSIONS["runs"]
             assert isinstance(runs_payload["data"], list)
             run_id = runs_payload["data"][0]["run_id"]
 
@@ -155,5 +157,37 @@ async def test_resource_api_http_routes(tmp_path: Path) -> None:
             events_payload = await events_resp.json()
             assert events_resp.status == 200
             assert events_payload["schema_version"] == RESOURCE_API_SCHEMA_VERSION
+            assert events_payload["resource"] == "events"
+            assert events_payload["resource_version"] == RESOURCE_VERSIONS["events"]
             assert isinstance(events_payload["data"], list)
             assert any(item["event_type"] == "guard_triggered" for item in events_payload["data"])
+
+            health_resp = await client.get("/healthz")
+            health_payload = await health_resp.json()
+            assert health_resp.status == 200
+            assert health_payload["schema_version"] == RESOURCE_API_SCHEMA_VERSION
+            assert health_payload["resource_versions"] == RESOURCE_VERSIONS
+
+
+@pytest.mark.asyncio
+async def test_resource_api_sse_routes_emit_stream_chunks(tmp_path: Path) -> None:
+    db_path = tmp_path / "resource_api.db"
+    evidence_dir = tmp_path / "evidence"
+    store = _seed_store(db_path, evidence_dir)
+    app = create_resource_api_app(ResourceAPIService(store=store, evidence_dir=evidence_dir))
+
+    async with TestServer(app) as server:
+        async with TestClient(server) as client:
+            events_resp = await client.get("/api/events/stream?limit=5")
+            assert events_resp.status == 200
+            assert events_resp.headers.get("Content-Type", "").startswith("text/event-stream")
+            first_event = await events_resp.content.readline()
+            assert b"event:" in first_event
+            events_resp.close()
+
+            alerts_resp = await client.get("/api/alerts/stream?limit=5")
+            assert alerts_resp.status == 200
+            assert alerts_resp.headers.get("Content-Type", "").startswith("text/event-stream")
+            first_alert = await alerts_resp.content.readline()
+            assert b"event:" in first_alert
+            alerts_resp.close()

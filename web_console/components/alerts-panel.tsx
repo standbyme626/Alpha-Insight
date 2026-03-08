@@ -89,7 +89,7 @@ export function AlertsPanel({
           id: `event:${row.event_id}`,
           ts: row.ts,
           main: `${row.event_type} · ${row.title}`,
-          sub: `${strategyTier ? `tier=${strategyTier} · ` : ""}${row.summary}`
+          sub: `${strategyTier ? `策略层级=${strategyTier} · ` : ""}${row.summary}`
         };
       });
 
@@ -111,18 +111,18 @@ export function AlertsPanel({
         id: `alert:${row.event_id}:${row.channel}:${row.updated_at}`,
         ts: row.updated_at || row.trigger_ts,
         main: `${row.event_id} · ${row.symbol} · ${row.channel} · ${row.status}`,
-        sub: `tier=${row.strategy_tier} guarded=${row.tier_guarded ? "yes" : "no"} ${row.last_error || row.suppressed_reason || ""}`
+        sub: `策略层级=${row.strategy_tier} · 守卫=${row.tier_guarded ? "是" : "否"} ${row.last_error || row.suppressed_reason || ""}`
       }));
   }, [events, filtered]);
 
   return (
     <section className="panel">
-      <SectionTitle title="Alerts" subtitle="Channel delivery states, strategy tier guard, and degradation hints" />
+      <SectionTitle title="告警中心 Alerts" subtitle="通道投递状态、策略层级守卫与降级信号" />
       <div className="stats-grid">
-        <StatCard label="Filtered Alerts" value={filtered.length} />
-        <StatCard label="Delivered" value={delivered} />
-        <StatCard label="Tier Guarded" value={guarded} />
-        <StatCard label="Failed/DLQ" value={failed} detail={`active degrade states=${activeDegradeStates}`} />
+        <StatCard label="筛选后告警 Filtered" value={filtered.length} />
+        <StatCard label="已投递 Delivered" value={delivered} />
+        <StatCard label="层级守卫触发 Guarded" value={guarded} />
+        <StatCard label="失败/DLQ" value={failed} detail={`活跃降级状态=${activeDegradeStates}`} />
       </div>
 
       <div className="filter-row">
@@ -130,10 +130,10 @@ export function AlertsPanel({
           className="filter-input"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Filter by event_id / symbol / error"
+          placeholder="按 event_id / symbol / 错误信息过滤"
         />
         <select className="filter-select" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
-          <option value="all">status: all</option>
+          <option value="all">状态：全部</option>
           {statusOptions.map((status) => (
             <option key={status} value={status}>
               {status}
@@ -141,7 +141,7 @@ export function AlertsPanel({
           ))}
         </select>
         <select className="filter-select" value={tierFilter} onChange={(event) => setTierFilter(event.target.value)}>
-          <option value="all">tier: all</option>
+          <option value="all">策略层级：全部</option>
           {tierOptions.map((tier) => (
             <option key={tier} value={tier}>
               {tier}
@@ -149,7 +149,7 @@ export function AlertsPanel({
           ))}
         </select>
         <select className="filter-select" value={channelFilter} onChange={(event) => setChannelFilter(event.target.value)}>
-          <option value="all">channel: all</option>
+          <option value="all">通道：全部</option>
           {channelOptions.map((channel) => (
             <option key={channel} value={channel}>
               {channel}
@@ -161,9 +161,9 @@ export function AlertsPanel({
       <AlertsTable rows={filtered} />
 
       <section className="timeline-block">
-        <h3>Error/Guard Timeline</h3>
+        <h3>错误/守卫时间线 Error Guard Timeline</h3>
         {timeline.length === 0 ? (
-          <p className="timeline-empty">No guard/error events in current filter.</p>
+          <p className="timeline-empty">当前筛选范围内没有守卫/错误事件。</p>
         ) : (
           <ul className="timeline-list">
             {timeline.map((row) => (

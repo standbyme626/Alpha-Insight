@@ -19,15 +19,15 @@ export function RunsTable({ rows }: { rows: RunResource[] }) {
     <table className="data-table">
       <thead>
         <tr>
-          <th>run_id</th>
-          <th>symbol</th>
-          <th>success</th>
-          <th>fallback</th>
-          <th>retry</th>
-          <th>budget</th>
-          <th>p95_ms</th>
-          <th>error_rate</th>
-          <th>updated_at</th>
+          <th>运行ID run_id</th>
+          <th>标的 symbol</th>
+          <th>成功 success</th>
+          <th>回退 fallback</th>
+          <th>重试 retry</th>
+          <th>预算 budget</th>
+          <th>P95延迟 p95_ms</th>
+          <th>错误率 error_rate</th>
+          <th>更新时间 updated_at</th>
         </tr>
       </thead>
       <tbody>
@@ -57,16 +57,16 @@ export function AlertsTable({ rows }: { rows: AlertResource[] }) {
     <table className="data-table">
       <thead>
         <tr>
-          <th>event_id</th>
-          <th>symbol</th>
-          <th>priority</th>
-          <th>strategy_tier</th>
-          <th>tier_guarded</th>
-          <th>channel</th>
-          <th>status</th>
-          <th>run_id</th>
-          <th>last_error</th>
-          <th>updated_at</th>
+          <th>事件ID event_id</th>
+          <th>标的 symbol</th>
+          <th>优先级 priority</th>
+          <th>策略层级 strategy_tier</th>
+          <th>层级守卫 tier_guarded</th>
+          <th>通道 channel</th>
+          <th>状态 status</th>
+          <th>运行ID run_id</th>
+          <th>最近错误 last_error</th>
+          <th>更新时间 updated_at</th>
         </tr>
       </thead>
       <tbody>
@@ -76,10 +76,10 @@ export function AlertsTable({ rows }: { rows: AlertResource[] }) {
             <td>{row.symbol}</td>
             <td>{row.priority}</td>
             <td>{row.strategy_tier}</td>
-            <td>{row.tier_guarded ? "yes" : "no"}</td>
+            <td>{row.tier_guarded ? "是" : "否"}</td>
             <td>{row.channel}</td>
             <td>
-              <span className={`status-pill ${statusTone(row.status)}`}>{row.status || "unknown"}</span>
+              <span className={`status-pill ${statusTone(row.status)}`}>{row.status || "未知 unknown"}</span>
             </td>
             <td>{row.run_id || ""}</td>
             <td>{row.last_error || row.suppressed_reason || ""}</td>
@@ -96,10 +96,10 @@ export function EvidenceTable({ rows }: { rows: EvidenceResource[] }) {
     <table className="data-table">
       <thead>
         <tr>
-          <th>name</th>
-          <th>generated_at</th>
-          <th>size</th>
-          <th>path</th>
+          <th>名称 name</th>
+          <th>生成时间 generated_at</th>
+          <th>大小 size</th>
+          <th>路径 path</th>
         </tr>
       </thead>
       <tbody>
@@ -121,11 +121,11 @@ export function GovernanceTable({ rows }: { rows: DegradationStateResource[] }) 
     <table className="data-table">
       <thead>
         <tr>
-          <th>state_key</th>
-          <th>status</th>
-          <th>reason</th>
-          <th>triggered_at</th>
-          <th>recovered_at</th>
+          <th>状态键 state_key</th>
+          <th>状态 status</th>
+          <th>原因 reason</th>
+          <th>触发时间 triggered_at</th>
+          <th>恢复时间 recovered_at</th>
         </tr>
       </thead>
       <tbody>
@@ -150,12 +150,12 @@ export function MonitorsTable({ rows }: { rows: MonitorResource[] }) {
     <table className="data-table">
       <thead>
         <tr>
-          <th>job_id</th>
-          <th>symbol</th>
-          <th>strategy_tier</th>
-          <th>enabled</th>
-          <th>interval_sec</th>
-          <th>next_run_at</th>
+          <th>任务ID job_id</th>
+          <th>标的 symbol</th>
+          <th>策略层级 strategy_tier</th>
+          <th>是否启用 enabled</th>
+          <th>间隔(秒) interval_sec</th>
+          <th>下次运行 next_run_at</th>
         </tr>
       </thead>
       <tbody>
@@ -164,7 +164,7 @@ export function MonitorsTable({ rows }: { rows: MonitorResource[] }) {
             <td>{row.job_id}</td>
             <td>{row.symbol}</td>
             <td>{row.strategy_tier}</td>
-            <td>{row.enabled ? "yes" : "no"}</td>
+            <td>{row.enabled ? "是" : "否"}</td>
             <td>{row.interval_sec}</td>
             <td>{row.next_run_at}</td>
           </tr>

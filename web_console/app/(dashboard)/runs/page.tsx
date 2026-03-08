@@ -35,19 +35,19 @@ export default function RunsPage() {
 
   return (
     <section className="panel">
-      <SectionTitle title="Runs" subtitle="Resource-first list view (react-admin/refine pattern)" />
+      <SectionTitle title="运行记录 Runs" subtitle="资源主链路列表视图（Resource-first）" />
       <div className="filter-row">
-        <span className="timeline-sub">auto-refresh: focus=3s, blur=15s, hidden=pause · mode={pollingMode}</span>
+        <span className="timeline-sub">自动刷新：聚焦=3秒，失焦=15秒，隐藏=暂停 · 轮询模式={pollingMode}</span>
         <button className="filter-select" onClick={() => void refreshNow()} disabled={isRefreshing}>
-          {isRefreshing ? "refreshing..." : "refresh now"}
+          {isRefreshing ? "刷新中..." : "立即刷新"}
         </button>
       </div>
-      {error ? <p className="timeline-empty">refresh failed: {error}</p> : null}
+      {error ? <p className="timeline-empty">刷新失败：{error}</p> : null}
       <div className="stats-grid">
-        <StatCard label="Total Runs" value={runs.length} detail={lastRefreshedAt ? `updated=${lastRefreshedAt}` : undefined} />
-        <StatCard label="Success" value={summary.successCount} />
-        <StatCard label="Fallback Used" value={summary.fallbackCount} />
-        <StatCard label="Budget Warn/Fail" value={`${summary.budgetWarnCount}/${summary.budgetFailCount}`} />
+        <StatCard label="总运行数 Total Runs" value={runs.length} detail={lastRefreshedAt ? `更新时间=${lastRefreshedAt}` : undefined} />
+        <StatCard label="成功 Success" value={summary.successCount} />
+        <StatCard label="触发回退 Fallback" value={summary.fallbackCount} />
+        <StatCard label="预算告警/失败 Budget" value={`${summary.budgetWarnCount}/${summary.budgetFailCount}`} />
       </div>
       <RunsTable rows={runs} />
     </section>

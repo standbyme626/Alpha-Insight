@@ -1,6 +1,6 @@
 # Alpha-Insight Webhook Contract
 
-This document defines inbound and outbound webhook behavior used in the Upgrade10 runtime.
+This document defines inbound and outbound webhook behavior used in the Upgrade12 runtime.
 
 ## 1. Inbound Telegram Webhook
 
@@ -101,10 +101,20 @@ Used when `TELEGRAM_EMAIL_WEBHOOK_URL` or `TELEGRAM_WECOM_WEBHOOK_URL` is config
 
 ## 4. Versioning and Compatibility
 
-- Current contract baseline: Upgrade10 T8
+- Current contract baseline: `upgrade12.webhook.v1`
 - Non-breaking changes:
   - adding optional fields
   - adding new event priorities
+  - adding optional headers
 - Breaking changes require:
   - contract doc update
   - regression test update in `tests/smoke/test_webhook_smoke.py`
+  - changelog entry in section 5
+
+## 5. Contract Change Log
+
+- `upgrade10.webhook.v1`:
+  - initial inbound/outbound webhook contract baseline
+- `upgrade12.webhook.v1`:
+  - formalized production allowlist policy wording
+  - aligned compatibility process with smoke gate requirements

@@ -31,10 +31,11 @@ Alpha-Insight 是一个 Research Ops Control Plane，核心链路是：
 - 调度、告警与治理：[services/scheduler.py](services/scheduler.py), [services/watch_executor.py](services/watch_executor.py), [services/reliability_governor.py](services/reliability_governor.py)
 - 数据与通知适配：[tools/market_data.py](tools/market_data.py), [tools/news_data.py](tools/news_data.py), [services/notification_channels.py](services/notification_channels.py)
 
-### 当前状态（Upgrade10 已落地）
+### 当前状态（Upgrade12 收口进行中）
 - Next 控制台主数据源：`services/resource_api.py` 提供 `/api/runs|alerts|governance|monitors|events|evidence`，`web_console/app/api/resources/*` 走实时资源链路。
 - Typed contract：`web_console/lib/contracts.ts`（聚合）+ `web_console/lib/parsers.ts` + `web_console/lib/type_guards.ts` + `web_console/lib/types.ts`，负责资源 envelope 与字段解析，保持前后端契约一致。
 - 准实时刷新：`web_console/lib/polling.ts` + `web_console/lib/realtime.ts` 已实现前台高频、失焦降频、隐藏暂停与手动刷新。
+- 关键事件流补强：`web_console/app/api/resources/events/stream/route.ts` 与 `web_console/app/api/resources/alerts/stream/route.ts` 已提供 SSE 通道，前端在 `alerts/governance` 页面接入并保持轮询回退。
 - 快照导出定位：`scripts/upgrade7_frontend_resources_export.py` 仅用于证据/回归 fallback，不是控制台主链路依赖。
 - Store 策略：当前正式写路径为 `TelegramTaskStore(SQLite)`，`store_adapter` 负责路径解析与访问收口；`docker-compose.telegram.yml` 中 Postgres 仅为未来迁移预留，不是当前主链路。
 - 回归门禁：已补齐 smoke 用例 `tests/smoke/test_webhook_smoke.py`、`tests/smoke/test_scheduler_smoke.py`、`tests/smoke/test_market_pulse_smoke.py`。
@@ -154,7 +155,7 @@ bash scripts/telegram_stack.sh status
 | 多通道路由（telegram/email/wecom/webhook） | `services/notification_channels.py::MultiChannelNotifier`, `scripts/telegram_watch_scheduler.py::WebhookTextSender` |
 | Resource API（Next 主链路） | `services/resource_api.py`, `web_console/app/api/resources/*`, `web_console/lib/resources.ts` |
 | Typed 合约解析（前端） | `web_console/lib/contracts.ts`, `web_console/lib/parsers.ts`, `web_console/lib/type_guards.ts`, `web_console/lib/types.ts`, `ui/typed_resource_client.py::FrontendResourceClient(兼容层)` |
-| 前端轮询与准实时刷新 | `web_console/lib/polling.ts`, `web_console/lib/realtime.ts`, `web_console/app/(dashboard)/*` |
+| 前端轮询与准实时刷新 | `web_console/lib/polling.ts`, `web_console/lib/realtime.ts`, `web_console/lib/sse.ts`, `web_console/app/(dashboard)/*` |
 | Smoke 门禁（webhook/scheduler/pulse） | `tests/smoke/test_webhook_smoke.py`, `tests/smoke/test_scheduler_smoke.py`, `tests/smoke/test_market_pulse_smoke.py` |
 
 ---

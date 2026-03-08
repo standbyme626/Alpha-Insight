@@ -11,37 +11,37 @@ export type NavSection = {
 
 export const navSections: NavSection[] = [
   {
-    title: "Execution",
+    title: "执行与运行",
     items: [
       {
-        label: "Runs",
+        label: "运行记录 Runs",
         href: "/runs",
-        description: "Execution history"
+        description: "执行历史与关键指标"
       },
       {
-        label: "Alerts",
+        label: "告警中心 Alerts",
         href: "/alerts",
-        description: "Channel delivery states"
+        description: "通道投递状态与异常"
       },
       {
-        label: "Monitors",
+        label: "监控任务 Monitors",
         href: "/monitors",
-        description: "Watch jobs and next runs"
+        description: "监控任务与下次执行"
       }
     ]
   },
   {
-    title: "Reliability",
+    title: "可靠性治理",
     items: [
       {
-        label: "Governance",
+        label: "治理面板 Governance",
         href: "/governance",
-        description: "Degrade/recover states"
+        description: "降级/恢复状态与时间线"
       },
       {
-        label: "Evidence",
+        label: "验收证据 Evidence",
         href: "/evidence",
-        description: "Acceptance artifacts"
+        description: "验收产物与可追溯记录"
       }
     ]
   }

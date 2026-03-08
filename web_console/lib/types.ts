@@ -1,4 +1,12 @@
-export const RESOURCE_API_SCHEMA_VERSION = "upgrade10.resource_api.v1";
+export const RESOURCE_API_SCHEMA_VERSION = "upgrade12.resource_api.v2";
+export const RESOURCE_VERSIONS = {
+  runs: "upgrade12.resource.runs.v1",
+  alerts: "upgrade12.resource.alerts.v1",
+  governance: "upgrade12.resource.governance.v1",
+  monitors: "upgrade12.resource.monitors.v1",
+  events: "upgrade12.resource.events.v1",
+  evidence: "upgrade12.resource.evidence.v1"
+} as const;
 
 export type RunResource = {
   run_id: string;
@@ -85,6 +93,8 @@ export type FrontendResourceSnapshot = {
 
 export type ApiEnvelope<T> = {
   schema_version: string;
+  resource?: string;
+  resource_version?: string;
   generated_at: string;
   data: T;
 };

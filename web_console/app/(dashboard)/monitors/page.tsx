@@ -32,18 +32,18 @@ export default function MonitorsPage() {
 
   return (
     <section className="panel">
-      <SectionTitle title="Monitors" subtitle="Watch jobs with strategy tier and scheduler status" />
+      <SectionTitle title="监控任务 Monitors" subtitle="监控任务、策略分层与调度状态" />
       <div className="filter-row">
-        <span className="timeline-sub">auto-refresh: focus=3s, blur=15s, hidden=pause · mode={pollingMode}</span>
+        <span className="timeline-sub">自动刷新：聚焦=3秒，失焦=15秒，隐藏=暂停 · 轮询模式={pollingMode}</span>
         <button className="filter-select" onClick={() => void refreshNow()} disabled={isRefreshing}>
-          {isRefreshing ? "refreshing..." : "refresh now"}
+          {isRefreshing ? "刷新中..." : "立即刷新"}
         </button>
       </div>
-      {error ? <p className="timeline-empty">refresh failed: {error}</p> : null}
+      {error ? <p className="timeline-empty">刷新失败：{error}</p> : null}
       <div className="stats-grid">
-        <StatCard label="Total Jobs" value={monitors.length} detail={lastRefreshedAt ? `updated=${lastRefreshedAt}` : undefined} />
-        <StatCard label="Enabled" value={summary.enabledCount} />
-        <StatCard label="Disabled" value={summary.disabledCount} />
+        <StatCard label="任务总数 Total Jobs" value={monitors.length} detail={lastRefreshedAt ? `更新时间=${lastRefreshedAt}` : undefined} />
+        <StatCard label="启用 Enabled" value={summary.enabledCount} />
+        <StatCard label="停用 Disabled" value={summary.disabledCount} />
       </div>
       <MonitorsTable rows={monitors} />
     </section>

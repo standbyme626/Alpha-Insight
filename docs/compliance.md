@@ -1,6 +1,6 @@
-# Alpha-Insight Compliance Boundary
+# Alpha-Insight Compliance Boundary (Upgrade12 Closed)
 
-This document records the operational and product compliance boundary for Alpha-Insight Upgrade10.
+This document records the operational and product compliance boundary for Alpha-Insight Upgrade12.
 
 ## 1. Product Boundary
 
@@ -46,7 +46,17 @@ See also:
   - `market_pulse_dispatches`
 - Evidence files in `docs/evidence/` are used for traceability and regression review.
 
-## 6. Remaining Verify Items
+## 6. Retention and Network Policy (Closed)
 
-- Confirm production retention period policy for DB and `docs/evidence/*` artifacts.
-- Confirm final production network allowlist for Telegram source IPs and outbound webhook targets.
+- DB retention policy (production):
+  - `watch_events`, `notifications`, `degradation_events`, `market_pulse_dispatches`: retain 180 days online.
+  - Beyond 180 days, export to archive storage before deletion.
+- Evidence retention policy:
+  - `docs/evidence/*`: retain latest 90 days in repo-visible storage for regression and audit.
+  - Older evidence must be archived outside git working tree.
+- Network allowlist policy (production):
+  - Inbound Telegram source IPs must be explicitly configured via `TELEGRAM_ALLOWED_SOURCE_IPS`.
+  - Outbound webhook targets must be explicit allowlist entries in `outbound_webhooks` and reviewed before enablement.
+  - Any wildcard/temporary bypass is prohibited in production.
+
+Status: closed on Upgrade12, no remaining verify items.

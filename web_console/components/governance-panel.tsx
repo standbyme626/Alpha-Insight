@@ -94,11 +94,11 @@ export function GovernancePanel({ rows, events }: { rows: DegradationStateResour
 
   return (
     <section className="panel">
-      <SectionTitle title="Governance" subtitle="Reliability degrade/recover states with chronological timeline" />
+      <SectionTitle title="治理面板 Governance" subtitle="可靠性降级/恢复状态与时间线" />
       <div className="stats-grid">
-        <StatCard label="State Keys" value={filtered.length} />
-        <StatCard label="Active Degrade" value={active} />
-        <StatCard label="Recovered" value={recovered} />
+        <StatCard label="状态键 State Keys" value={filtered.length} />
+        <StatCard label="活跃降级 Active" value={active} />
+        <StatCard label="已恢复 Recovered" value={recovered} />
       </div>
 
       <div className="filter-row">
@@ -106,10 +106,10 @@ export function GovernancePanel({ rows, events }: { rows: DegradationStateResour
           className="filter-input"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Filter by state key / reason"
+          placeholder="按状态键 / 原因过滤"
         />
         <select className="filter-select" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
-          <option value="all">status: all</option>
+          <option value="all">状态：全部</option>
           {statusOptions.map((status) => (
             <option key={status} value={status}>
               {status}
@@ -121,16 +121,16 @@ export function GovernancePanel({ rows, events }: { rows: DegradationStateResour
       <GovernanceTable rows={filtered} />
 
       <section className="timeline-block">
-        <h3>Degrade/Recover Timeline</h3>
+        <h3>降级/恢复时间线 Degrade Recover Timeline</h3>
         {timeline.length === 0 ? (
-          <p className="timeline-empty">No timeline events in current filter.</p>
+          <p className="timeline-empty">当前筛选范围内没有时间线事件。</p>
         ) : (
           <ul className="timeline-list">
             {timeline.map((item) => (
               <li key={item.id}>
                 <span className="timeline-time">{item.ts}</span>
                 <span className="timeline-main">
-                  {item.type === "degrade" ? "degrade" : "recover"} · {item.state_key}
+                  {item.type === "degrade" ? "降级 degrade" : "恢复 recover"} · {item.state_key}
                 </span>
                 <span className="timeline-sub">{item.reason}</span>
               </li>
