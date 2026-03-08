@@ -22,6 +22,11 @@ export const navSections: NavSection[] = [
         label: "Alerts",
         href: "/alerts",
         description: "Channel delivery states"
+      },
+      {
+        label: "Monitors",
+        href: "/monitors",
+        description: "Watch jobs and next runs"
       }
     ]
   },

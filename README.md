@@ -32,10 +32,11 @@ Alpha-Insight 是一个 Research Ops Control Plane，核心链路是：
 - 数据与通知适配：[tools/market_data.py](tools/market_data.py), [tools/news_data.py](tools/news_data.py), [services/notification_channels.py](services/notification_channels.py)
 
 ### 当前状态（Upgrade10 已落地）
-- Next 控制台主数据源：`services/resource_api.py` 提供 `/api/runs|alerts|governance|events|evidence`，`web_console/app/api/resources/*` 走实时资源链路。
-- Typed contract：`web_console/lib/contracts.ts` + `web_console/lib/types.ts` 负责资源 envelope 与字段解析，保持前后端契约一致。
+- Next 控制台主数据源：`services/resource_api.py` 提供 `/api/runs|alerts|governance|monitors|events|evidence`，`web_console/app/api/resources/*` 走实时资源链路。
+- Typed contract：`web_console/lib/contracts.ts`（聚合）+ `web_console/lib/parsers.ts` + `web_console/lib/type_guards.ts` + `web_console/lib/types.ts`，负责资源 envelope 与字段解析，保持前后端契约一致。
 - 准实时刷新：`web_console/lib/polling.ts` + `web_console/lib/realtime.ts` 已实现前台高频、失焦降频、隐藏暂停与手动刷新。
-- 快照导出定位：`scripts/upgrade7_frontend_resources_export.py` 仅用于证据/回归兜底，不是控制台主链路依赖。
+- 快照导出定位：`scripts/upgrade7_frontend_resources_export.py` 仅用于证据/回归 fallback，不是控制台主链路依赖。
+- Store 策略：当前正式写路径为 `TelegramTaskStore(SQLite)`，`store_adapter` 负责路径解析与访问收口；`docker-compose.telegram.yml` 中 Postgres 仅为未来迁移预留，不是当前主链路。
 - 回归门禁：已补齐 smoke 用例 `tests/smoke/test_webhook_smoke.py`、`tests/smoke/test_scheduler_smoke.py`、`tests/smoke/test_market_pulse_smoke.py`。
 
 ---
@@ -80,7 +81,7 @@ Alpha-Insight 是一个 Research Ops Control Plane，核心链路是：
 - 路由与偏好：`/route`, `/webhook`, `/pref`。
 - 前端查看：
   - Streamlit（研究/运行看板）
-  - Next.js（runs/alerts/evidence/governance 资源视图）
+  - Next.js（runs/alerts/governance/monitors/events/evidence 资源视图）
 
 ---
 
@@ -152,7 +153,7 @@ bash scripts/telegram_stack.sh status
 | 新闻主题化/情绪门槛 | `services/news_digest.py::build_news_digest/format_top_news_lines/format_cluster_lines` |
 | 多通道路由（telegram/email/wecom/webhook） | `services/notification_channels.py::MultiChannelNotifier`, `scripts/telegram_watch_scheduler.py::WebhookTextSender` |
 | Resource API（Next 主链路） | `services/resource_api.py`, `web_console/app/api/resources/*`, `web_console/lib/resources.ts` |
-| Typed 合约解析（前端） | `web_console/lib/contracts.ts`, `web_console/lib/types.ts`, `ui/typed_resource_client.py::FrontendResourceClient(兼容层)` |
+| Typed 合约解析（前端） | `web_console/lib/contracts.ts`, `web_console/lib/parsers.ts`, `web_console/lib/type_guards.ts`, `web_console/lib/types.ts`, `ui/typed_resource_client.py::FrontendResourceClient(兼容层)` |
 | 前端轮询与准实时刷新 | `web_console/lib/polling.ts`, `web_console/lib/realtime.ts`, `web_console/app/(dashboard)/*` |
 | Smoke 门禁（webhook/scheduler/pulse） | `tests/smoke/test_webhook_smoke.py`, `tests/smoke/test_scheduler_smoke.py`, `tests/smoke/test_market_pulse_smoke.py` |
 
@@ -241,7 +242,7 @@ sequenceDiagram
 ### 4) 证据文件（可复核）
 - 目录：`docs/evidence/`
 - 已有示例：`upgrade8_p1_*.json`, `upgrade8_p2_*.json`, `upgrade8_p2_regression_gate.json`。
-- Next 前端资源快照：`docs/evidence/upgrade7_frontend_resources.json`（仅兼容/证据/回归兜底，由 `scripts/upgrade7_frontend_resources_export.py` 生成）。
+- Next 前端资源快照：`docs/evidence/upgrade7_frontend_resources.json`（仅兼容/证据/回归 fallback，由 `scripts/upgrade7_frontend_resources_export.py` 生成）。
 - Next 主链路数据应以 Resource API 为准：`services/resource_api.py` -> `web_console/app/api/resources/*`。
 
 ---
@@ -364,7 +365,7 @@ Alpha-Insight/
 ├── tools/                   # 市场数据/新闻/Telegram API 适配
 ├── scripts/                 # 启停脚本、网关入口、调度入口、资源导出
 ├── ui/                      # Streamlit 前端
-├── web_console/             # Next.js 前端（runs/alerts/evidence/governance）
+├── web_console/             # Next.js 前端（runs/alerts/governance/monitors/events/evidence）
 ├── docs/evidence/           # 验收与回归证据
 └── tests/                   # pytest 测试
 ```

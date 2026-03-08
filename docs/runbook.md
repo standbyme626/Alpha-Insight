@@ -34,11 +34,14 @@
 
 - `export PYTHONPATH=/home/kkk/Project/Alpha-Insight`
 - `streamlit run ui/streamlit_dashboard.py --server.port 8501`
+- `streamlit run ui/llm_frontend.py --server.port 8502`
+- `streamlit run ui/upgrade7_console.py --server.port 8503`
 
 ## 3. Ports / Process
 
 - `8501`: Realtime Cockpit
 - `8502`: Planner + Full Analysis
+- `8503`: Upgrade7 Console（旧入口回退）
 - 查看容器：
   - `docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"`
 - 查看日志：
@@ -63,11 +66,27 @@
 ## 6. Data Fallback Strategy（数据回退）
 
 1. `market_data` API 失败：
-   - Week1/Week2 流程路由到 scraper 或本地 fallback planner。
+    - Week1/Week2 流程路由到 scraper 或本地 fallback planner。
 2. 扫描失败聚类：
    - 统一落在 `runtime_failure_clusters`（如 `data/network/sandbox/fallback`）。
 3. 触发式研究失败：
-   - 在 `AlertSnapshot.research_status=failed` 与 `research_error` 记录；扫描流程不中断。
+    - 在 `AlertSnapshot.research_status=failed` 与 `research_error` 记录；扫描流程不中断。
+4. Web Console Resource API 失败：
+   - `web_console/lib/resources.ts` 自动从 `/api/*` 切换到 `docs/evidence/upgrade7_frontend_resources.json` 快照兜底（fallback-only）。
+   - API 恢复后自动回到 API-first 读取路径，无需手工切换。
+
+## 6.1 旧入口回退验证（8501/8502/8503）
+
+1. 启动旧入口：
+   - `streamlit run ui/streamlit_dashboard.py --server.port 8501`
+   - `streamlit run ui/llm_frontend.py --server.port 8502`
+   - `streamlit run ui/upgrade7_console.py --server.port 8503`
+2. 健康检查：
+   - `curl -sSf http://127.0.0.1:8501/ > /dev/null`
+   - `curl -sSf http://127.0.0.1:8502/ > /dev/null`
+   - `curl -sSf http://127.0.0.1:8503/ > /dev/null`
+3. 回退条件：
+   - 当 8600 Next 控制台出现 API 连续失败/白屏/关键资源缺失时，优先回退到 8501/8502/8503 旧入口，保持值班可观测。
 
 ## 7. Threshold Alarms（阈值告警）
 

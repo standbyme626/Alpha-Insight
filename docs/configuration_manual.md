@@ -95,6 +95,8 @@ Source: `web_console/lib/client.ts`, `web_console/lib/resources.ts`
 
 - Keep one canonical env file for production (for example `/etc/alpha-insight/alpha-insight.env`).
 - Gateway, scheduler, and resource API must point to the same `TELEGRAM_GATEWAY_DB`.
+- Current production store path is SQLite (`TelegramTaskStore` + `store_adapter`); Postgres in compose is reserved for migration rehearsal only.
+- Do not bypass `store_adapter` from UI/BFF layers; frontend must read via Resource API / typed contracts.
 - Validate settings before rollout using:
   - `pytest -q`
   - `python -m py_compile scripts/*.py services/*.py`

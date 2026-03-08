@@ -8,10 +8,13 @@ from typing import Any, TypedDict
 from uuid import uuid4
 
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.graph import END, StateGraph
 
 from agents.coder_engine import generate_code
 from agents.debugger_engine import build_debug_advice
+from agents.workflow_governance_hooks import apply_runtime_budget_metrics
+from agents.workflow_graph import build_repair_graph as build_repair_graph_layered
+from agents.workflow_nodes import WorkflowDecisions, WorkflowNodes
+from agents.workflow_result_builder import build_data_bundle_ref, build_metrics, build_provenance
 from agents.planner_engine import plan_tasks
 from agents.report_reviewer import extract_metrics_from_stdout
 from core.fault_injection import FaultInjectionEvent, FaultInjector, fault_semantic
@@ -27,7 +30,6 @@ from core.node_contracts import (
     validate_planner_contract,
 )
 from core.observability import FailureEvent, aggregate_failure_clusters, aggregate_failure_tags, classify_failure
-from core.reliability_budget import evaluate_latency_error_budget
 from core.sandbox_manager import ExecutionResult, SandboxManager, StructuredTraceback
 from core.tool_result import build_tool_result
 from tools.market_data import fetch_market_data, market_data_result_to_tool_result
@@ -344,36 +346,21 @@ def _after_executor(state: Week2GraphState) -> str:
 
 def build_repair_graph(*, checkpointer: InMemorySaver | None = None):
     print("[DEBUG] QuantNode week2.build_week2_graph Start")
-    graph = StateGraph(Week2GraphState)
-    graph.add_node("planner", planner_node)
-    graph.add_node("market_data", market_data_node)
-    graph.add_node("coder", coder_node)
-    graph.add_node("executor", executor_node)
-    graph.add_node("debugger", debugger_node)
-
-    graph.set_entry_point("planner")
-    graph.add_edge("planner", "market_data")
-    graph.add_conditional_edges(
-        "market_data",
-        _after_market_data,
-        {
-            "coder": "coder",
-            "done": END,
-        },
+    return build_repair_graph_layered(
+        state_type=Week2GraphState,
+        nodes=WorkflowNodes(
+            planner=planner_node,
+            market_data=market_data_node,
+            coder=coder_node,
+            executor=executor_node,
+            debugger=debugger_node,
+        ),
+        decisions=WorkflowDecisions(
+            after_market_data=_after_market_data,
+            after_executor=_after_executor,
+        ),
+        checkpointer=checkpointer,
     )
-    graph.add_edge("coder", "executor")
-    graph.add_conditional_edges(
-        "executor",
-        _after_executor,
-        {
-            "debugger": "debugger",
-            "done": END,
-        },
-    )
-    graph.add_edge("debugger", "coder")
-
-    cp = checkpointer if checkpointer is not None else InMemorySaver()
-    return graph.compile(checkpointer=cp)
 
 
 # Backward-compatible alias.
@@ -381,19 +368,7 @@ build_week2_graph = build_repair_graph
 
 
 def _build_data_bundle_ref(bundle: dict[str, Any] | None, *, symbol: str, interval: str) -> DataBundleRef:
-    payload = bundle or {}
-    metadata = payload.get("metadata")
-    metadata_dict = metadata if isinstance(metadata, dict) else {}
-    records = payload.get("records")
-    record_count = int(metadata_dict.get("record_count") or (len(records) if isinstance(records, list) else 0))
-    return DataBundleRef(
-        data_source=str(payload.get("data_source", "unknown")),
-        asof=str(payload.get("asof", "")),
-        symbol=str(payload.get("symbol", symbol)),
-        market=str(payload.get("market", "auto")),
-        interval=str(payload.get("interval", interval)),
-        record_count=record_count,
-    )
+    return build_data_bundle_ref(bundle, symbol=symbol, interval=interval)
 
 
 def _build_metrics(
@@ -403,21 +378,12 @@ def _build_metrics(
     sandbox_metrics: dict[str, Any],
     data_bundle_ref: DataBundleRef,
 ) -> dict[str, Any]:
-    metrics: dict[str, Any] = {
-        "full_success": bool(sandbox.success),
-        "retry_count": int(sandbox.retry_count),
-        "data_record_count": int(data_bundle_ref.record_count),
-        "latest_close": float(fused_raw.get("latest_close", 0.0)),
-        "period_change_pct": float(fused_raw.get("period_change_pct", 0.0)),
-        "ma20": float(fused_raw.get("ma20", 0.0)),
-        "rsi14": float(fused_raw.get("rsi14", 0.0)),
-        "volatility_pct": float(fused_raw.get("volatility_pct", 0.0)),
-        "volume_ratio": float(fused_raw.get("volume_ratio", 0.0)),
-        "sentiment_score": float(fused_raw.get("sentiment_score", 0.0)),
-    }
-    for key, value in sandbox_metrics.items():
-        metrics[f"sandbox_{key}"] = value
-    return metrics
+    return build_metrics(
+        sandbox=sandbox,
+        fused_raw=fused_raw,
+        sandbox_metrics=sandbox_metrics,
+        data_bundle_ref=data_bundle_ref,
+    )
 
 
 def _build_provenance(
@@ -427,58 +393,12 @@ def _build_provenance(
     fused_raw: dict[str, Any],
     sandbox_metrics: dict[str, Any],
 ) -> list[ProvenanceEntry]:
-    entries: list[ProvenanceEntry] = [
-        ProvenanceEntry(
-            metric="data_record_count",
-            value=data_bundle_ref.record_count,
-            source="data_bundle",
-            pointer="data_bundle_ref.record_count",
-            note="source market rows used by full + fused compute",
-        ),
-        ProvenanceEntry(
-            metric="retry_count",
-            value=sandbox.retry_count,
-            source="sandbox_metrics",
-            pointer="sandbox_artifacts.retry_count",
-        ),
-        ProvenanceEntry(
-            metric="sandbox_success",
-            value=sandbox.success,
-            source="sandbox_metrics",
-            pointer="sandbox_artifacts.success",
-        ),
-    ]
-
-    fused_metric_keys = [
-        "latest_close",
-        "period_change_pct",
-        "ma20",
-        "rsi14",
-        "volatility_pct",
-        "volume_ratio",
-        "sentiment_score",
-    ]
-    for key in fused_metric_keys:
-        if key in fused_raw:
-            entries.append(
-                ProvenanceEntry(
-                    metric=key,
-                    value=fused_raw.get(key),
-                    source="fused_metrics",
-                    pointer=f"fused_insights.raw.{key}",
-                )
-            )
-
-    for key, value in sandbox_metrics.items():
-        entries.append(
-            ProvenanceEntry(
-                metric=f"sandbox_{key}",
-                value=value,
-                source="sandbox_stdout",
-                pointer=f"sandbox_artifacts.stdout::METRICS_JSON.{key}",
-            )
-        )
-    return entries
+    return build_provenance(
+        sandbox=sandbox,
+        data_bundle_ref=data_bundle_ref,
+        fused_raw=fused_raw,
+        sandbox_metrics=sandbox_metrics,
+    )
 
 
 async def run_unified_research(
@@ -579,20 +499,14 @@ async def run_unified_research(
     metrics["runtime_fault_injection_count"] = len(fault_events)
     if fault_events:
         metrics["runtime_fault_injection_events"] = fault_events
-    budget = evaluate_latency_error_budget(
-        latency_samples_ms=[metrics["runtime_market_data_latency_ms"], metrics["runtime_executor_latency_ms"]],
-        error_count=metrics["runtime_failure_count"],
-        total_count=2,
-        fallback_count=1 if metrics["runtime_fallback_used"] else 0,
-        retry_count=metrics["runtime_retry_count"],
+    apply_runtime_budget_metrics(
+        metrics,
+        market_data_latency_ms=float(metrics["runtime_market_data_latency_ms"]),
+        executor_latency_ms=float(metrics["runtime_executor_latency_ms"]),
+        runtime_failure_count=int(metrics["runtime_failure_count"]),
+        runtime_fallback_used=bool(metrics["runtime_fallback_used"]),
+        runtime_retry_count=int(metrics["runtime_retry_count"]),
     )
-    metrics["runtime_budget_verdict"] = budget.status
-    metrics["runtime_budget_reasons"] = [item.to_dict() for item in budget.reasons]
-    metrics["runtime_latency_p50_ms"] = budget.metrics["p50_latency_ms"]
-    metrics["runtime_latency_p95_ms"] = budget.metrics["p95_latency_ms"]
-    metrics["runtime_error_rate"] = budget.metrics["error_rate"]
-    metrics["runtime_fallback_rate"] = budget.metrics["fallback_rate"]
-    metrics["runtime_retry_pressure"] = budget.metrics["retry_pressure"]
     provenance = _build_provenance(
         sandbox=sandbox,
         data_bundle_ref=data_bundle_ref,

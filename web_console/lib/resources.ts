@@ -1,13 +1,14 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import { parseAlerts, parseEvents, parseEvidence, parseGovernance, parseRuns, parseSnapshot } from "@/lib/contracts";
+import { parseAlerts, parseEvents, parseEvidence, parseGovernance, parseMonitors, parseRuns, parseSnapshot } from "@/lib/contracts";
 import type {
   AlertResource,
   DegradationStateResource,
   EventTimelineResource,
   EvidenceResource,
   FrontendResourceSnapshot,
+  MonitorResource,
   RunResource
 } from "@/lib/types";
 
@@ -19,7 +20,8 @@ const fallbackSnapshot: FrontendResourceSnapshot = {
   runs: [],
   alerts: [],
   evidence: [],
-  degradation_states: []
+  degradation_states: [],
+  monitors: []
 };
 
 const upstreamBaseUrl =
@@ -227,6 +229,16 @@ export async function listEvents(options?: { since?: string | null; limit?: numb
 
   const snapshot = await readSnapshotFile();
   return applyEventFilters(deriveEventsFromSnapshot(snapshot), { since, limit });
+}
+
+export async function listMonitors(limit = 200): Promise<MonitorResource[]> {
+  const normalizedLimit = clampLimit(limit, 200);
+  const payload = await fetchUpstream(`/api/monitors?limit=${normalizedLimit}`);
+  if (payload !== null) {
+    return parseMonitors(payload);
+  }
+  const snapshot = await readSnapshotFile();
+  return snapshot.monitors.slice(0, normalizedLimit);
 }
 
 export async function getResourceMeta(): Promise<Pick<FrontendResourceSnapshot, "generated_at" | "db_path">> {

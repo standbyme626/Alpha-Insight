@@ -8,6 +8,7 @@ import { navSections } from "@/components/nav";
 const titleMap: Record<string, string> = {
   "/runs": "Runs",
   "/alerts": "Alerts",
+  "/monitors": "Monitors",
   "/evidence": "Evidence",
   "/governance": "Governance"
 };
@@ -39,7 +40,7 @@ export default function DashboardShell({ children }: { children: React.ReactNode
         ))}
         <div className="rail-footnote">
           <p>resource-first routes</p>
-          <p>runs / alerts / evidence / governance</p>
+          <p>runs / alerts / monitors / evidence / governance</p>
         </div>
       </aside>
       <main className="content">

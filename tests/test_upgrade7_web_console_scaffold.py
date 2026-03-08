@@ -13,10 +13,14 @@ def test_web_console_scaffold_and_reference_patterns_exist() -> None:
         root / "app/(dashboard)/layout.tsx",
         root / "app/(dashboard)/runs/page.tsx",
         root / "app/(dashboard)/alerts/page.tsx",
+        root / "app/(dashboard)/monitors/page.tsx",
         root / "app/(dashboard)/evidence/page.tsx",
         root / "app/(dashboard)/governance/page.tsx",
+        root / "app/api/resources/monitors/route.ts",
         root / "lib/client.ts",
         root / "lib/resources.ts",
+        root / "lib/parsers.ts",
+        root / "lib/type_guards.ts",
         root / "components/dashboard-shell.tsx",
     ]
     missing = [str(path) for path in required_files if not path.exists()]

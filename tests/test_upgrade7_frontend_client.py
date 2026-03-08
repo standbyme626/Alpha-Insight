@@ -152,6 +152,7 @@ def test_frontend_typed_resource_client_reads_resources(tmp_path) -> None:  # no
     alerts = client.list_alerts(limit=10)
     evidence = client.list_evidence(limit=10)
     states = client.list_degradation_states()
+    monitors = client.list_monitors(limit=10)
 
     assert len(runs) == 1
     assert runs[0].run_id == "run-1"
@@ -169,6 +170,7 @@ def test_frontend_typed_resource_client_reads_resources(tmp_path) -> None:  # no
 
     assert len(states) == 1
     assert states[0].state_key == "no_monitor_push"
+    assert len(monitors) == 0
 
 
 def test_frontend_snapshot_contract(tmp_path) -> None:  # noqa: ANN001
@@ -186,6 +188,7 @@ def test_frontend_snapshot_contract(tmp_path) -> None:  # noqa: ANN001
     assert len(snapshot.alerts) == 1
     assert len(snapshot.evidence) == 1
     assert len(snapshot.degradation_states) == 1
+    assert len(snapshot.monitors) == 0
 
 
 def test_frontend_evidence_summary_includes_p2b_channel_matrix_keys(tmp_path) -> None:  # noqa: ANN001
@@ -272,3 +275,7 @@ def test_frontend_typed_client_compat_with_realtime_resource_api(tmp_path) -> No
     realtime_evidence = realtime.list_evidence(limit=10)
     typed_evidence = typed.list_evidence(limit=10)
     assert [item["name"] for item in realtime_evidence] == [item.name for item in typed_evidence]
+
+    realtime_monitors = realtime.list_monitors(limit=10)
+    typed_monitors = typed.list_monitors(limit=10)
+    assert [item["job_id"] for item in realtime_monitors] == [item.job_id for item in typed_monitors]

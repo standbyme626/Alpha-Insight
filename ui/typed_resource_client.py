@@ -61,6 +61,25 @@ class DegradationStateResource(BaseModel):
     updated_at: str
 
 
+class MonitorResource(BaseModel):
+    job_id: str
+    chat_id: str
+    symbol: str
+    market: str
+    interval_sec: int
+    threshold: float
+    mode: str
+    scope: str
+    route_strategy: str
+    strategy_tier: str
+    enabled: bool
+    next_run_at: str
+    last_run_at: str | None = None
+    last_triggered_at: str | None = None
+    last_error: str | None = None
+    updated_at: str
+
+
 class ConsoleSnapshot(BaseModel):
     generated_at: str
     db_path: str
@@ -68,6 +87,7 @@ class ConsoleSnapshot(BaseModel):
     alerts: list[AlertResource]
     evidence: list[EvidenceResource]
     degradation_states: list[DegradationStateResource]
+    monitors: list[MonitorResource]
 
 
 class FrontendResourceClient:
@@ -104,6 +124,9 @@ class FrontendResourceClient:
             for item in self._artifact_store.list_evidence(limit=limit)
         ]
 
+    def list_monitors(self, *, limit: int = 200) -> list[MonitorResource]:
+        return [MonitorResource.model_validate(item.model_dump(mode="python")) for item in self._run_store.list_monitors(limit=limit)]
+
     def build_snapshot(
         self,
         *,
@@ -118,4 +141,5 @@ class FrontendResourceClient:
             alerts=self.list_alerts(limit=alert_limit),
             evidence=self.list_evidence(limit=evidence_limit),
             degradation_states=self.list_degradation_states(),
+            monitors=self.list_monitors(),
         )

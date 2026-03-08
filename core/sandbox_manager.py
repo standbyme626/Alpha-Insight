@@ -7,10 +7,10 @@ import re
 import sys
 import tempfile
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from core.execution_result import ExecutionResult, StructuredTraceback
 from core.fault_injection import FaultInjectionEvent, FaultInjector, fault_semantic
 from core.sandbox import LocalDockerSandbox
 from core.sandbox_policy import SandboxPolicy
@@ -19,32 +19,6 @@ try:  # pragma: no cover - optional dependency
     from e2b_code_interpreter import CodeInterpreter
 except Exception:  # pragma: no cover - optional dependency
     CodeInterpreter = None  # type: ignore[assignment]
-
-
-@dataclass
-class StructuredTraceback:
-    error_type: str
-    message: str
-    frames: list[dict[str, Any]]
-    raw: str
-
-
-@dataclass
-class ExecutionResult:
-    stdout: str
-    stderr: str
-    exit_code: int
-    traceback: StructuredTraceback | None
-    backend: str
-    duration_ms: float
-    resource_usage: dict[str, Any] | None = None
-    images: list[str] = field(default_factory=list)
-    output_files: list[str] = field(default_factory=list)
-
-    @property
-    def execution_backend(self) -> str:
-        """Backward-compatible alias for legacy call sites."""
-        return self.backend
 
 
 # Backward-compatible alias.

@@ -1,4 +1,4 @@
-import type { AlertResource, DegradationStateResource, EvidenceResource, RunResource } from "@/lib/types";
+import type { AlertResource, DegradationStateResource, EvidenceResource, MonitorResource, RunResource } from "@/lib/types";
 
 function statusTone(status: string): string {
   const normalized = status.toLowerCase();
@@ -138,6 +138,35 @@ export function GovernanceTable({ rows }: { rows: DegradationStateResource[] }) 
             <td>{row.reason}</td>
             <td>{row.triggered_at || ""}</td>
             <td>{row.recovered_at || ""}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+export function MonitorsTable({ rows }: { rows: MonitorResource[] }) {
+  return (
+    <table className="data-table">
+      <thead>
+        <tr>
+          <th>job_id</th>
+          <th>symbol</th>
+          <th>strategy_tier</th>
+          <th>enabled</th>
+          <th>interval_sec</th>
+          <th>next_run_at</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row) => (
+          <tr key={row.job_id}>
+            <td>{row.job_id}</td>
+            <td>{row.symbol}</td>
+            <td>{row.strategy_tier}</td>
+            <td>{row.enabled ? "yes" : "no"}</td>
+            <td>{row.interval_sec}</td>
+            <td>{row.next_run_at}</td>
           </tr>
         ))}
       </tbody>

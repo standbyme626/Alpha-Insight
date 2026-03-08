@@ -45,6 +45,25 @@ export type DegradationStateResource = {
   updated_at: string;
 };
 
+export type MonitorResource = {
+  job_id: string;
+  chat_id: string;
+  symbol: string;
+  market: string;
+  interval_sec: number;
+  threshold: number;
+  mode: string;
+  scope: string;
+  route_strategy: string;
+  strategy_tier: string;
+  enabled: boolean;
+  next_run_at: string;
+  last_run_at?: string | null;
+  last_triggered_at?: string | null;
+  last_error?: string | null;
+  updated_at: string;
+};
+
 export type EventTimelineResource = {
   event_id: string;
   event_type: string;
@@ -61,6 +80,7 @@ export type FrontendResourceSnapshot = {
   alerts: AlertResource[];
   evidence: EvidenceResource[];
   degradation_states: DegradationStateResource[];
+  monitors: MonitorResource[];
 };
 
 export type ApiEnvelope<T> = {
